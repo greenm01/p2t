@@ -452,6 +452,16 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
                 if (f == 3) continue;
                 const apexOt = tv[ot][f];
 
+                // A Lawson flip is only valid when the two triangles form a
+                // strictly convex quad (the diagonals cross). On concave
+                // polygons an interior edge can bound a reflex quad; flipping it
+                // would invert a triangle. Such an edge is, by definition,
+                // already locally Delaunay - skip it.
+                const o1 = self.area(apexT, apexOt, s1);
+                const o2 = self.area(apexT, apexOt, s2);
+                const convex = (o1 > 0 and o2 < 0) or (o1 < 0 and o2 > 0);
+                if (!convex) continue;
+
                 if (inCircle(verts, apexT, s1, s2, apexOt) <= 0) continue; // already legal
 
                 // Flip diagonal (s1,s2) -> (apexT,apexOt). Quad A,B,C,D (CCW)
