@@ -1,0 +1,7 @@
+/htmldocs/
+/nimcache/
+*.exe
+*.dll
+*.so
+*.dylib
+*.dSYM/
