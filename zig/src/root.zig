@@ -8,6 +8,7 @@
 //! Public API. Tests live in src/tests.zig.
 
 const tri = @import("triangulate.zig");
+const fill = @import("fill_tess.zig");
 
 /// Generic over coordinate type (f32/f64) and index type (u16/u32).
 pub const Tessellator = tri.Tessellator;
@@ -17,3 +18,12 @@ pub const GpuTess = tri.GpuTess;
 
 /// Double-precision f64 / u32.
 pub const Tess = tri.Tess;
+
+/// Generic immediate-mode GPU fill tessellator workspace.
+pub const FillTessellator = fill.FillTessellator;
+
+/// GPU-oriented f32 / u32 fill tessellator workspace.
+pub const GpuFillTess = fill.GpuFillTess;
+
+/// Default fill tessellator workspace.
+pub const FillTess = fill.FillTess;

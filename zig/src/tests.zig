@@ -2,6 +2,7 @@
 //! `zig build test` compiles this module against the public API in root.zig.
 
 const std = @import("std");
+const mutable = @import("mutable_mesh.zig");
 const tess = @import("root.zig");
 
 // Tests run in double precision so the area assertions are exact; the comptime
@@ -222,4 +223,226 @@ test "gpu instantiation compiles and covers" {
     var m = try G.triangulateSimple(std.testing.allocator, &pts);
     defer m.deinit();
     try std.testing.expectEqual(@as(usize, 2), m.triangleCount());
+}
+
+test "fill tess fast triangle and boundary metadata" {
+    const F = tess.GpuFillTess;
+    var ft = F.init(std.testing.allocator);
+    defer ft.deinit();
+
+    const pts = [_]F.Vec{ .{ .x = 0, .y = 0 }, .{ .x = 4, .y = 0 }, .{ .x = 0, .y = 3 } };
+    try ft.addContour(&pts, .solid);
+
+    var m = try ft.tessellateFill(.{ .keep_boundary_edges = true });
+    defer m.deinit();
+
+    try std.testing.expect(m.diagnostics.used_fast_path);
+    try std.testing.expectEqual(@as(usize, 1), m.triangleCount());
+    try std.testing.expectEqual(@as(usize, 3), m.vertices.len);
+    try std.testing.expectEqual(@as(usize, 3), m.boundary_edges.len);
+}
+
+test "fill tess quad fast path chooses valid two-triangle mesh" {
+    const F = tess.GpuFillTess;
+    var ft = F.init(std.testing.allocator);
+    defer ft.deinit();
+
+    const pts = [_]F.Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 10, .y = 0 },
+        .{ .x = 10, .y = 8 },
+        .{ .x = 0, .y = 8 },
+    };
+    try ft.addContour(&pts, .solid);
+
+    var m = try ft.tessellateFill(.{});
+    defer m.deinit();
+
+    try std.testing.expect(m.diagnostics.used_fast_path);
+    try std.testing.expectEqual(@as(usize, 2), m.triangleCount());
+    try std.testing.expectEqual(@as(usize, 4), m.vertices.len);
+}
+
+test "fill tess hole falls back to complex triangulator" {
+    const F = tess.GpuFillTess;
+    var ft = F.init(std.testing.allocator);
+    defer ft.deinit();
+
+    const outer = [_]F.Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 10, .y = 0 },
+        .{ .x = 10, .y = 10 },
+        .{ .x = 0, .y = 10 },
+    };
+    const hole = [_]F.Vec{
+        .{ .x = 3, .y = 3 },
+        .{ .x = 3, .y = 7 },
+        .{ .x = 7, .y = 7 },
+        .{ .x = 7, .y = 3 },
+    };
+    try ft.addContour(&outer, .solid);
+    try ft.addContour(&hole, .hole);
+
+    var m = try ft.tessellateFill(.{ .keep_boundary_edges = true });
+    defer m.deinit();
+
+    try std.testing.expect(!m.diagnostics.used_fast_path);
+    try std.testing.expectEqual(@as(usize, 8), m.triangleCount());
+    try std.testing.expectEqual(@as(usize, 8), m.boundary_edges.len);
+}
+
+test "fill tess supports multiple solid contours" {
+    const F = tess.GpuFillTess;
+    var ft = F.init(std.testing.allocator);
+    defer ft.deinit();
+
+    const left = [_]F.Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 2, .y = 0 },
+        .{ .x = 2, .y = 2 },
+        .{ .x = 0, .y = 2 },
+    };
+    const right = [_]F.Vec{
+        .{ .x = 4, .y = 0 },
+        .{ .x = 6, .y = 0 },
+        .{ .x = 6, .y = 2 },
+        .{ .x = 4, .y = 2 },
+    };
+    try ft.addContour(&left, .solid);
+    try ft.addContour(&right, .solid);
+
+    var m = try ft.tessellateFill(.{ .keep_boundary_edges = true });
+    defer m.deinit();
+
+    try std.testing.expect(m.diagnostics.used_fast_path);
+    try std.testing.expectEqual(@as(usize, 4), m.triangleCount());
+    try std.testing.expectEqual(@as(usize, 8), m.vertices.len);
+    try std.testing.expectEqual(@as(usize, 8), m.boundary_edges.len);
+}
+
+test "fill tess basic validation catches holes before solids" {
+    const F = tess.GpuFillTess;
+    var ft = F.init(std.testing.allocator);
+    defer ft.deinit();
+
+    const pts = [_]F.Vec{ .{ .x = 1, .y = 1 }, .{ .x = 2, .y = 1 }, .{ .x = 1, .y = 2 } };
+    try ft.addContour(&pts, .hole);
+    try std.testing.expectError(F.Error.HoleWithoutSolid, ft.tessellateFill(.{ .validation = .basic }));
+}
+
+test "fill tess reset reuses workspace for immediate mode" {
+    const F = tess.GpuFillTess;
+    var ft = F.init(std.testing.allocator);
+    defer ft.deinit();
+    try ft.reserve(16, 4);
+
+    const tri_pts = [_]F.Vec{ .{ .x = 0, .y = 0 }, .{ .x = 2, .y = 0 }, .{ .x = 0, .y = 2 } };
+    try ft.addContour(&tri_pts, .solid);
+    var first = try ft.tessellateFill(.{});
+    defer first.deinit();
+    try std.testing.expectEqual(@as(usize, 1), first.triangleCount());
+
+    ft.reset();
+    const quad_pts = [_]F.Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 2, .y = 0 },
+        .{ .x = 2, .y = 2 },
+        .{ .x = 0, .y = 2 },
+    };
+    try ft.addContour(&quad_pts, .solid);
+    var second = try ft.tessellateFill(.{});
+    defer second.deinit();
+    try std.testing.expectEqual(@as(usize, 2), second.triangleCount());
+}
+
+fn fillTriMinAngleDeg(a: tess.GpuFillTess.Vec, b: tess.GpuFillTess.Vec, c: tess.GpuFillTess.Vec) f64 {
+    const ax: f64 = a.x;
+    const ay: f64 = a.y;
+    const bx: f64 = b.x;
+    const by: f64 = b.y;
+    const cx: f64 = c.x;
+    const cy: f64 = c.y;
+    const la = @sqrt((bx - cx) * (bx - cx) + (by - cy) * (by - cy));
+    const lb = @sqrt((ax - cx) * (ax - cx) + (ay - cy) * (ay - cy));
+    const lc = @sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
+    const angA = std.math.acos(std.math.clamp((lb * lb + lc * lc - la * la) / (2 * lb * lc), -1.0, 1.0));
+    const angB = std.math.acos(std.math.clamp((la * la + lc * lc - lb * lb) / (2 * la * lc), -1.0, 1.0));
+    const angC = std.math.pi - angA - angB;
+    return @min(angA, @min(angB, angC)) * 180.0 / std.math.pi;
+}
+
+const FillQuality = struct {
+    mean_min_angle: f64,
+    slivers20: usize,
+};
+
+fn fillQuality(m: tess.GpuFillTess.FillMesh) FillQuality {
+    var sum: f64 = 0;
+    var slivers: usize = 0;
+    var t: usize = 0;
+    while (t < m.indices.len) : (t += 3) {
+        const angle = fillTriMinAngleDeg(m.vertices[m.indices[t]], m.vertices[m.indices[t + 1]], m.vertices[m.indices[t + 2]]);
+        sum += angle;
+        if (angle < 20.0) slivers += 1;
+    }
+    return .{ .mean_min_angle = sum / @as(f64, @floatFromInt(m.triangleCount())), .slivers20 = slivers };
+}
+
+test "fill tess balanced improves ellipse quality with bounded swaps" {
+    const F = tess.GpuFillTess;
+    const n = 24;
+    var pts: [n]F.Vec = undefined;
+    for (0..n) |k| {
+        const ang = 2.0 * std.math.pi * @as(f32, @floatFromInt(k)) / @as(f32, n);
+        pts[k] = .{ .x = 50.0 * @cos(ang), .y = 12.0 * @sin(ang) };
+    }
+
+    var ft = F.init(std.testing.allocator);
+    defer ft.deinit();
+    try ft.addContour(&pts, .solid);
+    var raw = try ft.tessellateFill(.{ .quality = .raw });
+    defer raw.deinit();
+
+    ft.reset();
+    try ft.addContour(&pts, .solid);
+    var balanced = try ft.tessellateFill(.{ .quality = .balanced });
+    defer balanced.deinit();
+
+    const qr = fillQuality(raw);
+    const qb = fillQuality(balanced);
+    try std.testing.expectEqual(raw.triangleCount(), balanced.triangleCount());
+    try std.testing.expect(balanced.diagnostics.quality_flips > 0);
+    try std.testing.expectEqual(@as(usize, 0), balanced.diagnostics.constraint_failures);
+    try std.testing.expect(!balanced.diagnostics.fallback_used);
+    try std.testing.expect(qb.mean_min_angle > qr.mean_min_angle);
+    try std.testing.expect(qb.slivers20 <= qr.slivers20);
+}
+
+test "mutable mesh inserts missing constraint by edge swap" {
+    const F = tess.GpuFillTess;
+    const R = mutable.Refiner(F.Vec, u32);
+    const pts = [_]F.Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 1, .y = 0 },
+        .{ .x = 1, .y = 1 },
+        .{ .x = 0, .y = 1 },
+    };
+    var indices = [_]u32{ 0, 1, 3, 1, 2, 3 };
+    const constraints = [_]R.Edge{.{ 0, 2 }};
+
+    const stats = try R.refine(std.testing.allocator, &pts, &indices, &constraints, 0);
+    try std.testing.expectEqual(@as(usize, 0), stats.missing_constraints);
+    try std.testing.expectEqual(@as(usize, 1), stats.constraint_flips);
+
+    var has_constraint = false;
+    var t: usize = 0;
+    while (t < indices.len) : (t += 3) {
+        const tri = indices[t .. t + 3];
+        for (0..3) |slot| {
+            const a = tri[(slot + 1) % 3];
+            const b = tri[(slot + 2) % 3];
+            if ((a == 0 and b == 2) or (a == 2 and b == 0)) has_constraint = true;
+        }
+    }
+    try std.testing.expect(has_constraint);
 }
