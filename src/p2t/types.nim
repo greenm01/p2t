@@ -1,8 +1,10 @@
 type
-  CdtPointId* = int
-  CdtEdgeId* = int
-  CdtTriangleId* = int
-  CdtNodeId* = int
+  # 32-bit ids keep CdtTriangle/CdtNode compact (better cache behavior during
+  # the sweep). 2^31 points/triangles is far beyond any realistic input.
+  CdtPointId* = int32
+  CdtEdgeId* = int32
+  CdtTriangleId* = int32
+  CdtNodeId* = int32
 
   CdtPoint* = object
     x*, y*: float64

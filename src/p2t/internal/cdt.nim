@@ -14,7 +14,7 @@ import std/math
 import ../types
 
 const
-  CdtNil = -1
+  CdtNil = -1'i32
   Epsilon = 1e-12
   Pi3Div4 = 3.0 * PI / 4.0
   Alpha = 0.3
@@ -34,7 +34,7 @@ type
     vertices*: seq[Vec2]
     triangles*: seq[array[3, int]]
 
-proc isNil(id: int): bool {.inline.} =
+proc isNil(id: int32): bool {.inline.} =
   id == CdtNil
 
 proc resetCdt(ws: var CdtWorkspace) =
@@ -67,7 +67,7 @@ proc node(ws: var CdtWorkspace, id: CdtNodeId): var CdtNode {.inline.} =
   ws.nodes[id]
 
 proc newPoint(ws: var CdtWorkspace, x, y: float64, sourceIndex = -1): CdtPointId =
-  result = ws.points.len
+  result = ws.points.len.CdtPointId
   ws.points.add CdtPoint(x: x, y: y, sourceIndex: sourceIndex)
   ws.pointEdges.add @[]
 
@@ -102,7 +102,7 @@ proc inScanArea(ws: var CdtWorkspace, pa, pb, pc, pd: CdtPointId): bool =
   true
 
 proc newEdge(ws: var CdtWorkspace, p1, p2: CdtPointId): CdtEdgeId =
-  result = ws.edges.len
+  result = ws.edges.len.CdtEdgeId
   var p = p1
   var q = p2
   let
@@ -121,7 +121,7 @@ proc newEdge(ws: var CdtWorkspace, p1, p2: CdtPointId): CdtEdgeId =
   ws.pointEdges[q].add result
 
 proc newTriangle(ws: var CdtWorkspace, a, b, c: CdtPointId): CdtTriangleId =
-  result = ws.triangles.len
+  result = ws.triangles.len.CdtTriangleId
   ws.triangles.add CdtTriangle(
     points: [a, b, c],
     neighbors: [CdtNil, CdtNil, CdtNil],
@@ -371,7 +371,7 @@ proc markConstrainedEdge(ws: var CdtWorkspace, t: CdtTriangleId, p, q: CdtPointI
 proc newNode(
     ws: var CdtWorkspace, p: CdtPointId, t: CdtTriangleId = CdtNil
 ): CdtNodeId =
-  result = ws.nodes.len
+  result = ws.nodes.len.CdtNodeId
   ws.nodes.add CdtNode(
     point: p, triangle: t, next: CdtNil, prev: CdtNil, value: ws.point(p).x
   )
@@ -1126,12 +1126,33 @@ proc buildPoints(
     vertices.add p
     result.add ws.newPoint(p.x, p.y, vertices.high)
 
+proc ensureCapacity[T](s: var seq[T], n: int) =
+  ## Grow s's capacity to at least n without changing its (zero) length.
+  ## On a reused workspace whose buffer is already large enough this is a
+  ## no-op; otherwise it preallocates so the sweep does not reallocate.
+  if s.len < n:
+    s.setLen(n)
+    s.setLen(0)
+
 proc triangulateCdt*(workspace: var TessWorkspace, input: CdtInput): CdtResult =
   if input.outer.len < 3:
     raise newException(ValueError, "outer contour has fewer than 3 points")
 
   workspace.cdt.resetCdt()
   workspace.vertices.setLen(0)
+
+  # Sizes are known up front: the triangulation of P points yields ~2P
+  # triangles and ~P advancing-front nodes (Žalik 2005). Preallocating avoids
+  # incremental reallocation during the sweep.
+  var pointCount = input.outer.len + input.steiner.len
+  for hole in input.holes:
+    pointCount += hole.len
+  workspace.cdt.points.ensureCapacity(pointCount + 2)
+  workspace.cdt.pointEdges.ensureCapacity(pointCount + 2)
+  workspace.cdt.edges.ensureCapacity(pointCount)
+  workspace.cdt.nodes.ensureCapacity(pointCount + 4)
+  workspace.cdt.triangles.ensureCapacity(2 * pointCount + 4)
+  workspace.vertices.ensureCapacity(pointCount)
 
   let outer = workspace.cdt.buildPoints(input.outer, workspace.vertices)
   workspace.cdt.activePoints = outer
