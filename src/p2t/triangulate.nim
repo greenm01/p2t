@@ -105,3 +105,93 @@ proc tessellate*(
 proc tessellate*(input: TessInput, options = defaultTessOptions()): TessResult =
   var workspace: TessWorkspace
   workspace.tessellate(input, options)
+
+# A single triangulation is inherently serial (the advancing front is one chain
+# of data dependencies), but distinct inputs are independent. tessellateBatch
+# triangulates many inputs in parallel, one reused TessWorkspace per thread, so
+# throughput scales with cores - the practical way to outrun a single-threaded
+# tessellator on batch workloads (e.g. many glyphs/paths in a renderer).
+
+proc tessellateBatchSerial(
+    inputs: openArray[TessInput], options: TessOptions
+): seq[TessResult] =
+  result = newSeq[TessResult](inputs.len)
+  var workspace: TessWorkspace
+  for i in 0 ..< inputs.len:
+    result[i] = workspace.tessellate(inputs[i], options)
+
+when compileOption("threads"):
+  import std/cpuinfo
+
+  type BatchChunk = object
+    inputs: ptr UncheckedArray[TessInput]
+    results: ptr UncheckedArray[TessResult]
+    options: TessOptions
+    lo, hi: int
+
+  proc batchWorker(chunk: BatchChunk) {.thread.} =
+    # Each thread owns its workspace so allocations are reused across its chunk
+    # without cross-thread contention. Inputs are read-only; result slots are
+    # disjoint, so no synchronization is needed. tessellate touches no global
+    # state (only its params and the local workspace), so asserting gcsafe here
+    # is sound - the compiler is just conservative about the unannotated chain.
+    var workspace: TessWorkspace
+    for i in chunk.lo ..< chunk.hi:
+      {.gcsafe.}:
+        chunk.results[i] = workspace.tessellate(chunk.inputs[i], chunk.options)
+
+  proc tessellateBatch*(
+      inputs: openArray[TessInput], options = defaultTessOptions(), threads = 0
+  ): seq[TessResult] =
+    ## Triangulate `inputs` in parallel. `threads = 0` uses all detected cores.
+    ## Results are returned in input order. Each input is independent.
+    ##
+    ## Worker threads allocate the result buffers that the caller then owns, so
+    ## compile multi-threaded callers with `-d:useMalloc` (a global thread-safe
+    ## allocator). Without it, Nim's per-thread heap regions make this
+    ## cross-thread ownership transfer unsafe.
+    let n = inputs.len
+    if n == 0:
+      return @[]
+
+    var nThreads =
+      if threads > 0:
+        threads
+      else:
+        countProcessors()
+    nThreads = max(1, min(nThreads, n))
+    if nThreads == 1:
+      return tessellateBatchSerial(inputs, options)
+
+    result = newSeq[TessResult](n)
+    let
+      inPtr = cast[ptr UncheckedArray[TessInput]](unsafeAddr inputs[0])
+      outPtr = cast[ptr UncheckedArray[TessResult]](addr result[0])
+      chunk = (n + nThreads - 1) div nThreads
+    var workers = newSeq[Thread[BatchChunk]](nThreads)
+    for t in 0 ..< nThreads:
+      let lo = t * chunk
+      if lo >= n:
+        workers.setLen(t)
+        break
+      createThread(
+        workers[t],
+        batchWorker,
+        BatchChunk(
+          inputs: inPtr,
+          results: outPtr,
+          options: options,
+          lo: lo,
+          hi: min(lo + chunk, n),
+        ),
+      )
+    for t in 0 ..< workers.len:
+      joinThread(workers[t])
+
+else:
+  proc tessellateBatch*(
+      inputs: openArray[TessInput], options = defaultTessOptions(), threads = 0
+  ): seq[TessResult] =
+    ## Serial fallback when compiled without `--threads:on`.
+    discard threads
+    tessellateBatchSerial(inputs, options)

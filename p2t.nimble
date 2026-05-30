@@ -135,5 +135,15 @@ task benchVariants, "run p2t benchmark with ORC and ARC release variants":
   sh "strip " & quoteShell("/tmp/p2t_bench_arc")
   runTimed("/tmp/p2t_bench_arc")
 
+task benchParallel, "benchmark tessellateBatch scaling across threads":
+  nimCompile(
+    "bench/bench_parallel",
+    flags = "--mm:orc --threads:on -d:useMalloc -d:release --opt:speed",
+    outPath = "/tmp/p2t_bench_parallel",
+    nimcache = "/tmp/p2t_bench_parallel_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_parallel")
+  sh quoteShell("/tmp/p2t_bench_parallel")
+
 task tidy, "format p2t sources":
-  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/quality_compare.nim"
+  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/quality_compare.nim bench/bench_parallel.nim"

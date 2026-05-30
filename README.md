@@ -20,8 +20,20 @@ nimble test
 nimble testLibtess2
 nimble bench
 nimble benchLibtess2
+nimble benchParallel
 nimble tidy
 ```
+
+## Parallelism
+
+A single triangulation is serial (the advancing front is one chain of data
+dependencies), but distinct inputs are independent. `tessellateBatch` triangulates
+many inputs across threads — one reused `TessWorkspace` per thread — which is the
+practical way to get high throughput from a renderer tessellating many shapes.
+
+Compile multi-threaded callers with `-d:useMalloc`: worker threads allocate the
+result buffers the caller then owns, and Nim's default per-thread heap regions
+make that cross-thread transfer unsafe. `nimble benchParallel` shows the scaling.
 
 `nimble testLibtess2` compares the `dude.dat` fixture against a local libtess2
 checkout. It auto-detects `~/src/libtess2` and `../libtess2`; otherwise set
