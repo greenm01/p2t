@@ -1,0 +1,146 @@
+//! Benchmark + quality report for the tessellator. Run with `zig build bench`
+//! (built in ReleaseFast). Inputs are generated procedurally so the benchmark
+//! is self-contained; sizes mirror the fixtures used elsewhere (a ~100-vertex
+//! glyph-like shape, a ~1000-vertex wiggly contour, and a holed rectangle).
+
+const std = @import("std");
+const linux = std.os.linux;
+const tess = @import("root.zig");
+
+fn nowNs() u64 {
+    var ts: linux.timespec = undefined;
+    _ = linux.clock_gettime(linux.CLOCK.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+}
+
+const T = tess.Tess; // f64 / u32
+const Vec = T.Vec;
+const Mesh = T.Mesh;
+
+fn ellipse(allocator: std.mem.Allocator, n: usize, rx: f64, ry: f64) ![]Vec {
+    const pts = try allocator.alloc(Vec, n);
+    for (0..n) |k| {
+        const a = 2.0 * std.math.pi * @as(f64, @floatFromInt(k)) / @as(f64, @floatFromInt(n));
+        pts[k] = .{ .x = rx * @cos(a), .y = ry * @sin(a) };
+    }
+    return pts;
+}
+
+fn gear(allocator: std.mem.Allocator, teeth: usize) ![]Vec {
+    const n = teeth * 2;
+    const pts = try allocator.alloc(Vec, n);
+    for (0..n) |k| {
+        const r: f64 = if (k % 2 == 0) 100.0 else 60.0;
+        const a = 2.0 * std.math.pi * @as(f64, @floatFromInt(k)) / @as(f64, @floatFromInt(n));
+        pts[k] = .{ .x = r * @cos(a), .y = r * @sin(a) };
+    }
+    return pts;
+}
+
+/// Wiggly closed contour (concave, nazca-like) with `n` vertices.
+fn wiggly(allocator: std.mem.Allocator, n: usize) ![]Vec {
+    const pts = try allocator.alloc(Vec, n);
+    for (0..n) |k| {
+        const a = 2.0 * std.math.pi * @as(f64, @floatFromInt(k)) / @as(f64, @floatFromInt(n));
+        const r = 100.0 + 30.0 * @sin(7.0 * a) + 15.0 * @sin(13.0 * a) + 8.0 * @sin(23.0 * a);
+        pts[k] = .{ .x = r * @cos(a), .y = r * @sin(a) };
+    }
+    return pts;
+}
+
+fn triMinAngleDeg(a: Vec, b: Vec, c: Vec) f64 {
+    const la = @sqrt((b.x - c.x) * (b.x - c.x) + (b.y - c.y) * (b.y - c.y));
+    const lb = @sqrt((a.x - c.x) * (a.x - c.x) + (a.y - c.y) * (a.y - c.y));
+    const lc = @sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
+    const angA = std.math.acos(std.math.clamp((lb * lb + lc * lc - la * la) / (2 * lb * lc), -1.0, 1.0));
+    const angB = std.math.acos(std.math.clamp((la * la + lc * lc - lb * lb) / (2 * la * lc), -1.0, 1.0));
+    const angC = std.math.pi - angA - angB;
+    return @min(angA, @min(angB, angC)) * 180.0 / std.math.pi;
+}
+
+const Quality = struct { minAngle: f64, meanMinAngle: f64, slivers: usize };
+
+fn quality(m: Mesh) Quality {
+    var mn: f64 = 180.0;
+    var sum: f64 = 0;
+    var slivers: usize = 0;
+    var t: usize = 0;
+    while (t < m.indices.len) : (t += 3) {
+        const ang = triMinAngleDeg(m.vertices[m.indices[t]], m.vertices[m.indices[t + 1]], m.vertices[m.indices[t + 2]]);
+        mn = @min(mn, ang);
+        sum += ang;
+        if (ang < 20.0) slivers += 1;
+    }
+    const cnt: f64 = @floatFromInt(m.triangleCount());
+    return .{ .minAngle = mn, .meanMinAngle = sum / cnt, .slivers = slivers };
+}
+
+fn benchOne(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    outer: []const Vec,
+    holes: []const []const Vec,
+    iters: usize,
+) !void {
+    const p = std.debug.print;
+
+    var refined = try T.triangulate(allocator, outer, holes);
+    defer refined.deinit();
+    const qref = quality(refined);
+    var raw = try T.triangulateRaw(allocator, outer, holes);
+    defer raw.deinit();
+    const qraw = quality(raw);
+
+    var bestRaw: u64 = std.math.maxInt(u64);
+    var bestRef: u64 = std.math.maxInt(u64);
+    for (0..iters) |_| {
+        const t0 = nowNs();
+        var m = try T.triangulateRaw(allocator, outer, holes);
+        const dt = nowNs() - t0;
+        m.deinit();
+        bestRaw = @min(bestRaw, dt);
+    }
+    for (0..iters) |_| {
+        const t0 = nowNs();
+        var m = try T.triangulate(allocator, outer, holes);
+        const dt = nowNs() - t0;
+        m.deinit();
+        bestRef = @min(bestRef, dt);
+    }
+
+    p("{s}: {d} verts -> {d} tris\n", .{ name, outer.len, refined.triangleCount() });
+    p("  ear-clip only : {d:>8.3} us   minAngle {d:6.3}  meanMin {d:6.3}  slivers<20 {d}\n", .{ @as(f64, @floatFromInt(bestRaw)) / 1000.0, qraw.minAngle, qraw.meanMinAngle, qraw.slivers });
+    p("  + delaunay    : {d:>8.3} us   minAngle {d:6.3}  meanMin {d:6.3}  slivers<20 {d}\n", .{ @as(f64, @floatFromInt(bestRef)) / 1000.0, qref.minAngle, qref.meanMinAngle, qref.slivers });
+}
+
+pub fn main() !void {
+    const allocator = std.heap.smp_allocator;
+
+    const el = try ellipse(allocator, 100, 200, 50);
+    defer allocator.free(el);
+    const gr = try gear(allocator, 32);
+    defer allocator.free(gr);
+    const wig = try wiggly(allocator, 1000);
+    defer allocator.free(wig);
+
+    // Holed rectangle: outer 0..200 square with four square holes.
+    const outer = [_]Vec{ .{ .x = 0, .y = 0 }, .{ .x = 200, .y = 0 }, .{ .x = 200, .y = 200 }, .{ .x = 0, .y = 200 } };
+    var holeStore: [4][4]Vec = undefined;
+    var holes: [4][]const Vec = undefined;
+    const centers = [_][2]f64{ .{ 50, 50 }, .{ 150, 50 }, .{ 50, 150 }, .{ 150, 150 } };
+    for (centers, 0..) |c, i| {
+        // clockwise hole
+        holeStore[i] = .{
+            .{ .x = c[0] - 20, .y = c[1] - 20 },
+            .{ .x = c[0] - 20, .y = c[1] + 20 },
+            .{ .x = c[0] + 20, .y = c[1] + 20 },
+            .{ .x = c[0] + 20, .y = c[1] - 20 },
+        };
+        holes[i] = &holeStore[i];
+    }
+
+    try benchOne(allocator, "ellipse (convex, sliver-prone)", el, &.{}, 20000);
+    try benchOne(allocator, "gear (concave, 64 teeth)", gr, &.{}, 20000);
+    try benchOne(allocator, "wiggly blob (nazca-like)", wig, &.{}, 2000);
+    try benchOne(allocator, "rect + 4 holes", &outer, &holes, 20000);
+}
