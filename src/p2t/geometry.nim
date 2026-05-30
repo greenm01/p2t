@@ -1,4 +1,4 @@
-import std/[math, strformat]
+import std/[algorithm, math, strformat]
 
 import ./types
 
@@ -132,30 +132,87 @@ proc cleanContour*(
     if dist2(result[i], result[(i + 1) mod result.len]) <= eps * eps:
       error = tessError(tekDegenerateEdge, contour.id, i, "zero-length contour edge")
       return @[]
-    for j in i + 1 ..< result.len:
-      if almostEqual(result[i], result[j], eps):
-        error =
-          tessError(tekDuplicatePoint, contour.id, j, &"point {j} duplicates point {i}")
+
+  # Detect duplicate vertices via sort-and-sweep on x (O(n log n)). Two points
+  # within eps of each other must be adjacent in x-order, so each point only
+  # needs to be compared against the following points whose x lies within eps.
+  var
+    xs = newSeq[float64](result.len)
+    order = newSeq[int](result.len)
+  for i in 0 ..< result.len:
+    xs[i] = result[i].x
+    order[i] = i
+  sort(
+    order,
+    proc(a, b: int): int =
+      cmp(xs[a], xs[b]),
+  )
+  for a in 0 ..< order.len:
+    let ia = order[a]
+    for b in a + 1 ..< order.len:
+      let ib = order[b]
+      if xs[ib] - xs[ia] > eps:
+        break
+      if almostEqual(result[ia], result[ib], eps):
+        let dup = max(ia, ib)
+        let orig = min(ia, ib)
+        error = tessError(
+          tekDuplicatePoint, contour.id, dup, &"point {dup} duplicates point {orig}"
+        )
         return @[]
 
 proc hasSelfIntersection*(
     points: openArray[Vec2], contourId: int, eps: float64, error: var TessError
 ): bool =
-  if points.len < 4:
+  let n = points.len
+  if n < 4:
     return false
-  for i in 0 ..< points.len:
+
+  # Sort-and-sweep broadphase: order edges by their minimum x coordinate and
+  # only test pairs whose x-intervals overlap. This replaces the naive O(n^2)
+  # edge-pair scan with roughly O(n log n) work for non-pathological contours,
+  # while testing exactly the same set of intersecting pairs.
+  var
+    minXs = newSeq[float64](n)
+    maxXs = newSeq[float64](n)
+    order = newSeq[int](n)
+  for i in 0 ..< n:
+    let iNext = (i + 1) mod n
+    minXs[i] = min(points[i].x, points[iNext].x)
+    maxXs[i] = max(points[i].x, points[iNext].x)
+    order[i] = i
+  sort(
+    order,
+    proc(a, b: int): int =
+      cmp(minXs[a], minXs[b]),
+  )
+
+  var active: seq[int]
+  for k in 0 ..< n:
     let
-      iNext = (i + 1) mod points.len
+      i = order[k]
+      iNext = (i + 1) mod n
       a = points[i]
       b = points[iNext]
-    for j in i + 1 ..< points.len:
-      let jNext = (j + 1) mod points.len
-      if i == j or iNext == j or jNext == i:
-        continue
-      if i == 0 and jNext == 0:
-        continue
+      iMinX = minXs[i]
+    var w = 0
+    for s in 0 ..< active.len:
+      let j = active[s]
+      if maxXs[j] < iMinX - eps:
+        continue # edge j cannot overlap edge i or any later edge in x
+      active[w] = j
+      inc w
+      let jNext = (j + 1) mod n
+      if i == jNext or iNext == j:
+        continue # adjacent edges share a vertex
       if segmentsIntersect(a, b, points[j], points[jNext], eps):
-        error =
-          tessError(tekSelfIntersection, contourId, i, &"edge {i} intersects edge {j}")
+        error = tessError(
+          tekSelfIntersection,
+          contourId,
+          min(i, j),
+          &"edge {min(i, j)} intersects edge {max(i, j)}",
+        )
         return true
+    active.setLen(w)
+    active.add i
   false

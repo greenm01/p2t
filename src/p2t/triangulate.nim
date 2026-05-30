@@ -75,7 +75,7 @@ proc tessellate*(
     hole.ensureOrientation(ccw = false)
     holes.add hole
 
-  if not validateContours(outer, holes, options.epsilon, error):
+  if options.validate and not validateContours(outer, holes, options.epsilon, error):
     return failure(error)
 
   var boundaryEdges: seq[Edge] = @[]

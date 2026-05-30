@@ -6,12 +6,14 @@ type
 
   CdtPoint* = object
     x*, y*: float64
-    edgeList*: seq[CdtEdgeId]
     sourceIndex*: int
 
   CdtEdge* = object
     p*, q*: CdtPointId
 
+  # Triangle-based data structures are known to perform better than quad-edge
+  # structures. See: J. Shewchuk, "Triangle: Engineering a 2D Quality Mesh
+  # Generator and Delaunay Triangulator".
   CdtTriangle* = object
     points*: array[3, CdtPointId]
     neighbors*: array[3, CdtTriangleId]
@@ -39,12 +41,12 @@ type
 
   CdtWorkspace* = object
     points*: seq[CdtPoint]
+    pointEdges*: seq[seq[CdtEdgeId]]
     edges*: seq[CdtEdge]
     triangles*: seq[CdtTriangle]
     nodes*: seq[CdtNode]
     activePoints*: seq[CdtPointId]
     interiorTriangles*: seq[CdtTriangleId]
-    triangleMap*: seq[CdtTriangleId]
     front*: CdtFront
     head*, tail*: CdtPointId
     afHead*, afMiddle*, afTail*: CdtNodeId
@@ -67,6 +69,7 @@ type
     epsilon*: float64
     cleanInput*: bool
     keepBoundaryEdges*: bool
+    validate*: bool
 
   TessErrorKind* = enum
     tekNone
@@ -99,7 +102,7 @@ type
     cdt*: CdtWorkspace
 
 proc defaultTessOptions*(): TessOptions =
-  TessOptions(epsilon: 1e-9, cleanInput: true, keepBoundaryEdges: false)
+  TessOptions(epsilon: 1e-9, cleanInput: true, keepBoundaryEdges: false, validate: true)
 
 proc tessError*(
     kind: TessErrorKind, contourId = -1, pointIndex = -1, message = ""

@@ -1,3 +1,14 @@
+## Sweep-line constrained Delaunay triangulation (CDT).
+##
+## Nim port of the Poly2Tri advancing-front sweep-line algorithm.
+##
+## References:
+## - Domiter, V. and Žalik, B. (2008) "Sweep-line algorithm for constrained
+##   Delaunay triangulation", International Journal of Geographical Information
+##   Science, 22(4), pp. 449-462.
+## - The "FlipScan" constrained-edge algorithm was invented by Thomas Åhlén
+##   (thahlen@gmail.com) for Poly2Tri.
+
 import std/math
 
 import ../types
@@ -6,7 +17,6 @@ const
   CdtNil = -1
   Epsilon = 1e-12
   Pi3Div4 = 3.0 * PI / 4.0
-  PiDiv2 = PI / 2.0
   Alpha = 0.3
 
 type
@@ -29,12 +39,12 @@ proc isNil(id: int): bool {.inline.} =
 
 proc resetCdt(ws: var CdtWorkspace) =
   ws.points.setLen(0)
+  ws.pointEdges.setLen(0)
   ws.edges.setLen(0)
   ws.triangles.setLen(0)
   ws.nodes.setLen(0)
   ws.activePoints.setLen(0)
   ws.interiorTriangles.setLen(0)
-  ws.triangleMap.setLen(0)
   ws.front = CdtFront(head: CdtNil, tail: CdtNil, searchNode: CdtNil)
   ws.head = CdtNil
   ws.tail = CdtNil
@@ -59,6 +69,7 @@ proc node(ws: var CdtWorkspace, id: CdtNodeId): var CdtNode {.inline.} =
 proc newPoint(ws: var CdtWorkspace, x, y: float64, sourceIndex = -1): CdtPointId =
   result = ws.points.len
   ws.points.add CdtPoint(x: x, y: y, sourceIndex: sourceIndex)
+  ws.pointEdges.add @[]
 
 proc orient2d(ws: var CdtWorkspace, pa, pb, pc: CdtPointId): Orientation =
   let
@@ -107,7 +118,7 @@ proc newEdge(ws: var CdtWorkspace, p1, p2: CdtPointId): CdtEdgeId =
     elif a.x == b.x:
       raise newException(ValueError, "repeat points in constrained edge")
   ws.edges.add CdtEdge(p: p, q: q)
-  ws.point(q).edgeList.add result
+  ws.pointEdges[q].add result
 
 proc newTriangle(ws: var CdtWorkspace, a, b, c: CdtPointId): CdtTriangleId =
   result = ws.triangles.len
@@ -420,7 +431,6 @@ proc initEdges(ws: var CdtWorkspace, polyline: seq[CdtPointId]) =
         i + 1
       else:
         0
-    ws.edges.add CdtEdge()
     discard ws.newEdge(polyline[i], polyline[j])
 
 proc addHole(ws: var CdtWorkspace, polyline: seq[CdtPointId]) =
@@ -488,12 +498,8 @@ proc initTriangulation(ws: var CdtWorkspace) =
   ws.tail = ws.newPoint(xmin - dx, ymin - dy)
   ws.sortActivePoints()
 
-proc addToMap(ws: var CdtWorkspace, t: CdtTriangleId) =
-  ws.triangleMap.add t
-
 proc createAdvancingFront(ws: var CdtWorkspace) =
   let t = ws.newTriangle(ws.activePoints[0], ws.tail, ws.head)
-  ws.triangleMap.add t
 
   ws.afHead = ws.newNode(ws.tri(t).points[1], t)
   ws.afMiddle = ws.newNode(ws.tri(t).points[0], t)
@@ -647,7 +653,6 @@ proc fill(ws: var CdtWorkspace, n: CdtNodeId) =
   )
   ws.markNeighbor(t, ws.node(ws.node(n).prev).triangle)
   ws.markNeighbor(t, ws.node(n).triangle)
-  ws.addToMap(t)
 
   let prev = ws.node(n).prev
   let next = ws.node(n).next
@@ -657,7 +662,14 @@ proc fill(ws: var CdtWorkspace, n: CdtNodeId) =
   if not ws.legalize(t):
     ws.mapTriangleToNodes(t)
 
-proc angle(ws: var CdtWorkspace, origin, pa, pb: CdtPointId): float64 =
+proc angleParts(
+    ws: var CdtWorkspace, origin, pa, pb: CdtPointId
+): tuple[cross, dot: float64] =
+  ## Returns the cross and dot products that define the angle
+  ## a = arctan2(cross, dot) between vectors origin->pa and origin->pb.
+  ## The angle predicates below only need the signs of these, so the
+  ## (expensive) arctan2 is never evaluated: arctan2(x, y) < 0 iff x < 0,
+  ## and |arctan2(x, y)| > pi/2 iff y < 0.
   let
     o = ws.point(origin)
     a = ws.point(pa)
@@ -666,22 +678,19 @@ proc angle(ws: var CdtWorkspace, origin, pa, pb: CdtPointId): float64 =
     ay = a.y - o.y
     bx = b.x - o.x
     by = b.y - o.y
-    x = ax * by - ay * bx
-    y = ax * bx + ay * by
-  arctan2(x, y)
+  (ax * by - ay * bx, ax * bx + ay * by)
 
 proc angleExceeds90Degrees(ws: var CdtWorkspace, origin, pa, pb: CdtPointId): bool =
-  let a = ws.angle(origin, pa, pb)
-  a > PiDiv2 or a < -PiDiv2
+  ws.angleParts(origin, pa, pb).dot < 0
 
 proc angleIsNegative(ws: var CdtWorkspace, origin, pa, pb: CdtPointId): bool =
-  ws.angle(origin, pa, pb) < 0
+  ws.angleParts(origin, pa, pb).cross < 0
 
 proc angleExceedsPlus90DegreesOrIsNegative(
     ws: var CdtWorkspace, origin, pa, pb: CdtPointId
 ): bool =
-  let a = ws.angle(origin, pa, pb)
-  a > PiDiv2 or a < 0
+  let (cross, dot) = ws.angleParts(origin, pa, pb)
+  cross < 0 or dot < 0
 
 proc largeHoleDontFill(ws: var CdtWorkspace, n: CdtNodeId): bool =
   let
@@ -832,7 +841,6 @@ proc isEdgeSideOfTriangle(
 proc newFrontTriangle(ws: var CdtWorkspace, p: CdtPointId, n: CdtNodeId): CdtNodeId =
   let t = ws.newTriangle(p, ws.node(n).point, ws.node(ws.node(n).next).point)
   ws.markNeighbor(t, ws.node(n).triangle)
-  ws.addToMap(t)
 
   result = ws.newNode(p)
   let next = ws.node(n).next
@@ -1092,7 +1100,7 @@ proc sweepPoints(ws: var CdtWorkspace) =
   for i in 1 ..< ws.activePoints.len:
     let p = ws.activePoints[i]
     let n = ws.pointEvent(p)
-    let edges = ws.point(p).edgeList
+    let edges = ws.pointEdges[p]
     for edgeId in edges:
       ws.edgeEvent(edgeId, n)
 

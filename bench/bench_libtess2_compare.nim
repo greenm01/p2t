@@ -137,20 +137,20 @@ proc benchP2tWorkspace(input: TessInput, iterations: int) =
     "p2t workspace", iterations, triangles, inMicroseconds(getMonoTime() - start), area
   )
 
-proc benchP2tOneShot(input: TessInput, iterations: int) =
+proc benchP2tOneShot(
+    name: string, input: TessInput, iterations: int, options: TessOptions
+) =
   var triangles = 0
   var area = 0.0
   let start = getMonoTime()
   for i in 0 ..< iterations:
-    let result = tessellate(input)
+    let result = tessellate(input, options)
     if not result.ok:
       raise newException(ValueError, result.error.message)
     triangles += result.triangles.len
     if i == 0:
       area = tessArea(result)
-  printBench(
-    "p2t one-shot", iterations, triangles, inMicroseconds(getMonoTime() - start), area
-  )
+  printBench(name, iterations, triangles, inMicroseconds(getMonoTime() - start), area)
 
 proc benchLibtess2(input: TessInput, iterations: int) =
   var buffers: seq[seq[TESSreal]]
@@ -191,7 +191,11 @@ let
   input = dudeInput()
   iterations = 1000
 
+var noValidate = defaultTessOptions()
+noValidate.validate = false
+
 echo "dude.dat with two holes"
 benchP2tWorkspace(input, iterations)
-benchP2tOneShot(input, iterations)
+benchP2tOneShot("p2t one-shot (full)", input, iterations, defaultTessOptions())
+benchP2tOneShot("p2t one-shot (no validate)", input, iterations, noValidate)
 benchLibtess2(input, iterations)
