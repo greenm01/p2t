@@ -9,6 +9,11 @@
 
 const tri = @import("triangulate.zig");
 
-pub const Vec2 = tri.Vec2;
-pub const Mesh = tri.Mesh;
-pub const triangulateSimple = tri.triangulateSimple;
+/// Generic over coordinate type (f32/f64) and index type (u16/u32).
+pub const Tessellator = tri.Tessellator;
+
+/// Compact f32 / u32 vertices+indices, ideal for GPU upload.
+pub const GpuTess = tri.GpuTess;
+
+/// Double-precision f64 / u32.
+pub const Tess = tri.Tess;
