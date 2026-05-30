@@ -385,9 +385,128 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
             return outerNode;
         }
 
+        // ---- constrained Delaunay flip (GPU quality) ----
+
+        inline fn cw(v: Coord) W {
+            return @floatCast(v);
+        }
+
+        /// > 0 iff d is strictly inside the circumcircle of CCW triangle a,b,c.
+        fn inCircle(verts: []const Vec, a: u32, b: u32, c: u32, d: u32) W {
+            const adx = cw(verts[a].x) - cw(verts[d].x);
+            const ady = cw(verts[a].y) - cw(verts[d].y);
+            const bdx = cw(verts[b].x) - cw(verts[d].x);
+            const bdy = cw(verts[b].y) - cw(verts[d].y);
+            const cdx = cw(verts[c].x) - cw(verts[d].x);
+            const cdy = cw(verts[c].y) - cw(verts[d].y);
+            const ad = adx * adx + ady * ady;
+            const bd = bdx * bdx + bdy * bdy;
+            const cd = cdx * cdx + cdy * cdy;
+            return adx * (bdy * cd - bd * cdy) -
+                ady * (bdx * cd - bd * cdx) +
+                ad * (bdx * cdy - bdy * cdx);
+        }
+
+        inline fn edgeKey(a: u32, b: u32) u64 {
+            const lo: u64 = @min(a, b);
+            const hi: u64 = @max(a, b);
+            return (hi << 32) | lo;
+        }
+
+        /// Lawson edge flips that respect the contour edges (constraints), so
+        /// the result is a constrained Delaunay triangulation: maximal minimum
+        /// angle subject to keeping every boundary edge. Operates in place on
+        /// `tv` (triangle vertices); `tn` is the triangle-adjacency it maintains.
+        fn refineDelaunay(
+            self: *Self,
+            verts: []const Vec,
+            tv: [][3]u32,
+            tn: [][3]u32,
+            constraints: *const std.AutoHashMap(u64, void),
+        ) !void {
+            const ntri = tv.len;
+            // Edges are addressed as a half-edge id = tri*3 + slot.
+            var stack: std.ArrayList(u32) = .empty;
+            defer stack.deinit(self.a);
+            for (0..ntri) |t| {
+                for (0..3) |e| try stack.append(self.a, @intCast(t * 3 + e));
+            }
+
+            var budget: usize = 64 * ntri + 64; // safety cap against cycling
+            while (stack.pop()) |he| {
+                if (budget == 0) break;
+                budget -= 1;
+                const t = he / 3;
+                const e = he % 3;
+                const ot = tn[t][e];
+                if (ot == nil) continue;
+
+                const s1 = tv[t][(e + 1) % 3];
+                const s2 = tv[t][(e + 2) % 3];
+                if (constraints.contains(edgeKey(s1, s2))) continue;
+
+                const apexT = tv[t][e];
+                // locate the shared edge from ot's side
+                var f: usize = 0;
+                while (f < 3 and tn[ot][f] != t) : (f += 1) {}
+                if (f == 3) continue;
+                const apexOt = tv[ot][f];
+
+                if (inCircle(verts, apexT, s1, s2, apexOt) <= 0) continue; // already legal
+
+                // Flip diagonal (s1,s2) -> (apexT,apexOt). Quad A,B,C,D (CCW)
+                // with A=s2, B=apexT, C=s1, D=apexOt.
+                const nAB = tn[t][(e + 1) % 3];
+                const nBC = tn[t][(e + 2) % 3];
+                const nCD = tn[ot][(f + 1) % 3];
+                const nDA = tn[ot][(f + 2) % 3];
+
+                tv[t] = .{ s2, apexT, apexOt };
+                tn[t] = .{ ot, nDA, nAB };
+                tv[ot] = .{ apexT, s1, apexOt };
+                tn[ot] = .{ nCD, @intCast(t), nBC };
+
+                // Re-point the two neighbors whose owning triangle changed.
+                if (nBC != nil) {
+                    for (0..3) |k| if (tn[nBC][k] == t) {
+                        tn[nBC][k] = ot;
+                    };
+                }
+                if (nDA != nil) {
+                    for (0..3) |k| if (tn[nDA][k] == ot) {
+                        tn[nDA][k] = @intCast(t);
+                    };
+                }
+
+                // Re-examine the four outer edges of the flipped quad.
+                try stack.append(self.a, @intCast(t * 3 + 1)); // DA side of new t
+                try stack.append(self.a, @intCast(t * 3 + 2)); // AB side of new t
+                try stack.append(self.a, @intCast(ot * 3 + 0)); // CD side of new ot
+                try stack.append(self.a, @intCast(ot * 3 + 2)); // BC side of new ot
+            }
+        }
+
+        fn addContourConstraints(
+            set: *std.AutoHashMap(u64, void),
+            base: u32,
+            len: u32,
+        ) !void {
+            if (len < 2) return;
+            for (0..len) |i| {
+                const a = base + @as(u32, @intCast(i));
+                const b = base + @as(u32, @intCast((i + 1) % len));
+                try set.put(edgeKey(a, b), {});
+            }
+        }
+
         // ---- public entry points ----
 
-        fn buildMesh(self: *Self, outer: []const Vec, holes: []const []const Vec) !Mesh {
+        fn buildMesh(
+            self: *Self,
+            outer: []const Vec,
+            holes: []const []const Vec,
+            delaunay: bool,
+        ) !Mesh {
             var total: usize = outer.len;
             for (holes) |h| total += h.len;
 
@@ -408,6 +527,10 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
                 try self.earcutLinked(ring);
             }
 
+            if (delaunay and self.out.items.len >= 6) {
+                try self.flipToDelaunay(verts, outer, holes);
+            }
+
             return .{
                 .vertices = verts,
                 .indices = try self.out.toOwnedSlice(self.a),
@@ -415,9 +538,69 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
             };
         }
 
-        /// Triangulate an outer contour with holes into a GPU-ready mesh.
-        /// `outer` should be counter-clockwise and each hole clockwise; winding
-        /// is normalized internally regardless.
+        /// Build adjacency over the current triangle list, mark contour edges as
+        /// constraints, run the flips, and write the result back into self.out.
+        fn flipToDelaunay(
+            self: *Self,
+            verts: []const Vec,
+            outer: []const Vec,
+            holes: []const []const Vec,
+        ) !void {
+            const ntri = self.out.items.len / 3;
+            const tv = try self.a.alloc([3]u32, ntri);
+            defer self.a.free(tv);
+            const tn = try self.a.alloc([3]u32, ntri);
+            defer self.a.free(tn);
+            for (0..ntri) |t| {
+                tv[t] = .{
+                    @intCast(self.out.items[t * 3]),
+                    @intCast(self.out.items[t * 3 + 1]),
+                    @intCast(self.out.items[t * 3 + 2]),
+                };
+                tn[t] = .{ nil, nil, nil };
+            }
+
+            // Triangle adjacency via shared undirected edges.
+            var edges = std.AutoHashMap(u64, u32).init(self.a); // edge -> half-edge id
+            defer edges.deinit();
+            for (0..ntri) |t| {
+                for (0..3) |e| {
+                    const a = tv[t][(e + 1) % 3];
+                    const b = tv[t][(e + 2) % 3];
+                    const key = edgeKey(a, b);
+                    if (edges.fetchRemove(key)) |kv| {
+                        const ot = kv.value / 3;
+                        const oe = kv.value % 3;
+                        tn[t][e] = ot;
+                        tn[ot][oe] = @intCast(t);
+                    } else {
+                        try edges.put(key, @intCast(t * 3 + e));
+                    }
+                }
+            }
+
+            var constraints = std.AutoHashMap(u64, void).init(self.a);
+            defer constraints.deinit();
+            try addContourConstraints(&constraints, 0, @intCast(outer.len));
+            var base: u32 = @intCast(outer.len);
+            for (holes) |h| {
+                try addContourConstraints(&constraints, base, @intCast(h.len));
+                base += @intCast(h.len);
+            }
+
+            try self.refineDelaunay(verts, tv, tn, &constraints);
+
+            for (0..ntri) |t| {
+                self.out.items[t * 3] = @intCast(tv[t][0]);
+                self.out.items[t * 3 + 1] = @intCast(tv[t][1]);
+                self.out.items[t * 3 + 2] = @intCast(tv[t][2]);
+            }
+        }
+
+        /// Triangulate an outer contour with holes into a GPU-ready mesh with
+        /// constrained-Delaunay quality (good aspect ratios for the GPU).
+        /// `outer` should be counter-clockwise and holes clockwise; winding is
+        /// normalized internally regardless.
         pub fn triangulate(
             allocator: std.mem.Allocator,
             outer: []const Vec,
@@ -426,7 +609,20 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
             var self = Self{ .nodes = .empty, .out = .empty, .a = allocator };
             defer self.nodes.deinit(allocator);
             errdefer self.out.deinit(allocator);
-            return self.buildMesh(outer, holes);
+            return self.buildMesh(outer, holes, true);
+        }
+
+        /// Like triangulate but skips the Delaunay flip pass (raw ear-clip
+        /// output - faster, slivery; useful for benchmarking the flip cost).
+        pub fn triangulateRaw(
+            allocator: std.mem.Allocator,
+            outer: []const Vec,
+            holes: []const []const Vec,
+        ) !Mesh {
+            var self = Self{ .nodes = .empty, .out = .empty, .a = allocator };
+            defer self.nodes.deinit(allocator);
+            errdefer self.out.deinit(allocator);
+            return self.buildMesh(outer, holes, false);
         }
 
         /// Triangulate a single simple polygon (no holes).
