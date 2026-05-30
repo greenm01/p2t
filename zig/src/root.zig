@@ -9,6 +9,7 @@
 
 const tri = @import("triangulate.zig");
 const fill = @import("fill_tess.zig");
+const fist = @import("fist_earcut.zig");
 
 /// Generic over coordinate type (f32/f64) and index type (u16/u32).
 pub const Tessellator = tri.Tessellator;
@@ -27,3 +28,9 @@ pub const GpuFillTess = fill.GpuFillTess;
 
 /// Default fill tessellator workspace.
 pub const FillTess = fill.FillTess;
+
+/// Experimental FIST/Mapbox-Earcut style raw seed triangulator.
+pub const FistEarcut = fist.FistEarcut;
+
+/// Compact f32 / u32 experimental FIST/Earcut seed.
+pub const GpuFistEarcut = fist.FistEarcut(GpuFillTess.Vec, u32);

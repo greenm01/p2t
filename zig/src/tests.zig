@@ -21,7 +21,7 @@ fn polygonArea(points: []const Vec) f64 {
     return @abs(sum) * 0.5;
 }
 
-fn meshArea(m: Mesh) f64 {
+fn meshArea(m: anytype) f64 {
     var sum: f64 = 0;
     var t: usize = 0;
     while (t < m.indices.len) : (t += 3) {
@@ -33,7 +33,7 @@ fn meshArea(m: Mesh) f64 {
     return sum;
 }
 
-fn expectValidCover(area: f64, m: Mesh) !void {
+fn expectValidCover(area: f64, m: anytype) !void {
     var t: usize = 0;
     while (t < m.indices.len) : (t += 3) {
         for (0..3) |k| try std.testing.expect(m.indices[t + k] < m.vertices.len);
@@ -117,6 +117,45 @@ test "square with square hole" {
     try expectValidCover(84.0, m);
     // Outer(4) + hole(4) = 8 boundary vertices -> 8 triangles for an annulus.
     try std.testing.expectEqual(@as(usize, 8), m.triangleCount());
+}
+
+test "fist earcut raw covers polygon with hole" {
+    const E = tess.FistEarcut(Vec, u32);
+    const outer = [_]Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 10, .y = 0 },
+        .{ .x = 10, .y = 10 },
+        .{ .x = 0, .y = 10 },
+    };
+    const hole = [_]Vec{
+        .{ .x = 3, .y = 3 },
+        .{ .x = 3, .y = 7 },
+        .{ .x = 7, .y = 7 },
+        .{ .x = 7, .y = 3 },
+    };
+
+    var m = try E.triangulateRaw(std.testing.allocator, &outer, &.{&hole});
+    defer m.deinit();
+
+    try expectValidCover(84.0, m);
+    try std.testing.expectEqual(@as(usize, 8), m.triangleCount());
+}
+
+test "fist earcut z-order path covers large concave contour" {
+    const E = tess.FistEarcut(Vec, u32);
+    const n = 128;
+    var pts: [n]Vec = undefined;
+    for (0..n) |k| {
+        const a = 2.0 * std.math.pi * @as(f64, @floatFromInt(k)) / @as(f64, n);
+        const r = 100.0 + 25.0 * @sin(5.0 * a) + 10.0 * @sin(17.0 * a);
+        pts[k] = .{ .x = r * @cos(a), .y = r * @sin(a) };
+    }
+
+    var m = try E.triangulateRaw(std.testing.allocator, &pts, &.{});
+    defer m.deinit();
+
+    try expectValidCover(polygonArea(&pts), m);
+    try std.testing.expectEqual(@as(usize, n - 2), m.triangleCount());
 }
 
 fn triMinAngleDeg(a: Vec, b: Vec, c: Vec) f64 {

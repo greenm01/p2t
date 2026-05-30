@@ -66,6 +66,24 @@
 
   Not recommended for the default immediate-mode fill path.
 
+  ### Held / Mapbox / GeoRust Earcut: FIST-style Ear Clipping
+
+  Useful as a raw triangulation seed and benchmark control, not as the final quality path.
+
+  Key takeaways:
+
+  - FIST-style ear clipping with z-order/geometric hashing is extremely fast on large simple contours.
+  - The GeoRust `earcut` port tracks Mapbox Earcut 3.0.2 and is a better reference than the older Zig 0.12 port.
+  - Raw ear clipping still creates slivers and can drop collinear/degenerate boundary constraints that the balanced refiner wants to preserve.
+  - On current fixtures, the experimental Zig FIST/Earcut seed is much faster than the existing raw fallback for large contours, but it is not coverage-equivalent on every degenerate/complex input.
+  - Keep it as an experimental benchmark/backend until deviation and constraint diagnostics are clean enough for renderer use.
+
+  Recommended use:
+
+  - `earcut raw` as a speed baseline,
+  - `earcut balanced` as `earcut raw` plus bounded local swaps,
+  - no production default switch until area error and missing-boundary behavior are resolved.
+
   ## Recommended Algorithm Direction
 
   For the next internal implementation, prioritize a mutable triangle adjacency mesh and edge-swap segment insertion.

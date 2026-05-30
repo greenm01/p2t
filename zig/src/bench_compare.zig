@@ -4,11 +4,14 @@
 const std = @import("std");
 const linux = std.os.linux;
 const opts = @import("build_options");
+const mutable = @import("mutable_mesh.zig");
 const tess = @import("root.zig");
 
 const F = tess.GpuFillTess;
+const E = tess.GpuFistEarcut;
 const Vec = F.Vec;
 const FillMesh = F.FillMesh;
+const EarcutRefiner = mutable.Refiner(E.Vec, u32);
 
 const libtess = if (opts.has_libtess2) @cImport({
     @cInclude("tesselator.h");
@@ -172,6 +175,11 @@ fn runCase(allocator: std.mem.Allocator, name: []const u8, input: Contours, iter
     const strict = benchZig(allocator, "zig strict", input, .strict_cdt, iterations) catch errorResult("zig strict", "failed");
     printResult(strict, expected);
 
+    const earcut_raw = benchEarcut(allocator, "earcut raw", input, false, iterations) catch errorResult("earcut raw", "failed");
+    printResult(earcut_raw, expected);
+    const earcut_balanced = benchEarcut(allocator, "earcut balanced", input, true, iterations) catch errorResult("earcut balanced", "failed");
+    printResult(earcut_balanced, expected);
+
     const lib = if (opts.has_libtess2)
         benchLibtess2(allocator, input, iterations) catch errorResult("libtess2 cdt", "failed")
     else
@@ -275,6 +283,70 @@ fn addFillContours(ft: *F, input: Contours) !void {
     ft.reset();
     try ft.addContour(input.outer, .solid);
     for (input.holes) |hole| try ft.addContour(hole, .hole);
+}
+
+fn benchEarcut(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    input: Contours,
+    balanced: bool,
+    iterations: usize,
+) !BenchResult {
+    var first = try runEarcut(allocator, input, balanced);
+    defer first.deinit();
+    const quality = qualityFromEarcut(first);
+
+    var total_ns: u128 = 0;
+    var best: u64 = std.math.maxInt(u64);
+    for (0..iterations) |_| {
+        const t0 = nowNs();
+        var mesh = try runEarcut(allocator, input, balanced);
+        const dt = nowNs() - t0;
+        mesh.deinit();
+        total_ns += dt;
+        best = @min(best, dt);
+    }
+
+    return .{
+        .name = name,
+        .best_ns = best,
+        .mean_ns = @intCast(total_ns / iterations),
+        .quality = quality,
+    };
+}
+
+fn runEarcut(allocator: std.mem.Allocator, input: Contours, balanced: bool) !E.Mesh {
+    var mesh = try E.triangulateRaw(allocator, input.outer, input.holes);
+    errdefer mesh.deinit();
+    if (balanced) {
+        const constraints = try makeConstraintEdges(allocator, input);
+        defer allocator.free(constraints);
+        const stats = try EarcutRefiner.refine(allocator, mesh.vertices, mesh.indices, constraints, 0);
+        std.mem.doNotOptimizeAway(stats);
+    }
+    return mesh;
+}
+
+fn makeConstraintEdges(allocator: std.mem.Allocator, input: Contours) ![]EarcutRefiner.Edge {
+    const total = input.outer.len + countHolePoints(input.holes);
+    const edges = try allocator.alloc(EarcutRefiner.Edge, total);
+    var out: usize = 0;
+    var base: u32 = 0;
+    appendConstraintLoop(edges, &out, base, input.outer.len);
+    base += @intCast(input.outer.len);
+    for (input.holes) |hole| {
+        appendConstraintLoop(edges, &out, base, hole.len);
+        base += @intCast(hole.len);
+    }
+    return edges[0..out];
+}
+
+fn appendConstraintLoop(edges: []EarcutRefiner.Edge, out: *usize, base: u32, len: usize) void {
+    if (len < 2) return;
+    for (0..len) |i| {
+        edges[out.*] = .{ base + @as(u32, @intCast(i)), base + @as(u32, @intCast((i + 1) % len)) };
+        out.* += 1;
+    }
 }
 
 fn benchLibtess2(allocator: std.mem.Allocator, input: Contours, iterations: usize) !BenchResult {
@@ -578,6 +650,22 @@ fn nanoRenderDelete(uptr: ?*anyopaque) callconv(.c) void {
 }
 
 fn qualityFromFill(mesh: FillMesh) QualityStats {
+    var acc = QualityAccumulator.init();
+    var i: usize = 0;
+    while (i < mesh.indices.len) : (i += 3) {
+        acc.add(
+            mesh.vertices[mesh.indices[i]],
+            mesh.vertices[mesh.indices[i + 1]],
+            mesh.vertices[mesh.indices[i + 2]],
+        );
+    }
+    var quality = acc.finish();
+    quality.vertices = mesh.vertices.len;
+    quality.indices = mesh.indices.len;
+    return quality;
+}
+
+fn qualityFromEarcut(mesh: E.Mesh) QualityStats {
     var acc = QualityAccumulator.init();
     var i: usize = 0;
     while (i < mesh.indices.len) : (i += 3) {
