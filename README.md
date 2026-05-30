@@ -17,9 +17,16 @@ public API planned for Koi's future vector renderer.
 
 ```sh
 nimble test
+nimble testLibtess2
 nimble bench
+nimble benchLibtess2
 nimble tidy
 ```
+
+`nimble testLibtess2` compares the `dude.dat` fixture against a local libtess2
+checkout. It auto-detects `~/src/libtess2` and `../libtess2`; otherwise set
+`LIBTESS2_DIR=/path/to/libtess2`.
+`nimble benchLibtess2` runs the same fixture as a release benchmark.
 
 ## License
 

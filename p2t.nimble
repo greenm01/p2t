@@ -49,6 +49,43 @@ proc runTimed(path: string) =
   else:
     sh quoteShell(path)
 
+proc findLibtess2Dir(): string =
+  let envDir = getEnv("LIBTESS2_DIR")
+  if envDir.len > 0 and fileExists(envDir / "Include" / "tesselator.h"):
+    return envDir
+
+  let homeDir = getHomeDir() / "src" / "libtess2"
+  if fileExists(homeDir / "Include" / "tesselator.h"):
+    return homeDir
+
+  let siblingDir = getCurrentDir().parentDir / "libtess2"
+  if fileExists(siblingDir / "Include" / "tesselator.h"):
+    return siblingDir
+
+task testLibtess2, "compare dude fixture output against libtess2":
+  let libtess2Dir = findLibtess2Dir()
+  if libtess2Dir.len == 0:
+    quit("libtess2 not found; set LIBTESS2_DIR=/path/to/libtess2", QuitFailure)
+  nimRun(
+    "tests/test_libtess2_compare",
+    flags = "-d:libtess2Dir=" & quoteShell(libtess2Dir),
+    outPath = "/tmp/p2t_test_libtess2",
+    nimcache = "/tmp/p2t_test_libtess2_d",
+  )
+
+task benchLibtess2, "benchmark dude fixture against libtess2":
+  let libtess2Dir = findLibtess2Dir()
+  if libtess2Dir.len == 0:
+    quit("libtess2 not found; set LIBTESS2_DIR=/path/to/libtess2", QuitFailure)
+  nimCompile(
+    "bench/bench_libtess2_compare",
+    flags = "--mm:arc -d:release --opt:speed -d:libtess2Dir=" & quoteShell(libtess2Dir),
+    outPath = "/tmp/p2t_bench_libtess2",
+    nimcache = "/tmp/p2t_bench_libtess2_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_libtess2")
+  runTimed("/tmp/p2t_bench_libtess2")
+
 task test, "run p2t tests":
   nimRun("tests/test_p2t", outPath = "/tmp/p2t_test", nimcache = "/tmp/p2t_test_d")
 
@@ -88,4 +125,4 @@ task benchVariants, "run p2t benchmark with ORC and ARC release variants":
   runTimed("/tmp/p2t_bench_arc")
 
 task tidy, "format p2t sources":
-  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim bench/bench_p2t.nim"
+  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim"
