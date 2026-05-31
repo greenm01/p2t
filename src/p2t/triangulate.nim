@@ -1,5 +1,8 @@
 import ./[geometry, types]
-import ./internal/cdt
+when defined(p2tArenaCdt):
+  import ./internal/arena_cdt as cdt
+else:
+  import ./internal/cdt
 
 type Edge = array[2, int]
 
@@ -230,9 +233,14 @@ proc tessellateTrustedRaw*(
 
   try:
     let raw = workspace.triangulateCdtRaw(input)
-    TessRawResult(
-      ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
-    )
+    when defined(p2tArenaCdt):
+      TessRawResult(
+        ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
+      )
+    else:
+      TessRawResult(
+        ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
+      )
   except CatchableError as err:
     TessRawResult(ok: false, error: tessError(tekTriangulationFailed, -1, -1, err.msg))
 

@@ -121,6 +121,14 @@ task testUnsafeCdt, "run p2t tests with CDT runtime checks disabled":
     nimcache = "/tmp/p2t_test_unsafe_cdt_d",
   )
 
+task testArenaCdt, "run p2t tests with arena-backed CDT":
+  nimRun(
+    "tests/test_p2t",
+    flags = "-d:p2tArenaCdt",
+    outPath = "/tmp/p2t_test_arena_cdt",
+    nimcache = "/tmp/p2t_test_arena_cdt_d",
+  )
+
 task testMemory, "run repeated tessellation memory smoke":
   nimRun(
     "tests/test_memory",
@@ -148,6 +156,17 @@ task benchUnsafeCdt, "run p2t benchmark with CDT runtime checks disabled":
   sh "strip " & quoteShell("/tmp/p2t_bench_unsafe_cdt")
   echo "p2t unsafe CDT"
   sh quoteShell("/tmp/p2t_bench_unsafe_cdt")
+
+task benchArenaCdt, "run p2t benchmark with arena-backed CDT":
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt",
+    outPath = "/tmp/p2t_bench_arena_cdt",
+    nimcache = "/tmp/p2t_bench_arena_cdt_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_arena_cdt")
+  echo "p2t arena CDT"
+  sh quoteShell("/tmp/p2t_bench_arena_cdt")
 
 task sizes, "report core p2t CDT struct sizes":
   nimRun(
@@ -248,6 +267,32 @@ task benchFastPoly2TriUnsafe, "compare unsafe CDT p2t against local fast-poly2tr
   sh quoteShell("/tmp/p2t_fastpoly2tri_float")
   sh quoteShell("/tmp/p2t_fastpoly2tri_double")
 
+task benchFastPoly2TriArena, "compare arena CDT p2t against local fast-poly2tri":
+  let fastDir = findFastPoly2TriDir()
+  if fastDir.len == 0:
+    quit(
+      "fast-poly2tri not found; set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
+      QuitFailure,
+    )
+
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt",
+    outPath = "/tmp/p2t_bench_cross_arena_cdt",
+    nimcache = "/tmp/p2t_bench_cross_arena_cdt_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_cross_arena_cdt")
+  echo "p2t arena unsafe CDT"
+  sh quoteShell("/tmp/p2t_bench_cross_arena_cdt")
+
+  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
+  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
+  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
+  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
+  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+
 task benchParallel, "benchmark tessellateBatch scaling across threads":
   nimCompile(
     "bench/bench_parallel",
@@ -259,4 +304,4 @@ task benchParallel, "benchmark tessellateBatch scaling across threads":
   sh quoteShell("/tmp/p2t_bench_parallel")
 
 task tidy, "format p2t sources":
-  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
+  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"

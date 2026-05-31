@@ -56,6 +56,57 @@ type
     basin*: CdtBasin
     edgeEvent*: CdtEdgeEvent
 
+when defined(p2tArenaCdt):
+  type
+    ArenaPoint* = object
+      firstEdge*: ptr ArenaEdge
+      x*, y*: float64
+      sourceIndex*, id*: int32
+
+    ArenaEdge* = object
+      p*, q*: ptr ArenaPoint
+      next*: ptr ArenaEdge
+
+    ArenaTriangle* = object
+      neighbors*: array[3, ptr ArenaTriangle]
+      points*: array[3, ptr ArenaPoint]
+      flags*: uint32
+
+    ArenaNode* = object
+      next*, prev*: ptr ArenaNode
+      point*: ptr ArenaPoint
+      triangle*: ptr ArenaTriangle
+      value*: float64
+
+    ArenaFront* = object
+      head*, tail*, searchNode*: ptr ArenaNode
+
+    ArenaBasin* = object
+      leftNode*, bottomNode*, rightNode*: ptr ArenaNode
+      width*: float64
+      leftHighest*: bool
+
+    ArenaEdgeEvent* = object
+      constrainedEdge*: ptr ArenaEdge
+      right*: bool
+
+    ArenaWorkspace* = object
+      points*: seq[ArenaPoint]
+      edges*: seq[ArenaEdge]
+      triangles*: seq[ArenaTriangle]
+      nodes*: seq[ArenaNode]
+      activePoints*: seq[ptr ArenaPoint]
+      sortTemp*: seq[ptr ArenaPoint]
+      meshStack*: seq[ptr ArenaTriangle]
+      interiorTriangles*: seq[ptr ArenaTriangle]
+      pointCount*, edgeCount*, triangleCount*, nodeCount*: int
+      front*: ArenaFront
+      head*, tail*: ptr ArenaPoint
+      afHead*, afMiddle*, afTail*: ptr ArenaNode
+      basin*: ArenaBasin
+      edgeEvent*: ArenaEdgeEvent
+
+type
   Vec2* = object
     x*, y*: float64
 
@@ -97,18 +148,36 @@ type
     triangles*: seq[array[3, int]]
     boundaryEdges*: seq[array[2, int]]
 
-  TessRawResult* = object
-    ok*: bool
-    error*: TessError
-    vertices*: ptr seq[Vec2]
-    cdt*: ptr CdtWorkspace
+when defined(p2tArenaCdt):
+  type
+    TessRawResult* = object
+      ok*: bool
+      error*: TessError
+      vertices*: ptr seq[Vec2]
+      arena*: ptr ArenaWorkspace
 
-  TessWorkspace* = object
-    vertices*: seq[Vec2]
-    polygon*: seq[int]
-    indexMap*: seq[int]
-    scratch*: seq[int]
-    cdt*: CdtWorkspace
+    TessWorkspace* = object
+      vertices*: seq[Vec2]
+      polygon*: seq[int]
+      indexMap*: seq[int]
+      scratch*: seq[int]
+      cdt*: CdtWorkspace
+      arena*: ArenaWorkspace
+
+else:
+  type
+    TessRawResult* = object
+      ok*: bool
+      error*: TessError
+      vertices*: ptr seq[Vec2]
+      cdt*: ptr CdtWorkspace
+
+    TessWorkspace* = object
+      vertices*: seq[Vec2]
+      polygon*: seq[int]
+      indexMap*: seq[int]
+      scratch*: seq[int]
+      cdt*: CdtWorkspace
 
 const DefaultTessEpsilon* = 1e-9
 

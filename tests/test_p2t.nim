@@ -149,6 +149,19 @@ suite "p2t tessellation":
     let tri = raw.rawTriangleVertices(0)
     check triangleArea(tri[0], tri[1], tri[2]) > 0
 
+  test "workspace reuse handles changing input sizes":
+    var workspace: TessWorkspace
+    let small =
+      TessInput(outer: contour(1, [vec2(0, 0), vec2(4, 0), vec2(4, 4), vec2(0, 4)]))
+    let large = TessInput(outer: contour(2, readDat("nazca_heron.dat")))
+    let again = TessInput(outer: contour(3, [vec2(0, 0), vec2(3, 0), vec2(0, 3)]))
+
+    checkArea(workspace.tessellate(small), 16)
+    let largeResult = workspace.tessellate(large)
+    check largeResult.ok
+    check largeResult.triangles.len > 100
+    checkArea(workspace.tessellate(again), 4.5)
+
 suite "original poly2tri fixtures":
   test "small fixture polygons":
     for name in ["test.dat", "diamond.dat", "star.dat", "strange.dat"]:
