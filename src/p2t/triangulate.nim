@@ -96,7 +96,7 @@ proc tessellateStatic*[
   if error.kind != tekNone:
     return failure(error)
 
-  var holes: seq[seq[Vec2]] = @[]
+  var holes = newSeqOfCap[seq[Vec2]](input.holes.len)
   for holeContour in input.holes:
     let hole = prepareContour[CleanInput, AssumeOriented](
       holeContour, epsilon, ccw = false, error
@@ -110,7 +110,7 @@ proc tessellateStatic*[
       return failure(error)
 
   when KeepBoundaryEdges:
-    var boundaryEdges: seq[Edge] = @[]
+    var boundaryEdges = newSeqOfCap[Edge](outer.len + input.holes.len * 4)
     boundaryEdges.addBoundaryEdges(0, outer.len)
     var boundaryBase = outer.len
     for hole in holes:
@@ -147,7 +147,7 @@ proc tessellate*(
     return failure(error)
   outer.ensureOrientation(ccw = true)
 
-  var holes: seq[seq[Vec2]] = @[]
+  var holes = newSeqOfCap[seq[Vec2]](input.holes.len)
   for holeContour in input.holes:
     var hole = cleanContour(holeContour, options.epsilon, options.cleanInput, error)
     if error.kind != tekNone:
@@ -158,7 +158,11 @@ proc tessellate*(
   if options.validate and not validateContours(outer, holes, options.epsilon, error):
     return failure(error)
 
-  var boundaryEdges: seq[Edge] = @[]
+  var boundaryEdges =
+    if options.keepBoundaryEdges:
+      newSeqOfCap[Edge](outer.len + input.holes.len * 4)
+    else:
+      @[]
   if options.keepBoundaryEdges:
     boundaryEdges.addBoundaryEdges(0, outer.len)
   var boundaryBase = outer.len
@@ -194,6 +198,52 @@ proc tessellateTrusted*(
   ## contours must be simple with no duplicate or degenerate points, and any
   ## Steiner points must be inside the outer contour.
   tessellateStatic[false, false, false, true](workspace, input, epsilon)
+
+proc tessellateTrustedRaw*(
+    workspace: var TessWorkspace, input: TessInput, epsilon = DefaultTessEpsilon
+): TessRawResult =
+  ## Fastest trusted path. The returned pointers are valid until `workspace` is
+  ## cleared or reused. Use `rawTriangleCount`, `rawTrianglePoints`, and
+  ## `rawTriangleVertices` to inspect the triangulation without materializing a
+  ## public `TessResult`.
+  workspace.clear()
+
+  if input.outer.points.len == 0:
+    return TessRawResult(ok: false, error: tessError(tekEmptyOuter, input.outer.id))
+  if input.outer.points.len < 3:
+    return TessRawResult(
+      ok: false,
+      error: tessError(
+        tekTooFewVertices, input.outer.id, input.outer.points.len,
+        "contour has fewer than 3 vertices",
+      ),
+    )
+  for hole in input.holes:
+    if hole.points.len < 3:
+      return TessRawResult(
+        ok: false,
+        error: tessError(
+          tekTooFewVertices, hole.id, hole.points.len,
+          "contour has fewer than 3 vertices",
+        ),
+      )
+
+  try:
+    let raw = workspace.triangulateCdtRaw(input)
+    TessRawResult(
+      ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
+    )
+  except CatchableError as err:
+    TessRawResult(ok: false, error: tessError(tekTriangulationFailed, -1, -1, err.msg))
+
+proc rawTriangleCount*(raw: TessRawResult): int =
+  cdt.rawTriangleCount(raw)
+
+proc rawTrianglePoints*(raw: TessRawResult, triangleIndex: int): array[3, CdtPointId] =
+  cdt.rawTrianglePoints(raw, triangleIndex)
+
+proc rawTriangleVertices*(raw: TessRawResult, triangleIndex: int): array[3, Vec2] =
+  cdt.rawTriangleVertices(raw, triangleIndex)
 
 proc tessellate*(input: TessInput): TessResult =
   var workspace: TessWorkspace

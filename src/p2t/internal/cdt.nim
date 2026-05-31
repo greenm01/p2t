@@ -18,6 +18,10 @@ const
   Epsilon = 1e-12
   Pi3Div4 = 3.0 * PI / 4.0
   Alpha = 0.3
+  DelaunayEdge0 = 1'u32 shl 0
+  ConstrainedEdge0 = 1'u32 shl 3
+  InteriorFlag = 1'u32 shl 30
+  DelaunayEdgeMask = DelaunayEdge0 or (DelaunayEdge0 shl 1) or (DelaunayEdge0 shl 2)
 
 type
   Orientation = enum
@@ -34,16 +38,21 @@ type
     vertices*: seq[Vec2]
     triangles*: seq[array[3, int]]
 
+  CdtRawResult* = object
+    vertices*: ptr seq[Vec2]
+    cdt*: ptr CdtWorkspace
+
 proc isNil(id: int32): bool {.inline.} =
   id == CdtNil
 
 proc resetCdt(ws: var CdtWorkspace) =
   ws.points.setLen(0)
-  ws.pointEdges.setLen(0)
   ws.edges.setLen(0)
   ws.triangles.setLen(0)
   ws.nodes.setLen(0)
   ws.activePoints.setLen(0)
+  ws.sortTemp.setLen(0)
+  ws.meshStack.setLen(0)
   ws.interiorTriangles.setLen(0)
   ws.front = CdtFront(head: CdtNil, tail: CdtNil, searchNode: CdtNil)
   ws.head = CdtNil
@@ -66,10 +75,27 @@ proc tri(ws: var CdtWorkspace, id: CdtTriangleId): var CdtTriangle {.inline.} =
 proc node(ws: var CdtWorkspace, id: CdtNodeId): var CdtNode {.inline.} =
   ws.nodes[id]
 
+proc edgeFlag(base: uint32, index: int): uint32 {.inline.} =
+  base shl index
+
+proc hasFlag(tr: CdtTriangle, flag: uint32): bool {.inline.} =
+  (tr.flags and flag) != 0
+
+proc setFlag(tr: var CdtTriangle, flag: uint32, value: bool) {.inline.} =
+  if value:
+    tr.flags = tr.flags or flag
+  else:
+    tr.flags = tr.flags and not flag
+
+proc constrainedFlag(index: int): uint32 {.inline.} =
+  edgeFlag(ConstrainedEdge0, index)
+
+proc delaunayFlag(index: int): uint32 {.inline.} =
+  edgeFlag(DelaunayEdge0, index)
+
 proc newPoint(ws: var CdtWorkspace, x, y: float64, sourceIndex = -1): CdtPointId =
   result = ws.points.len.CdtPointId
-  ws.points.add CdtPoint(x: x, y: y, sourceIndex: sourceIndex)
-  ws.pointEdges.add @[]
+  ws.points.add CdtPoint(x: x, y: y, sourceIndex: sourceIndex.int32, firstEdge: CdtNil)
 
 proc orient2d(ws: var CdtWorkspace, pa, pb, pc: CdtPointId): Orientation =
   let
@@ -117,17 +143,19 @@ proc newEdge(ws: var CdtWorkspace, p1, p2: CdtPointId): CdtEdgeId =
       p = p2
     elif a.x == b.x:
       raise newException(ValueError, "repeat points in constrained edge")
-  ws.edges.add CdtEdge(p: p, q: q)
-  ws.pointEdges[q].add result
+  ws.edges.add CdtEdge(p: p, q: q, next: CdtNil)
+  if ws.point(q).firstEdge.isNil:
+    ws.point(q).firstEdge = result
+  else:
+    var last = ws.point(q).firstEdge
+    while not ws.edge(last).next.isNil:
+      last = ws.edge(last).next
+    ws.edge(last).next = result
 
 proc newTriangle(ws: var CdtWorkspace, a, b, c: CdtPointId): CdtTriangleId =
   result = ws.triangles.len.CdtTriangleId
   ws.triangles.add CdtTriangle(
-    points: [a, b, c],
-    neighbors: [CdtNil, CdtNil, CdtNil],
-    constrainedEdge: [false, false, false],
-    delaunayEdge: [false, false, false],
-    interior: false,
+    points: [a, b, c], neighbors: [CdtNil, CdtNil, CdtNil], flags: 0
   )
 
 proc contains(ws: var CdtWorkspace, t: CdtTriangleId, p: CdtPointId): bool =
@@ -168,7 +196,7 @@ proc clearNeighbors(ws: var CdtWorkspace, t: CdtTriangleId) =
   ws.tri(t).neighbors = [CdtNil, CdtNil, CdtNil]
 
 proc clearDelaunayEdges(ws: var CdtWorkspace, t: CdtTriangleId) =
-  ws.tri(t).delaunayEdge = [false, false, false]
+  ws.tri(t).flags = ws.tri(t).flags and not DelaunayEdgeMask
 
 proc pointCW(ws: var CdtWorkspace, t: CdtTriangleId, p: CdtPointId): CdtPointId =
   let tr = ws.tri(t)
@@ -215,82 +243,82 @@ proc getConstrainedEdgeCCW(
 ): bool =
   let tr = ws.tri(t)
   if p == tr.points[0]:
-    tr.constrainedEdge[2]
+    tr.hasFlag(constrainedFlag(2))
   elif p == tr.points[1]:
-    tr.constrainedEdge[0]
+    tr.hasFlag(constrainedFlag(0))
   else:
-    tr.constrainedEdge[1]
+    tr.hasFlag(constrainedFlag(1))
 
 proc getConstrainedEdgeCW(ws: var CdtWorkspace, t: CdtTriangleId, p: CdtPointId): bool =
   let tr = ws.tri(t)
   if p == tr.points[0]:
-    tr.constrainedEdge[1]
+    tr.hasFlag(constrainedFlag(1))
   elif p == tr.points[1]:
-    tr.constrainedEdge[2]
+    tr.hasFlag(constrainedFlag(2))
   else:
-    tr.constrainedEdge[0]
+    tr.hasFlag(constrainedFlag(0))
 
 proc setConstrainedEdgeCCW(
     ws: var CdtWorkspace, t: CdtTriangleId, p: CdtPointId, ce: bool
 ) =
   let points = ws.tri(t).points
   if p == points[0]:
-    ws.tri(t).constrainedEdge[2] = ce
+    ws.tri(t).setFlag(constrainedFlag(2), ce)
   elif p == points[1]:
-    ws.tri(t).constrainedEdge[0] = ce
+    ws.tri(t).setFlag(constrainedFlag(0), ce)
   else:
-    ws.tri(t).constrainedEdge[1] = ce
+    ws.tri(t).setFlag(constrainedFlag(1), ce)
 
 proc setConstrainedEdgeCW(
     ws: var CdtWorkspace, t: CdtTriangleId, p: CdtPointId, ce: bool
 ) =
   let points = ws.tri(t).points
   if p == points[0]:
-    ws.tri(t).constrainedEdge[1] = ce
+    ws.tri(t).setFlag(constrainedFlag(1), ce)
   elif p == points[1]:
-    ws.tri(t).constrainedEdge[2] = ce
+    ws.tri(t).setFlag(constrainedFlag(2), ce)
   else:
-    ws.tri(t).constrainedEdge[0] = ce
+    ws.tri(t).setFlag(constrainedFlag(0), ce)
 
 proc getDelaunayEdgeCCW(ws: var CdtWorkspace, t: CdtTriangleId, p: CdtPointId): bool =
   let tr = ws.tri(t)
   if p == tr.points[0]:
-    tr.delaunayEdge[2]
+    tr.hasFlag(delaunayFlag(2))
   elif p == tr.points[1]:
-    tr.delaunayEdge[0]
+    tr.hasFlag(delaunayFlag(0))
   else:
-    tr.delaunayEdge[1]
+    tr.hasFlag(delaunayFlag(1))
 
 proc getDelaunayEdgeCW(ws: var CdtWorkspace, t: CdtTriangleId, p: CdtPointId): bool =
   let tr = ws.tri(t)
   if p == tr.points[0]:
-    tr.delaunayEdge[1]
+    tr.hasFlag(delaunayFlag(1))
   elif p == tr.points[1]:
-    tr.delaunayEdge[2]
+    tr.hasFlag(delaunayFlag(2))
   else:
-    tr.delaunayEdge[0]
+    tr.hasFlag(delaunayFlag(0))
 
 proc setDelaunayEdgeCCW(
     ws: var CdtWorkspace, t: CdtTriangleId, p: CdtPointId, edge: bool
 ) =
   let points = ws.tri(t).points
   if p == points[0]:
-    ws.tri(t).delaunayEdge[2] = edge
+    ws.tri(t).setFlag(delaunayFlag(2), edge)
   elif p == points[1]:
-    ws.tri(t).delaunayEdge[0] = edge
+    ws.tri(t).setFlag(delaunayFlag(0), edge)
   else:
-    ws.tri(t).delaunayEdge[1] = edge
+    ws.tri(t).setFlag(delaunayFlag(1), edge)
 
 proc setDelaunayEdgeCW(
     ws: var CdtWorkspace, t: CdtTriangleId, p: CdtPointId, edge: bool
 ) =
   let points = ws.tri(t).points
   if p == points[0]:
-    ws.tri(t).delaunayEdge[1] = edge
+    ws.tri(t).setFlag(delaunayFlag(1), edge)
   elif p == points[1]:
-    ws.tri(t).delaunayEdge[2] = edge
+    ws.tri(t).setFlag(delaunayFlag(2), edge)
   else:
-    ws.tri(t).delaunayEdge[0] = edge
+    ws.tri(t).setFlag(delaunayFlag(0), edge)
 
 proc neighborAcross(
     ws: var CdtWorkspace, t: CdtTriangleId, opoint: CdtPointId
@@ -357,16 +385,16 @@ proc edgeIndex(ws: var CdtWorkspace, t: CdtTriangleId, p1, p2: CdtPointId): int 
   -1
 
 proc markConstrainedEdge(ws: var CdtWorkspace, t: CdtTriangleId, edgeIndex: int) =
-  ws.tri(t).constrainedEdge[edgeIndex] = true
+  ws.tri(t).setFlag(constrainedFlag(edgeIndex), true)
 
 proc markConstrainedEdge(ws: var CdtWorkspace, t: CdtTriangleId, p, q: CdtPointId) =
   let points = ws.tri(t).points
   if (q == points[0] and p == points[1]) or (q == points[1] and p == points[0]):
-    ws.tri(t).constrainedEdge[2] = true
+    ws.tri(t).setFlag(constrainedFlag(2), true)
   elif (q == points[0] and p == points[2]) or (q == points[2] and p == points[0]):
-    ws.tri(t).constrainedEdge[1] = true
+    ws.tri(t).setFlag(constrainedFlag(1), true)
   elif (q == points[1] and p == points[2]) or (q == points[2] and p == points[1]):
-    ws.tri(t).constrainedEdge[0] = true
+    ws.tri(t).setFlag(constrainedFlag(0), true)
 
 proc newNode(
     ws: var CdtWorkspace, p: CdtPointId, t: CdtTriangleId = CdtNil
@@ -455,7 +483,7 @@ proc pointCmp(ws: var CdtWorkspace, a, b: CdtPointId): int =
   else:
     0
 
-proc sortActivePoints(ws: var CdtWorkspace) =
+proc quicksortActivePoints(ws: var CdtWorkspace) {.used.} =
   proc quicksort(ws: var CdtWorkspace, lo, hi: int) =
     var i = lo
     var j = hi
@@ -476,6 +504,61 @@ proc sortActivePoints(ws: var CdtWorkspace) =
 
   if ws.activePoints.len > 1:
     ws.quicksort(0, ws.activePoints.high)
+
+proc insertionSortActivePoints(ws: var CdtWorkspace, lo, hi: int) =
+  for i in lo + 1 ..< hi:
+    let item = ws.activePoints[i]
+    var j = i
+    while j > lo and ws.pointCmp(item, ws.activePoints[j - 1]) < 0:
+      ws.activePoints[j] = ws.activePoints[j - 1]
+      dec j
+    ws.activePoints[j] = item
+
+proc mergeSortActivePoints(ws: var CdtWorkspace) {.used.} =
+  const InsertionLimit = 24
+
+  proc sortRange(ws: var CdtWorkspace, lo, hi: int) =
+    if hi - lo <= InsertionLimit:
+      ws.insertionSortActivePoints(lo, hi)
+      return
+
+    let mid = (lo + hi) shr 1
+    ws.sortRange(lo, mid)
+    ws.sortRange(mid, hi)
+    if ws.pointCmp(ws.activePoints[mid - 1], ws.activePoints[mid]) <= 0:
+      return
+
+    var left = lo
+    var right = mid
+    var outIdx = lo
+    while left < mid and right < hi:
+      if ws.pointCmp(ws.activePoints[left], ws.activePoints[right]) <= 0:
+        ws.sortTemp[outIdx] = ws.activePoints[left]
+        inc left
+      else:
+        ws.sortTemp[outIdx] = ws.activePoints[right]
+        inc right
+      inc outIdx
+    while left < mid:
+      ws.sortTemp[outIdx] = ws.activePoints[left]
+      inc left
+      inc outIdx
+    while right < hi:
+      ws.sortTemp[outIdx] = ws.activePoints[right]
+      inc right
+      inc outIdx
+    for i in lo ..< hi:
+      ws.activePoints[i] = ws.sortTemp[i]
+
+  if ws.activePoints.len > 1:
+    ws.sortTemp.setLen(ws.activePoints.len)
+    ws.sortRange(0, ws.activePoints.len)
+
+proc sortActivePoints(ws: var CdtWorkspace) =
+  when defined(p2tQuickSort):
+    ws.quicksortActivePoints()
+  else:
+    ws.mergeSortActivePoints()
 
 proc initTriangulation(ws: var CdtWorkspace) =
   var
@@ -519,15 +602,16 @@ proc mapTriangleToNodes(ws: var CdtWorkspace, t: CdtTriangleId) =
         ws.node(n).triangle = t
 
 proc meshClean(ws: var CdtWorkspace, t: CdtTriangleId) =
-  var stack = @[t]
-  while stack.len > 0:
-    let item = stack.pop()
-    if not item.isNil and not ws.tri(item).interior:
-      ws.tri(item).interior = true
+  ws.meshStack.setLen(0)
+  ws.meshStack.add t
+  while ws.meshStack.len > 0:
+    let item = ws.meshStack.pop()
+    if not item.isNil and not ws.tri(item).hasFlag(InteriorFlag):
+      ws.tri(item).setFlag(InteriorFlag, true)
       ws.interiorTriangles.add item
       for i in 0 .. 2:
-        if not ws.tri(item).constrainedEdge[i]:
-          stack.add ws.tri(item).neighbors[i]
+        if not ws.tri(item).hasFlag(constrainedFlag(i)):
+          ws.meshStack.add ws.tri(item).neighbors[i]
 
 proc incircle(ws: var CdtWorkspace, pa, pb, pc, pd: CdtPointId): bool =
   let
@@ -614,7 +698,7 @@ proc rotateTrianglePair(
 
 proc legalize(ws: var CdtWorkspace, t: CdtTriangleId): bool =
   for i in 0 .. 2:
-    if ws.tri(t).delaunayEdge[i]:
+    if ws.tri(t).hasFlag(delaunayFlag(i)):
       continue
 
     let ot = ws.tri(t).neighbors[i]
@@ -624,13 +708,13 @@ proc legalize(ws: var CdtWorkspace, t: CdtTriangleId): bool =
         op = ws.oppositePoint(ot, t, p)
         oi = ws.index(ot, op)
 
-      if ws.tri(ot).constrainedEdge[oi] or ws.tri(ot).delaunayEdge[oi]:
-        ws.tri(t).constrainedEdge[i] = ws.tri(ot).constrainedEdge[oi]
+      if ws.tri(ot).hasFlag(constrainedFlag(oi)) or ws.tri(ot).hasFlag(delaunayFlag(oi)):
+        ws.tri(t).setFlag(constrainedFlag(i), ws.tri(ot).hasFlag(constrainedFlag(oi)))
         continue
 
       if ws.incircle(p, ws.pointCCW(t, p), ws.pointCW(t, p), op):
-        ws.tri(t).delaunayEdge[i] = true
-        ws.tri(ot).delaunayEdge[oi] = true
+        ws.tri(t).setFlag(delaunayFlag(i), true)
+        ws.tri(ot).setFlag(delaunayFlag(oi), true)
 
         ws.rotateTrianglePair(t, p, ot, op)
 
@@ -642,8 +726,8 @@ proc legalize(ws: var CdtWorkspace, t: CdtTriangleId): bool =
         if notLegalized:
           ws.mapTriangleToNodes(ot)
 
-        ws.tri(t).delaunayEdge[i] = false
-        ws.tri(ot).delaunayEdge[oi] = false
+        ws.tri(t).setFlag(delaunayFlag(i), false)
+        ws.tri(ot).setFlag(delaunayFlag(oi), false)
         return true
   false
 
@@ -976,13 +1060,13 @@ proc nextFlipTriangle(
 ): CdtTriangleId =
   if o == ccw:
     let idx = ws.edgeIndex(ot, p, op)
-    ws.tri(ot).delaunayEdge[idx] = true
+    ws.tri(ot).setFlag(delaunayFlag(idx), true)
     discard ws.legalize(ot)
     ws.clearDelaunayEdges(ot)
     return t
 
   let idx = ws.edgeIndex(t, p, op)
-  ws.tri(t).delaunayEdge[idx] = true
+  ws.tri(t).setFlag(delaunayFlag(idx), true)
   discard ws.legalize(t)
   ws.clearDelaunayEdges(t)
   ot
@@ -1100,9 +1184,10 @@ proc sweepPoints(ws: var CdtWorkspace) =
   for i in 1 ..< ws.activePoints.len:
     let p = ws.activePoints[i]
     let n = ws.pointEvent(p)
-    let edges = ws.pointEdges[p]
-    for edgeId in edges:
+    var edgeId = ws.point(p).firstEdge
+    while not edgeId.isNil:
       ws.edgeEvent(edgeId, n)
+      edgeId = ws.edge(edgeId).next
 
 proc finalizationPolygon(ws: var CdtWorkspace) =
   var t = ws.node(ws.node(ws.front.head).next).triangle
@@ -1119,12 +1204,44 @@ proc triangulate(ws: var CdtWorkspace) =
   ws.sweepPoints()
   ws.finalizationPolygon()
 
+proc sourceTriangle*(ws: var CdtWorkspace, t: CdtTriangleId): array[3, int] =
+  [
+    ws.point(ws.tri(t).points[0]).sourceIndex.int,
+    ws.point(ws.tri(t).points[1]).sourceIndex.int,
+    ws.point(ws.tri(t).points[2]).sourceIndex.int,
+  ]
+
+proc rawTrianglePoints*(ws: var CdtWorkspace, t: CdtTriangleId): array[3, CdtPointId] =
+  ws.tri(t).points
+
+proc rawVertex*(raw: TessRawResult, id: CdtPointId): Vec2 =
+  let p = raw.cdt[].point(id)
+  Vec2(x: p.x, y: p.y)
+
+proc rawTrianglePoints*(raw: TessRawResult, triangleIndex: int): array[3, CdtPointId] =
+  raw.cdt[].rawTrianglePoints(raw.cdt[].interiorTriangles[triangleIndex])
+
+proc rawTriangleVertices*(raw: TessRawResult, triangleIndex: int): array[3, Vec2] =
+  let points = raw.rawTrianglePoints(triangleIndex)
+  [raw.rawVertex(points[0]), raw.rawVertex(points[1]), raw.rawVertex(points[2])]
+
+proc rawTriangleCount*(raw: TessRawResult): int =
+  if raw.ok and not raw.cdt.isNil:
+    raw.cdt[].interiorTriangles.len
+  else:
+    0
+
 proc buildPoints(
     ws: var CdtWorkspace, contour: seq[Vec2], vertices: var seq[Vec2]
 ): seq[CdtPointId] =
   for p in contour:
     vertices.add p
     result.add ws.newPoint(p.x, p.y, vertices.high)
+
+proc buildPointsRaw(ws: var CdtWorkspace, contour: openArray[Vec2]): seq[CdtPointId] =
+  result = newSeqOfCap[CdtPointId](contour.len)
+  for p in contour:
+    result.add ws.newPoint(p.x, p.y)
 
 proc ensureCapacity[T](s: var seq[T], n: int) =
   ## Grow s's capacity to at least n without changing its (zero) length.
@@ -1134,7 +1251,20 @@ proc ensureCapacity[T](s: var seq[T], n: int) =
     s.setLen(n)
     s.setLen(0)
 
-proc triangulateCdt*(workspace: var TessWorkspace, input: CdtInput): CdtResult =
+proc reserveCdt(
+    workspace: var TessWorkspace, pointCount: int, keepVertices: static bool
+) =
+  workspace.cdt.points.ensureCapacity(pointCount + 2)
+  workspace.cdt.edges.ensureCapacity(pointCount)
+  workspace.cdt.nodes.ensureCapacity(pointCount + 4)
+  workspace.cdt.triangles.ensureCapacity(2 * pointCount + 4)
+  workspace.cdt.meshStack.ensureCapacity(2 * pointCount + 4)
+  when not defined(p2tQuickSort):
+    workspace.cdt.sortTemp.ensureCapacity(pointCount)
+  when keepVertices:
+    workspace.vertices.ensureCapacity(pointCount)
+
+proc triangulateCdtInPlace(workspace: var TessWorkspace, input: CdtInput) =
   if input.outer.len < 3:
     raise newException(ValueError, "outer contour has fewer than 3 points")
 
@@ -1147,12 +1277,7 @@ proc triangulateCdt*(workspace: var TessWorkspace, input: CdtInput): CdtResult =
   var pointCount = input.outer.len + input.steiner.len
   for hole in input.holes:
     pointCount += hole.len
-  workspace.cdt.points.ensureCapacity(pointCount + 2)
-  workspace.cdt.pointEdges.ensureCapacity(pointCount + 2)
-  workspace.cdt.edges.ensureCapacity(pointCount)
-  workspace.cdt.nodes.ensureCapacity(pointCount + 4)
-  workspace.cdt.triangles.ensureCapacity(2 * pointCount + 4)
-  workspace.vertices.ensureCapacity(pointCount)
+  workspace.reserveCdt(pointCount, keepVertices = true)
 
   let outer = workspace.cdt.buildPoints(input.outer, workspace.vertices)
   workspace.cdt.activePoints = outer
@@ -1167,13 +1292,42 @@ proc triangulateCdt*(workspace: var TessWorkspace, input: CdtInput): CdtResult =
 
   workspace.cdt.triangulate()
 
+proc triangulateCdt*(workspace: var TessWorkspace, input: CdtInput): CdtResult =
+  workspace.triangulateCdtInPlace(input)
+
   result.vertices = workspace.vertices
+  result.triangles.ensureCapacity(workspace.cdt.interiorTriangles.len)
   for t in workspace.cdt.interiorTriangles:
-    let tri = [
-      workspace.cdt.point(workspace.cdt.tri(t).points[0]).sourceIndex,
-      workspace.cdt.point(workspace.cdt.tri(t).points[1]).sourceIndex,
-      workspace.cdt.point(workspace.cdt.tri(t).points[2]).sourceIndex,
-    ]
+    let tri = workspace.cdt.sourceTriangle(t)
     if tri[0] < 0 or tri[1] < 0 or tri[2] < 0:
       continue
     result.triangles.add tri
+
+proc triangulateCdtRaw*(workspace: var TessWorkspace, input: CdtInput): CdtRawResult =
+  workspace.triangulateCdtInPlace(input)
+  CdtRawResult(vertices: addr workspace.vertices, cdt: addr workspace.cdt)
+
+proc triangulateCdtRaw*(workspace: var TessWorkspace, input: TessInput): CdtRawResult =
+  if input.outer.points.len < 3:
+    raise newException(ValueError, "outer contour has fewer than 3 points")
+
+  workspace.cdt.resetCdt()
+  workspace.vertices.setLen(0)
+
+  var pointCount = input.outer.points.len + input.steiner.len
+  for hole in input.holes:
+    pointCount += hole.points.len
+  workspace.reserveCdt(pointCount, keepVertices = false)
+
+  let outer = workspace.cdt.buildPointsRaw(input.outer.points)
+  workspace.cdt.activePoints = outer
+  workspace.cdt.initEdges(outer)
+
+  for hole in input.holes:
+    workspace.cdt.addHole(workspace.cdt.buildPointsRaw(hole.points))
+
+  for p in input.steiner:
+    workspace.cdt.addPoint(workspace.cdt.newPoint(p.x, p.y))
+
+  workspace.cdt.triangulate()
+  CdtRawResult(vertices: addr workspace.vertices, cdt: addr workspace.cdt)

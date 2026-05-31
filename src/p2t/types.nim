@@ -8,10 +8,12 @@ type
 
   CdtPoint* = object
     x*, y*: float64
-    sourceIndex*: int
+    sourceIndex*: int32
+    firstEdge*: CdtEdgeId
 
   CdtEdge* = object
     p*, q*: CdtPointId
+    next*: CdtEdgeId
 
   # Triangle-based data structures are known to perform better than quad-edge
   # structures. See: J. Shewchuk, "Triangle: Engineering a 2D Quality Mesh
@@ -19,9 +21,7 @@ type
   CdtTriangle* = object
     points*: array[3, CdtPointId]
     neighbors*: array[3, CdtTriangleId]
-    constrainedEdge*: array[3, bool]
-    delaunayEdge*: array[3, bool]
-    interior*: bool
+    flags*: uint32
 
   CdtNode* = object
     point*: CdtPointId
@@ -43,11 +43,12 @@ type
 
   CdtWorkspace* = object
     points*: seq[CdtPoint]
-    pointEdges*: seq[seq[CdtEdgeId]]
     edges*: seq[CdtEdge]
     triangles*: seq[CdtTriangle]
     nodes*: seq[CdtNode]
     activePoints*: seq[CdtPointId]
+    sortTemp*: seq[CdtPointId]
+    meshStack*: seq[CdtTriangleId]
     interiorTriangles*: seq[CdtTriangleId]
     front*: CdtFront
     head*, tail*: CdtPointId
@@ -95,6 +96,12 @@ type
     vertices*: seq[Vec2]
     triangles*: seq[array[3, int]]
     boundaryEdges*: seq[array[2, int]]
+
+  TessRawResult* = object
+    ok*: bool
+    error*: TessError
+    vertices*: ptr seq[Vec2]
+    cdt*: ptr CdtWorkspace
 
   TessWorkspace* = object
     vertices*: seq[Vec2]

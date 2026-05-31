@@ -62,6 +62,19 @@ proc findLibtess2Dir(): string =
   if fileExists(siblingDir / "Include" / "tesselator.h"):
     return siblingDir
 
+proc findFastPoly2TriDir(): string =
+  let envDir = getEnv("FAST_POLY2TRI_DIR")
+  if envDir.len > 0 and fileExists(envDir / "MPE_fastpoly2tri.h"):
+    return envDir
+
+  let homeDir = getHomeDir() / "src" / "fast-poly2tri"
+  if fileExists(homeDir / "MPE_fastpoly2tri.h"):
+    return homeDir
+
+  let siblingDir = getCurrentDir().parentDir / "fast-poly2tri"
+  if fileExists(siblingDir / "MPE_fastpoly2tri.h"):
+    return siblingDir
+
 task testLibtess2, "compare dude fixture output against libtess2":
   let libtess2Dir = findLibtess2Dir()
   if libtess2Dir.len == 0:
@@ -117,6 +130,14 @@ task bench, "run p2t benchmark":
   sh "strip " & quoteShell("/tmp/p2t_bench")
   sh quoteShell("/tmp/p2t_bench")
 
+task sizes, "report core p2t CDT struct sizes":
+  nimRun(
+    "bench/bench_struct_sizes",
+    flags = "--mm:arc -d:release --opt:speed",
+    outPath = "/tmp/p2t_struct_sizes",
+    nimcache = "/tmp/p2t_struct_sizes_d",
+  )
+
 task benchVariants, "run p2t benchmark with ORC and ARC release variants":
   nimCompile(
     "bench/bench_p2t",
@@ -135,6 +156,53 @@ task benchVariants, "run p2t benchmark with ORC and ARC release variants":
   sh "strip " & quoteShell("/tmp/p2t_bench_arc")
   runTimed("/tmp/p2t_bench_arc")
 
+task benchSortVariants, "compare quicksort and merge-sort CDT point ordering":
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tQuickSort",
+    outPath = "/tmp/p2t_bench_sort_quick",
+    nimcache = "/tmp/p2t_bench_sort_quick_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_sort_quick")
+  echo "p2t quicksort"
+  sh quoteShell("/tmp/p2t_bench_sort_quick")
+
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed",
+    outPath = "/tmp/p2t_bench_sort_merge",
+    nimcache = "/tmp/p2t_bench_sort_merge_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_sort_merge")
+  echo "p2t merge sort"
+  sh quoteShell("/tmp/p2t_bench_sort_merge")
+
+task benchFastPoly2Tri, "compare p2t against local fast-poly2tri":
+  let fastDir = findFastPoly2TriDir()
+  if fastDir.len == 0:
+    quit(
+      "fast-poly2tri not found; set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
+      QuitFailure,
+    )
+
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed",
+    outPath = "/tmp/p2t_bench_cross",
+    nimcache = "/tmp/p2t_bench_cross_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_cross")
+  echo "p2t"
+  sh quoteShell("/tmp/p2t_bench_cross")
+
+  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
+  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
+  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
+  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
+  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+
 task benchParallel, "benchmark tessellateBatch scaling across threads":
   nimCompile(
     "bench/bench_parallel",
@@ -146,4 +214,4 @@ task benchParallel, "benchmark tessellateBatch scaling across threads":
   sh quoteShell("/tmp/p2t_bench_parallel")
 
 task tidy, "format p2t sources":
-  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/quality_compare.nim bench/bench_parallel.nim"
+  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"

@@ -139,6 +139,16 @@ suite "p2t tessellation":
     check trusted.triangles == safe.triangles
     checkArea(trusted, 24)
 
+  test "trusted raw path exposes workspace triangles":
+    var workspace: TessWorkspace
+    let input =
+      TessInput(outer: contour(1, [vec2(0, 0), vec2(4, 0), vec2(4, 4), vec2(0, 4)]))
+    let raw = workspace.tessellateTrustedRaw(input)
+    check raw.ok
+    check raw.rawTriangleCount == 2
+    let tri = raw.rawTriangleVertices(0)
+    check triangleArea(tri[0], tri[1], tri[2]) > 0
+
 suite "original poly2tri fixtures":
   test "small fixture polygons":
     for name in ["test.dat", "diamond.dat", "star.dat", "strange.dat"]:

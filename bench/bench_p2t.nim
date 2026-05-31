@@ -1,6 +1,8 @@
-import std/[math, monotimes, os, strformat, strutils, times]
+import std/[algorithm, math, monotimes, os, strutils, times]
 
 import p2t
+
+const BenchRounds = 5
 
 proc contour(id: int, points: sink seq[Vec2]): TessContour =
   TessContour(id: id, points: points)
@@ -25,36 +27,52 @@ proc oriented(input: TessInput): TessInput =
   for hole in result.holes.mitems:
     hole.points.ensureOrientation(ccw = false)
 
+template benchLine(caseName, modeName: string, iterations: int, body: untyped) =
+  var times = newSeq[int64](BenchRounds)
+  var reportedTriangles = 0
+  for round in 0 ..< BenchRounds:
+    var workspace {.inject.}: TessWorkspace
+    var triangles {.inject.} = 0
+    let start = getMonoTime()
+    body
+    times[round] = inMicroseconds(getMonoTime() - start)
+    reportedTriangles = triangles
+  times.sort()
+  echo caseName & " " & modeName & ": " & $iterations & " runs, " & $reportedTriangles &
+    " triangles, best " & $times[0] & " us, median " & $times[BenchRounds div 2] & " us"
+
 proc benchSafe(name: string, iterations: int, input: TessInput) =
-  var workspace: TessWorkspace
   var options = defaultTessOptions()
   options.validate = false
-  let start = getMonoTime()
-  var triangles = 0
-  for _ in 0 ..< iterations:
-    let result = workspace.tessellate(input, options)
-    if not result.ok:
-      raise newException(ValueError, result.error.message)
-    triangles += result.triangles.len
-  let elapsed = inMicroseconds(getMonoTime() - start)
-  echo &"{name} no-validate: {iterations} runs, {triangles} triangles, {elapsed} us"
+  benchLine(name, "no-validate", iterations):
+    for _ in 0 ..< iterations:
+      let result = workspace.tessellate(input, options)
+      if not result.ok:
+        raise newException(ValueError, result.error.message)
+      triangles += result.triangles.len
 
 proc benchTrusted(name: string, iterations: int, input: TessInput) =
-  var workspace: TessWorkspace
   let trustedInput = input.oriented()
-  let start = getMonoTime()
-  var triangles = 0
-  for _ in 0 ..< iterations:
-    let result = workspace.tessellateTrusted(trustedInput)
-    if not result.ok:
-      raise newException(ValueError, result.error.message)
-    triangles += result.triangles.len
-  let elapsed = inMicroseconds(getMonoTime() - start)
-  echo &"{name} trusted: {iterations} runs, {triangles} triangles, {elapsed} us"
+  benchLine(name, "trusted", iterations):
+    for _ in 0 ..< iterations:
+      let result = workspace.tessellateTrusted(trustedInput)
+      if not result.ok:
+        raise newException(ValueError, result.error.message)
+      triangles += result.triangles.len
+
+proc benchRaw(name: string, iterations: int, input: TessInput) =
+  let trustedInput = input.oriented()
+  benchLine(name, "raw", iterations):
+    for _ in 0 ..< iterations:
+      let result = workspace.tessellateTrustedRaw(trustedInput)
+      if not result.ok:
+        raise newException(ValueError, result.error.message)
+      triangles += result.rawTriangleCount
 
 proc bench(name: string, iterations: int, input: TessInput) =
   benchSafe(name, iterations, input)
   benchTrusted(name, iterations, input)
+  benchRaw(name, iterations, input)
 
 bench(
   "small-ui-quad",
@@ -65,6 +83,12 @@ bench(
 bench("medium-icon", 2000, TessInput(outer: contour(2, regularPolygon(48, 50))))
 
 bench("large-shape", 500, TessInput(outer: contour(3, regularPolygon(512, 100))))
+
+bench("fixture-test", 10000, TessInput(outer: contour(8, readDat("test.dat"))))
+
+bench("diamond", 10000, TessInput(outer: contour(9, readDat("diamond.dat"))))
+
+bench("star", 10000, TessInput(outer: contour(10, readDat("star.dat"))))
 
 bench(
   "dude-with-holes",
@@ -90,3 +114,5 @@ bench(
 )
 
 bench("nazca-monkey", 100, TessInput(outer: contour(7, readDat("nazca_monkey.dat"))))
+
+bench("nazca-heron", 100, TessInput(outer: contour(11, readDat("nazca_heron.dat"))))
