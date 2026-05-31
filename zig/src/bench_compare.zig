@@ -46,6 +46,7 @@ const BenchResult = struct {
     best_ns: u64 = std.math.maxInt(u64),
     mean_ns: u64 = 0,
     quality: ?QualityStats = null,
+    diagnostics: ?F.Diagnostics = null,
     nano: ?NanoStats = null,
     skipped: bool = false,
     failed: ?[]const u8 = null,
@@ -174,6 +175,10 @@ fn runCase(allocator: std.mem.Allocator, name: []const u8, input: Contours, iter
     printResult(balanced, expected);
     const strict = benchZig(allocator, "zig strict", input, .strict_cdt, iterations) catch errorResult("zig strict", "failed");
     printResult(strict, expected);
+    const exp_raw = benchZigStrategy(allocator, "zig fist raw", input, .raw, .experimental_fist, iterations) catch errorResult("zig fist raw", "failed");
+    printResult(exp_raw, expected);
+    const exp_bal = benchZigStrategy(allocator, "zig fist bal", input, .balanced, .experimental_fist, iterations) catch errorResult("zig fist bal", "failed");
+    printResult(exp_bal, expected);
 
     const earcut_raw = benchEarcut(allocator, "earcut raw", input, false, iterations) catch errorResult("earcut raw", "failed");
     printResult(earcut_raw, expected);
@@ -212,7 +217,7 @@ fn printResult(result: BenchResult, expected_area: f64) void {
     const mean_us = @as(f64, @floatFromInt(result.mean_ns)) / 1000.0;
     if (result.quality) |q| {
         const area_err = if (expected_area > 0) @abs(q.area - expected_area) / expected_area else 0;
-        std.debug.print("  {s:<13} {d:7.2} {d:8.2} {d:5} {d:6} {d:5.2} {d:6.2} {d:6} {d:7.2} {d:8.4} {d:8.1}\n", .{
+        std.debug.print("  {s:<13} {d:7.2} {d:8.2} {d:5} {d:6} {d:5.2} {d:6.2} {d:6} {d:7.2} {d:8.4} {d:8.1}  {s}\n", .{
             result.name,
             best_us,
             mean_us,
@@ -224,6 +229,7 @@ fn printResult(result: BenchResult, expected_area: f64) void {
             q.max_aspect,
             area_err,
             gpuProxyScore(q),
+            diagnosticNote(result.diagnostics),
         });
     } else if (result.nano) |n| {
         std.debug.print("  {s:<13} {d:7.2} {d:8.2} {d:5} {d:6}     -      -      -       -        -  stencil/fill verts {d}+{d}, calls {d}\n", .{
@@ -239,6 +245,33 @@ fn printResult(result: BenchResult, expected_area: f64) void {
     }
 }
 
+fn diagnosticNote(diagnostics: ?F.Diagnostics) []const u8 {
+    const d = diagnostics orelse return "";
+    if (d.fallback_used) {
+        if (d.experimental_used) {
+            return switch (d.triangle_strategy) {
+                .stable_raw => "fist fallback -> stable-raw",
+                .stable_balanced => "fist fallback -> stable-balanced",
+                .strict_cdt => "fist fallback -> strict-cdt",
+                else => "fist fallback",
+            };
+        }
+        return switch (d.triangle_strategy) {
+            .strict_cdt => "stable fallback -> strict-cdt",
+            else => "stable fallback",
+        };
+    }
+    return switch (d.triangle_strategy) {
+        .none => "",
+        .fast_path => "fast-path",
+        .stable_raw => "stable-raw",
+        .stable_balanced => "stable-balanced",
+        .strict_cdt => "strict-cdt",
+        .fist_earcut_raw => "fist-raw",
+        .fist_earcut_balanced => "fist-balanced",
+    };
+}
+
 fn errorResult(name: []const u8, reason: []const u8) BenchResult {
     return .{ .name = name, .failed = reason };
 }
@@ -250,12 +283,23 @@ fn benchZig(
     quality_mode: F.Quality,
     iterations: usize,
 ) !BenchResult {
+    return benchZigStrategy(allocator, name, input, quality_mode, .auto, iterations);
+}
+
+fn benchZigStrategy(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    input: Contours,
+    quality_mode: F.Quality,
+    strategy: F.Strategy,
+    iterations: usize,
+) !BenchResult {
     var ft = F.init(allocator);
     defer ft.deinit();
     try ft.reserve(input.outer.len + countHolePoints(input.holes), input.holes.len + 1);
 
     try addFillContours(&ft, input);
-    var first = try ft.tessellateFill(.{ .quality = quality_mode });
+    var first = try ft.tessellateFill(.{ .quality = quality_mode, .strategy = strategy });
     defer first.deinit();
     const quality = qualityFromFill(first);
 
@@ -264,7 +308,7 @@ fn benchZig(
     for (0..iterations) |_| {
         const t0 = nowNs();
         try addFillContours(&ft, input);
-        var mesh = try ft.tessellateFill(.{ .quality = quality_mode });
+        var mesh = try ft.tessellateFill(.{ .quality = quality_mode, .strategy = strategy });
         const dt = nowNs() - t0;
         mesh.deinit();
         total_ns += dt;
@@ -276,6 +320,7 @@ fn benchZig(
         .best_ns = best,
         .mean_ns = @intCast(total_ns / iterations),
         .quality = quality,
+        .diagnostics = first.diagnostics,
     };
 }
 

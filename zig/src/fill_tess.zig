@@ -6,6 +6,7 @@
 //! to stay stable while the fallback is replaced with a specialized sweep mesh.
 
 const std = @import("std");
+const fist = @import("fist_earcut.zig");
 const mutable = @import("mutable_mesh.zig");
 const tri = @import("triangulate.zig");
 
@@ -16,8 +17,10 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
         const W = f64;
 
         pub const Vec = Backend.Vec;
+        const FistBackend = fist.FistEarcut(Vec, Index);
         const MeshRefiner = mutable.Refiner(Vec, Index);
         pub const BoundaryEdge = [2]Index;
+        const experimental_area_error_limit = 1e-5;
 
         pub const ContourKind = enum {
             solid,
@@ -35,6 +38,29 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
             strict_cdt,
         };
 
+        pub const Strategy = enum {
+            auto,
+            stable,
+            strict,
+            experimental_fist,
+        };
+
+        pub const TriangleStrategy = enum {
+            none,
+            fast_path,
+            stable_raw,
+            stable_balanced,
+            strict_cdt,
+            fist_earcut_raw,
+            fist_earcut_balanced,
+        };
+
+        pub const SeedBackend = enum {
+            none,
+            stable_earcut,
+            fist_earcut,
+        };
+
         pub const Validation = enum {
             trusted,
             basic,
@@ -43,6 +69,7 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
         pub const Options = struct {
             fill_rule: FillRule = .non_zero,
             quality: Quality = .balanced,
+            strategy: Strategy = .auto,
             validation: Validation = .trusted,
             keep_boundary_edges: bool = false,
         };
@@ -56,11 +83,16 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
             refine_converged: bool = true,
             validation_skipped: bool = true,
             quality: Quality = .balanced,
+            strategy: Strategy = .auto,
+            triangle_strategy: TriangleStrategy = .none,
+            seed_backend: SeedBackend = .none,
+            area_error: f64 = 0,
             constraint_failures: usize = 0,
             constraint_flips: usize = 0,
             quality_flips: usize = 0,
             quality_budget_exhausted: bool = false,
             fallback_used: bool = false,
+            experimental_used: bool = false,
         };
 
         pub const FillMesh = struct {
@@ -152,6 +184,7 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
                 .vertices = self.points.items.len,
                 .validation_skipped = options.validation == .trusted,
                 .quality = options.quality,
+                .strategy = options.strategy,
             };
 
             var saw_solid = false;
@@ -173,6 +206,8 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
                     &boundary_edges,
                 )) {
                     diagnostics.used_fast_path = true;
+                    diagnostics.triangle_strategy = .fast_path;
+                    diagnostics.seed_backend = .none;
                 } else {
                     try self.emitBackendGroup(
                         outer_range,
@@ -231,55 +266,38 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
             }
 
             const outer = self.points.items[outer_range.start .. outer_range.start + outer_range.len];
-            switch (options.quality) {
-                .raw => {
+            switch (self.selectTriangleStrategy(outer_range, hole_ranges, options)) {
+                .fast_path, .none => unreachable,
+                .stable_raw => {
+                    diagnostics.triangle_strategy = .stable_raw;
+                    diagnostics.seed_backend = .stable_earcut;
                     var mesh = try Backend.triangulateRaw(self.allocator, outer, holes.items);
                     defer mesh.deinit();
                     try appendBackendMesh(self.allocator, mesh, vertices, indices);
                 },
                 .strict_cdt => {
+                    diagnostics.triangle_strategy = .strict_cdt;
+                    diagnostics.seed_backend = .stable_earcut;
                     var mesh = try Backend.triangulate(self.allocator, outer, holes.items);
                     defer mesh.deinit();
                     diagnostics.refined = true;
                     try appendBackendMesh(self.allocator, mesh, vertices, indices);
                 },
-                .balanced => {
-                    var mesh = try Backend.triangulateRaw(self.allocator, outer, holes.items);
-                    defer mesh.deinit();
-
-                    var constraints: std.ArrayList(BoundaryEdge) = .empty;
-                    defer constraints.deinit(self.allocator);
-                    try self.addConstraintEdgesForGroup(outer_range, hole_ranges, &constraints);
-
-                    const stats = try MeshRefiner.refine(
-                        self.allocator,
-                        mesh.vertices,
-                        mesh.indices,
-                        constraints.items,
-                        0,
-                    );
-                    diagnostics.constraint_failures += stats.missing_constraints;
-                    diagnostics.constraint_flips += stats.constraint_flips;
-                    diagnostics.quality_flips += stats.quality_flips;
-                    diagnostics.quality_budget_exhausted = diagnostics.quality_budget_exhausted or stats.quality_budget_exhausted;
-                    diagnostics.refine_converged = diagnostics.refine_converged and !stats.quality_budget_exhausted;
-                    diagnostics.refined = diagnostics.refined or stats.quality_flips != 0;
-
-                    if (stats.missing_constraints != 0) {
-                        diagnostics.fallback_used = true;
-                        var fallback = try Backend.triangulate(self.allocator, outer, holes.items);
-                        defer fallback.deinit();
-                        try appendBackendMesh(self.allocator, fallback, vertices, indices);
-                    } else {
-                        try appendBackendMesh(self.allocator, mesh, vertices, indices);
-                    }
+                .stable_balanced => {
+                    try self.emitStableBalanced(outer_range, hole_ranges, outer, holes.items, vertices, indices, diagnostics);
+                },
+                .fist_earcut_raw => {
+                    try self.emitFistRaw(outer, holes.items, vertices, indices, diagnostics);
+                },
+                .fist_earcut_balanced => {
+                    try self.emitFistBalanced(outer_range, hole_ranges, outer, holes.items, vertices, indices, diagnostics);
                 },
             }
         }
 
         fn appendBackendMesh(
             allocator: std.mem.Allocator,
-            mesh: Backend.Mesh,
+            mesh: anytype,
             vertices: *std.ArrayList(Vec),
             indices: *std.ArrayList(Index),
         ) !void {
@@ -289,6 +307,149 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
             for (mesh.indices) |idx| {
                 indices.appendAssumeCapacity(@intCast(base + @as(usize, @intCast(idx))));
             }
+        }
+
+        fn selectTriangleStrategy(
+            self: *Self,
+            outer_range: ContourRange,
+            hole_ranges: []const ContourRange,
+            options: Options,
+        ) TriangleStrategy {
+            _ = self;
+            if (options.strategy == .strict or options.quality == .strict_cdt) return .strict_cdt;
+
+            if (options.strategy == .experimental_fist and canUseExperimentalFist(outer_range, hole_ranges)) {
+                return switch (options.quality) {
+                    .raw => .fist_earcut_raw,
+                    .balanced => .fist_earcut_balanced,
+                    .strict_cdt => .strict_cdt,
+                };
+            }
+
+            return switch (options.quality) {
+                .raw => .stable_raw,
+                .balanced => .stable_balanced,
+                .strict_cdt => .strict_cdt,
+            };
+        }
+
+        fn canUseExperimentalFist(outer_range: ContourRange, hole_ranges: []const ContourRange) bool {
+            return hole_ranges.len == 0 and outer_range.len > 80;
+        }
+
+        fn emitStableBalanced(
+            self: *Self,
+            outer_range: ContourRange,
+            hole_ranges: []const ContourRange,
+            outer: []const Vec,
+            holes: []const []const Vec,
+            vertices: *std.ArrayList(Vec),
+            indices: *std.ArrayList(Index),
+            diagnostics: *Diagnostics,
+        ) !void {
+            diagnostics.triangle_strategy = .stable_balanced;
+            diagnostics.seed_backend = .stable_earcut;
+
+            var mesh = try Backend.triangulateRaw(self.allocator, outer, holes);
+            defer mesh.deinit();
+
+            var constraints: std.ArrayList(BoundaryEdge) = .empty;
+            defer constraints.deinit(self.allocator);
+            try self.addConstraintEdgesForGroup(outer_range, hole_ranges, &constraints);
+
+            const stats = try MeshRefiner.refine(
+                self.allocator,
+                mesh.vertices,
+                mesh.indices,
+                constraints.items,
+                0,
+            );
+            applyRefineStats(diagnostics, stats);
+
+            if (stats.missing_constraints != 0) {
+                diagnostics.fallback_used = true;
+                diagnostics.triangle_strategy = .strict_cdt;
+                var fallback = try Backend.triangulate(self.allocator, outer, holes);
+                defer fallback.deinit();
+                try appendBackendMesh(self.allocator, fallback, vertices, indices);
+            } else {
+                try appendBackendMesh(self.allocator, mesh, vertices, indices);
+            }
+        }
+
+        fn emitFistRaw(
+            self: *Self,
+            outer: []const Vec,
+            holes: []const []const Vec,
+            vertices: *std.ArrayList(Vec),
+            indices: *std.ArrayList(Index),
+            diagnostics: *Diagnostics,
+        ) !void {
+            diagnostics.experimental_used = true;
+            diagnostics.triangle_strategy = .fist_earcut_raw;
+            diagnostics.seed_backend = .fist_earcut;
+
+            var mesh = try FistBackend.triangulateRaw(self.allocator, outer, holes);
+            defer mesh.deinit();
+            diagnostics.area_error = relativeAreaError(mesh, outer, holes);
+            if (diagnostics.area_error > experimental_area_error_limit) {
+                diagnostics.fallback_used = true;
+                diagnostics.triangle_strategy = .stable_raw;
+                diagnostics.seed_backend = .stable_earcut;
+                var fallback = try Backend.triangulateRaw(self.allocator, outer, holes);
+                defer fallback.deinit();
+                try appendBackendMesh(self.allocator, fallback, vertices, indices);
+            } else {
+                try appendBackendMesh(self.allocator, mesh, vertices, indices);
+            }
+        }
+
+        fn emitFistBalanced(
+            self: *Self,
+            outer_range: ContourRange,
+            hole_ranges: []const ContourRange,
+            outer: []const Vec,
+            holes: []const []const Vec,
+            vertices: *std.ArrayList(Vec),
+            indices: *std.ArrayList(Index),
+            diagnostics: *Diagnostics,
+        ) !void {
+            diagnostics.experimental_used = true;
+            diagnostics.triangle_strategy = .fist_earcut_balanced;
+            diagnostics.seed_backend = .fist_earcut;
+
+            var mesh = try FistBackend.triangulateRaw(self.allocator, outer, holes);
+            defer mesh.deinit();
+            diagnostics.area_error = relativeAreaError(mesh, outer, holes);
+
+            var constraints: std.ArrayList(BoundaryEdge) = .empty;
+            defer constraints.deinit(self.allocator);
+            try self.addConstraintEdgesForGroup(outer_range, hole_ranges, &constraints);
+
+            const stats = try MeshRefiner.refine(
+                self.allocator,
+                mesh.vertices,
+                mesh.indices,
+                constraints.items,
+                0,
+            );
+            applyRefineStats(diagnostics, stats);
+
+            if (stats.missing_constraints != 0 or diagnostics.area_error > experimental_area_error_limit) {
+                diagnostics.fallback_used = true;
+                try self.emitStableBalanced(outer_range, hole_ranges, outer, holes, vertices, indices, diagnostics);
+            } else {
+                try appendBackendMesh(self.allocator, mesh, vertices, indices);
+            }
+        }
+
+        fn applyRefineStats(diagnostics: *Diagnostics, stats: MeshRefiner.Stats) void {
+            diagnostics.constraint_failures += stats.missing_constraints;
+            diagnostics.constraint_flips += stats.constraint_flips;
+            diagnostics.quality_flips += stats.quality_flips;
+            diagnostics.quality_budget_exhausted = diagnostics.quality_budget_exhausted or stats.quality_budget_exhausted;
+            diagnostics.refine_converged = diagnostics.refine_converged and !stats.quality_budget_exhausted;
+            diagnostics.refined = diagnostics.refined or stats.quality_flips != 0 or stats.constraint_flips != 0;
         }
 
         fn emitFastGroup(
@@ -409,6 +570,44 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
                 if (sign == 0) sign = s else if (sign != s) return false;
             }
             return true;
+        }
+
+        fn relativeAreaError(mesh: anytype, outer: []const Vec, holes: []const []const Vec) f64 {
+            const expected = expectedArea(outer, holes);
+            const got = meshArea(mesh);
+            if (expected <= 0) return if (got == 0) 0 else std.math.inf(f64);
+            return @abs(got - expected) / expected;
+        }
+
+        fn expectedArea(outer: []const Vec, holes: []const []const Vec) f64 {
+            var area = polygonAreaAbs(outer);
+            for (holes) |hole| area -= polygonAreaAbs(hole);
+            return @max(area, 0);
+        }
+
+        fn polygonAreaAbs(points: []const Vec) f64 {
+            if (points.len < 3) return 0;
+            var sum: f64 = 0;
+            var j = points.len - 1;
+            for (points, 0..) |p, i| {
+                const q = points[j];
+                sum += @as(f64, @floatCast(q.x)) * @as(f64, @floatCast(p.y)) -
+                    @as(f64, @floatCast(p.x)) * @as(f64, @floatCast(q.y));
+                j = i;
+            }
+            return @abs(sum) * 0.5;
+        }
+
+        fn meshArea(mesh: anytype) f64 {
+            var sum: f64 = 0;
+            var i: usize = 0;
+            while (i < mesh.indices.len) : (i += 3) {
+                const a = mesh.vertices[mesh.indices[i]];
+                const b = mesh.vertices[mesh.indices[i + 1]];
+                const c = mesh.vertices[mesh.indices[i + 2]];
+                sum += @abs(orient(a, b, c)) * 0.5;
+            }
+            return sum;
         }
 
         fn triQuality(a: Vec, b: Vec, c: Vec) W {

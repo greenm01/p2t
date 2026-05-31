@@ -394,6 +394,69 @@ test "fill tess reset reuses workspace for immediate mode" {
     try std.testing.expectEqual(@as(usize, 2), second.triangleCount());
 }
 
+test "fill tess strategy classifier keeps auto on stable backends" {
+    const F = tess.GpuFillTess;
+    const pts = [_]F.Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 5, .y = 0 },
+        .{ .x = 6, .y = 3 },
+        .{ .x = 3, .y = 5 },
+        .{ .x = 0, .y = 3 },
+    };
+
+    var ft = F.init(std.testing.allocator);
+    defer ft.deinit();
+
+    try ft.addContour(&pts, .solid);
+    var raw = try ft.tessellateFill(.{ .quality = .raw });
+    defer raw.deinit();
+    try std.testing.expectEqual(F.TriangleStrategy.stable_raw, raw.diagnostics.triangle_strategy);
+    try std.testing.expectEqual(F.SeedBackend.stable_earcut, raw.diagnostics.seed_backend);
+    try std.testing.expect(!raw.diagnostics.experimental_used);
+
+    ft.reset();
+    try ft.addContour(&pts, .solid);
+    var balanced = try ft.tessellateFill(.{ .quality = .balanced });
+    defer balanced.deinit();
+    try std.testing.expectEqual(F.TriangleStrategy.stable_balanced, balanced.diagnostics.triangle_strategy);
+    try std.testing.expectEqual(F.SeedBackend.stable_earcut, balanced.diagnostics.seed_backend);
+
+    ft.reset();
+    try ft.addContour(&pts, .solid);
+    var strict = try ft.tessellateFill(.{ .quality = .raw, .strategy = .strict });
+    defer strict.deinit();
+    try std.testing.expectEqual(F.TriangleStrategy.strict_cdt, strict.diagnostics.triangle_strategy);
+}
+
+test "fill tess experimental fist strategy is explicit and large-contour only" {
+    const F = tess.GpuFillTess;
+    const n = 96;
+    var pts: [n]F.Vec = undefined;
+    for (0..n) |k| {
+        const a = 2.0 * std.math.pi * @as(f32, @floatFromInt(k)) / @as(f32, n);
+        pts[k] = .{ .x = 80.0 * @cos(a), .y = 40.0 * @sin(a) };
+    }
+
+    var ft = F.init(std.testing.allocator);
+    defer ft.deinit();
+
+    try ft.addContour(&pts, .solid);
+    var stable = try ft.tessellateFill(.{ .quality = .raw });
+    defer stable.deinit();
+    try std.testing.expectEqual(F.TriangleStrategy.stable_raw, stable.diagnostics.triangle_strategy);
+    try std.testing.expect(!stable.diagnostics.experimental_used);
+
+    ft.reset();
+    try ft.addContour(&pts, .solid);
+    var experimental = try ft.tessellateFill(.{ .quality = .raw, .strategy = .experimental_fist });
+    defer experimental.deinit();
+    try std.testing.expectEqual(F.TriangleStrategy.fist_earcut_raw, experimental.diagnostics.triangle_strategy);
+    try std.testing.expectEqual(F.SeedBackend.fist_earcut, experimental.diagnostics.seed_backend);
+    try std.testing.expect(experimental.diagnostics.experimental_used);
+    try std.testing.expect(!experimental.diagnostics.fallback_used);
+    try std.testing.expect(experimental.diagnostics.area_error <= 1e-5);
+}
+
 fn fillTriMinAngleDeg(a: tess.GpuFillTess.Vec, b: tess.GpuFillTess.Vec, c: tess.GpuFillTess.Vec) f64 {
     const ax: f64 = a.x;
     const ay: f64 = a.y;

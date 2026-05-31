@@ -84,6 +84,20 @@
   - `earcut balanced` as `earcut raw` plus bounded local swaps,
   - no production default switch until area error and missing-boundary behavior are resolved.
 
+  ## Internal Triangle Strategy Classifier
+
+  `p2t` should assume the renderer has already decided that a triangle mesh is needed. Its internal classifier chooses which triangle builder to use, not whether analytic SDF, MSDF text, or sparse strips should run.
+
+  Current policy:
+
+  - Triangle and convex-quad inputs use the direct fast path.
+  - `.auto` and `.stable` stay on the current stable raw/balanced/strict backends.
+  - `.strict` forces the strict CDT-style path.
+  - `.experimental_fist` may use the FIST/Earcut seed only for large simple no-hole contours, then verifies area and constraints before accepting the mesh.
+  - Failed experimental diagnostics fall back to the stable path.
+
+  Diagnostics should report the chosen triangle strategy, seed backend, area error, constraint failures, quality flips, and whether an experimental path or fallback was used.
+
   ## Recommended Algorithm Direction
 
   For the next internal implementation, prioritize a mutable triangle adjacency mesh and edge-swap segment insertion.
