@@ -54,10 +54,12 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
             prev: u32, // node-pool indices (circular doubly-linked list)
             next: u32,
             steiner: bool,
+            removed: bool,
         };
 
         nodes: std.ArrayList(Node),
         out: std.ArrayList(Index),
+        reflex_candidates: std.ArrayList(u32),
         a: std.mem.Allocator,
 
         // ---- node-pool primitives ----
@@ -75,6 +77,7 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
                 .prev = nil,
                 .next = nil,
                 .steiner = false,
+                .removed = false,
             });
             return k;
         }
@@ -99,6 +102,7 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
             const n = self.node(k).next;
             self.node(p).next = n;
             self.node(n).prev = p;
+            self.node(k).removed = true;
         }
 
         // ---- geometry (all in W) ----
@@ -209,16 +213,20 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
             const by = self.node(b).y;
             const cx = self.node(c).x;
             const cy = self.node(c).y;
+            const min_x = @min(ax, @min(bx, cx));
+            const min_y = @min(ay, @min(by, cy));
+            const max_x = @max(ax, @max(bx, cx));
+            const max_y = @max(ay, @max(by, cy));
 
-            var p = self.node(c).next;
-            while (p != a) {
+            for (self.reflex_candidates.items) |p| {
+                if (p == a or p == b or p == c or self.node(p).removed) continue;
                 const pp = self.node(p);
+                if (pp.x < min_x or pp.x > max_x or pp.y < min_y or pp.y > max_y) continue;
                 if (pointInTriangle(ax, ay, bx, by, cx, cy, pp.x, pp.y) and
                     self.area(pp.prev, p, pp.next) >= 0)
                 {
                     return false;
                 }
-                p = self.node(p).next;
             }
             return true;
         }
@@ -232,6 +240,7 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
         fn earcutLinked(self: *Self, earIn: u32) !void {
             var ear = self.filterPoints(earIn, nil);
             if (ear == nil or self.node(ear).next == self.node(ear).prev) return;
+            try self.collectReflexCandidates(ear);
 
             var stop = ear;
             while (self.node(ear).prev != self.node(ear).next) {
@@ -253,6 +262,18 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
                     ear = self.node(ear).next;
                     stop = ear;
                 }
+            }
+        }
+
+        fn collectReflexCandidates(self: *Self, start: u32) !void {
+            self.reflex_candidates.clearRetainingCapacity();
+            var p = start;
+            while (true) {
+                if (!self.node(p).removed and self.area(self.node(p).prev, p, self.node(p).next) >= 0) {
+                    try self.reflex_candidates.append(self.a, p);
+                }
+                p = self.node(p).next;
+                if (p == start) break;
             }
         }
 
@@ -337,7 +358,9 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
                 {
                     const tan = @abs(hy - np.y) / (hx - np.x);
                     if (self.locallyInside(p, hole) and
-                        (tan < tanMin or (tan == tanMin and np.x > self.node(m).x)))
+                        (tan < tanMin or
+                            (tan == tanMin and
+                                (np.x > self.node(m).x or (np.x == self.node(m).x and self.sectorContainsSector(m, p))))))
                     {
                         m = p;
                         tanMin = tan;
@@ -347,6 +370,11 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
                 if (p == stop) break;
             }
             return m;
+        }
+
+        fn sectorContainsSector(self: *Self, m: u32, p: u32) bool {
+            return self.area(self.node(m).prev, m, self.node(p).prev) < 0 and
+                self.area(self.node(p).next, m, self.node(m).next) < 0;
         }
 
         fn eliminateHole(self: *Self, holeIn: u32, outerNode: u32) !u32 {
@@ -520,6 +548,7 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
             var total: usize = outer.len;
             for (holes) |h| total += h.len;
             try self.nodes.ensureTotalCapacity(self.a, total + total / 2 + holes.len * 2 + 8);
+            try self.reflex_candidates.ensureTotalCapacity(self.a, total + holes.len * 2);
             if (total >= 3) {
                 try self.out.ensureTotalCapacity(self.a, (total + holes.len * 2) * 3);
             }
@@ -620,8 +649,9 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
             outer: []const Vec,
             holes: []const []const Vec,
         ) !Mesh {
-            var self = Self{ .nodes = .empty, .out = .empty, .a = allocator };
+            var self = Self{ .nodes = .empty, .out = .empty, .reflex_candidates = .empty, .a = allocator };
             defer self.nodes.deinit(allocator);
+            defer self.reflex_candidates.deinit(allocator);
             errdefer self.out.deinit(allocator);
             return self.buildMesh(outer, holes, true);
         }
@@ -633,8 +663,9 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
             outer: []const Vec,
             holes: []const []const Vec,
         ) !Mesh {
-            var self = Self{ .nodes = .empty, .out = .empty, .a = allocator };
+            var self = Self{ .nodes = .empty, .out = .empty, .reflex_candidates = .empty, .a = allocator };
             defer self.nodes.deinit(allocator);
+            defer self.reflex_candidates.deinit(allocator);
             errdefer self.out.deinit(allocator);
             return self.buildMesh(outer, holes, false);
         }

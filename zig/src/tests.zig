@@ -46,6 +46,22 @@ fn expectValidCover(area: f64, m: anytype) !void {
     try std.testing.expectApproxEqAbs(area, meshArea(m), 1e-6);
 }
 
+fn expectTriangulatesWithHoles(outer: []const Vec, holes: []const []const Vec, expected_triangles: usize) !void {
+    var expected = polygonArea(outer);
+    for (holes) |hole| expected -= polygonArea(hole);
+
+    var stable = try T.triangulate(std.testing.allocator, outer, holes);
+    defer stable.deinit();
+    try expectValidCover(expected, stable);
+    try std.testing.expectEqual(expected_triangles, stable.triangleCount());
+
+    const E = tess.FistEarcut(Vec, u32);
+    var fist = try E.triangulateRaw(std.testing.allocator, outer, holes);
+    defer fist.deinit();
+    try expectValidCover(expected, fist);
+    try std.testing.expectEqual(expected_triangles, fist.triangleCount());
+}
+
 test "triangle" {
     const pts = [_]Vec{ .{ .x = 0, .y = 0 }, .{ .x = 4, .y = 0 }, .{ .x = 0, .y = 3 } };
     var m = try T.triangulateSimple(std.testing.allocator, &pts);
@@ -117,6 +133,61 @@ test "square with square hole" {
     try expectValidCover(84.0, m);
     // Outer(4) + hole(4) = 8 boundary vertices -> 8 triangles for an annulus.
     try std.testing.expectEqual(@as(usize, 8), m.triangleCount());
+}
+
+test "eberly ear clipping one hole bridge case" {
+    const outer = [_]Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 4, .y = 0 },
+        .{ .x = 3.2, .y = 8 },
+        .{ .x = 0, .y = 8 },
+    };
+    const hole = [_]Vec{
+        .{ .x = 2.5, .y = 3.5 },
+        .{ .x = 1.5, .y = 3 },
+        .{ .x = 1.5, .y = 4 },
+    };
+    try expectTriangulatesWithHoles(&outer, &.{&hole}, 7);
+}
+
+test "eberly ear clipping two holes shared bridge vertex case 1" {
+    const outer = [_]Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 4, .y = 0 },
+        .{ .x = 3.2, .y = 8 },
+        .{ .x = 0, .y = 8 },
+    };
+    const hole0 = [_]Vec{
+        .{ .x = 2, .y = 1.5 },
+        .{ .x = 1, .y = 1 },
+        .{ .x = 1, .y = 2 },
+    };
+    const hole1 = [_]Vec{
+        .{ .x = 2.5, .y = 3.5 },
+        .{ .x = 1.5, .y = 3 },
+        .{ .x = 1.5, .y = 4 },
+    };
+    try expectTriangulatesWithHoles(&outer, &.{ &hole0, &hole1 }, 12);
+}
+
+test "eberly ear clipping two holes shared bridge vertex case 2" {
+    const outer = [_]Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 4, .y = 0 },
+        .{ .x = 3, .y = 10 },
+        .{ .x = 0, .y = 10 },
+    };
+    const hole0 = [_]Vec{
+        .{ .x = 2.5, .y = 1.5 },
+        .{ .x = 1.5, .y = 1 },
+        .{ .x = 1.5, .y = 2 },
+    };
+    const hole1 = [_]Vec{
+        .{ .x = 2, .y = 3.5 },
+        .{ .x = 1, .y = 3 },
+        .{ .x = 1, .y = 4 },
+    };
+    try expectTriangulatesWithHoles(&outer, &.{ &hole0, &hole1 }, 12);
 }
 
 test "fist earcut raw covers polygon with hole" {
