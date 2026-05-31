@@ -113,6 +113,14 @@ task qualityLibtess2, "compare Delaunay triangle quality against libtess2":
 task test, "run p2t tests":
   nimRun("tests/test_p2t", outPath = "/tmp/p2t_test", nimcache = "/tmp/p2t_test_d")
 
+task testUnsafeCdt, "run p2t tests with CDT runtime checks disabled":
+  nimRun(
+    "tests/test_p2t",
+    flags = "-d:p2tUnsafeCdt",
+    outPath = "/tmp/p2t_test_unsafe_cdt",
+    nimcache = "/tmp/p2t_test_unsafe_cdt_d",
+  )
+
 task testMemory, "run repeated tessellation memory smoke":
   nimRun(
     "tests/test_memory",
@@ -129,6 +137,17 @@ task bench, "run p2t benchmark":
   )
   sh "strip " & quoteShell("/tmp/p2t_bench")
   sh quoteShell("/tmp/p2t_bench")
+
+task benchUnsafeCdt, "run p2t benchmark with CDT runtime checks disabled":
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tUnsafeCdt",
+    outPath = "/tmp/p2t_bench_unsafe_cdt",
+    nimcache = "/tmp/p2t_bench_unsafe_cdt_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_unsafe_cdt")
+  echo "p2t unsafe CDT"
+  sh quoteShell("/tmp/p2t_bench_unsafe_cdt")
 
 task sizes, "report core p2t CDT struct sizes":
   nimRun(
@@ -194,6 +213,32 @@ task benchFastPoly2Tri, "compare p2t against local fast-poly2tri":
   sh "strip " & quoteShell("/tmp/p2t_bench_cross")
   echo "p2t"
   sh quoteShell("/tmp/p2t_bench_cross")
+
+  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
+  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
+  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
+  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
+  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+
+task benchFastPoly2TriUnsafe, "compare unsafe CDT p2t against local fast-poly2tri":
+  let fastDir = findFastPoly2TriDir()
+  if fastDir.len == 0:
+    quit(
+      "fast-poly2tri not found; set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
+      QuitFailure,
+    )
+
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tUnsafeCdt",
+    outPath = "/tmp/p2t_bench_cross_unsafe_cdt",
+    nimcache = "/tmp/p2t_bench_cross_unsafe_cdt_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_cross_unsafe_cdt")
+  echo "p2t unsafe CDT"
+  sh quoteShell("/tmp/p2t_bench_cross_unsafe_cdt")
 
   let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
   sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &

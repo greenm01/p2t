@@ -13,6 +13,9 @@ import std/math
 
 import ../types
 
+when defined(p2tUnsafeCdt):
+  {.push checks: off.}
+
 const
   CdtNil = -1'i32
   Epsilon = 1e-12
@@ -1331,3 +1334,6 @@ proc triangulateCdtRaw*(workspace: var TessWorkspace, input: TessInput): CdtRawR
 
   workspace.cdt.triangulate()
   CdtRawResult(vertices: addr workspace.vertices, cdt: addr workspace.cdt)
+
+when defined(p2tUnsafeCdt):
+  {.pop.}
