@@ -126,6 +126,19 @@ suite "p2t tessellation":
     check result.ok
     check result.boundaryEdges.len == 4
 
+  test "trusted path matches default for clean oriented input":
+    let input = TessInput(
+      outer: contour(1, [vec2(0, 0), vec2(5, 0), vec2(5, 5), vec2(0, 5)]),
+      holes: @[contour(2, [vec2(1, 1), vec2(1, 2), vec2(2, 2), vec2(2, 1)])],
+    )
+    let safe = tessellate(input)
+    let trusted = tessellateTrusted(input)
+    check safe.ok
+    check trusted.ok
+    check trusted.vertices == safe.vertices
+    check trusted.triangles == safe.triangles
+    checkArea(trusted, 24)
+
 suite "original poly2tri fixtures":
   test "small fixture polygons":
     for name in ["test.dat", "diamond.dat", "star.dat", "strange.dat"]:

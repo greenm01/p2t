@@ -103,8 +103,15 @@ type
     scratch*: seq[int]
     cdt*: CdtWorkspace
 
+const DefaultTessEpsilon* = 1e-9
+
 proc defaultTessOptions*(): TessOptions =
-  TessOptions(epsilon: 1e-9, cleanInput: true, keepBoundaryEdges: false, validate: true)
+  TessOptions(
+    epsilon: DefaultTessEpsilon,
+    cleanInput: true,
+    keepBoundaryEdges: false,
+    validate: true,
+  )
 
 proc tessError*(
     kind: TessErrorKind, contourId = -1, pointIndex = -1, message = ""

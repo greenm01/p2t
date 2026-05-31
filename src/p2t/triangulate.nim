@@ -56,8 +56,88 @@ proc validateContours(
 
   true
 
+proc prepareContour[CleanInput, AssumeOriented: static bool](
+    contour: TessContour, eps: float64, ccw: static bool, error: var TessError
+): seq[Vec2] =
+  when CleanInput:
+    result = cleanContour(contour, eps, cleanInput = true, error)
+    if error.kind != tekNone:
+      return
+  else:
+    if contour.points.len == 0:
+      error = tessError(tekEmptyOuter, contour.id, -1, "contour has no points")
+      return
+    if contour.points.len < 3:
+      error = tessError(
+        tekTooFewVertices, contour.id, contour.points.len,
+        "contour has fewer than 3 vertices",
+      )
+      return
+    result = contour.points
+
+  when not AssumeOriented:
+    result.ensureOrientation(ccw)
+
+proc tessellateStatic*[
+    CleanInput, Validate, KeepBoundaryEdges, AssumeOriented: static bool
+](
+    workspace: var TessWorkspace, input: TessInput, epsilon = DefaultTessEpsilon
+): TessResult =
+  ## Compile-time-specialized tessellation.
+  ##
+  ## Set `CleanInput = false` only for trusted contours that are already free of
+  ## duplicates, zero-length edges, and collinear cleanup needs. Set
+  ## `AssumeOriented = true` only when the outer contour is CCW and holes are CW.
+  workspace.clear()
+
+  var error = tessError(tekNone)
+  var outer =
+    prepareContour[CleanInput, AssumeOriented](input.outer, epsilon, ccw = true, error)
+  if error.kind != tekNone:
+    return failure(error)
+
+  var holes: seq[seq[Vec2]] = @[]
+  for holeContour in input.holes:
+    let hole = prepareContour[CleanInput, AssumeOriented](
+      holeContour, epsilon, ccw = false, error
+    )
+    if error.kind != tekNone:
+      return failure(error)
+    holes.add hole
+
+  when Validate:
+    if not validateContours(outer, holes, epsilon, error):
+      return failure(error)
+
+  when KeepBoundaryEdges:
+    var boundaryEdges: seq[Edge] = @[]
+    boundaryEdges.addBoundaryEdges(0, outer.len)
+    var boundaryBase = outer.len
+    for hole in holes:
+      boundaryEdges.addBoundaryEdges(boundaryBase, hole.len)
+      inc boundaryBase, hole.len
+
+  when Validate:
+    for p in input.steiner:
+      if not pointInPolygon(p, outer, epsilon):
+        return failure(
+          tessError(tekInvalidHole, -1, -1, "Steiner point is outside outer contour")
+        )
+
+  try:
+    let cdtResult = workspace.triangulateCdt(
+      CdtInput(outer: outer, holes: holes, steiner: input.steiner)
+    )
+    workspace.vertices = cdtResult.vertices
+    when KeepBoundaryEdges:
+      success(cdtResult.vertices, cdtResult.triangles, boundaryEdges)
+    else:
+      success(cdtResult.vertices, cdtResult.triangles)
+  except CatchableError as err:
+    failure(tessError(tekTriangulationFailed, -1, -1, err.msg))
+
 proc tessellate*(
-    workspace: var TessWorkspace, input: TessInput, options = defaultTessOptions()
+    workspace: var TessWorkspace, input: TessInput, options: TessOptions
 ): TessResult =
   workspace.clear()
 
@@ -102,9 +182,30 @@ proc tessellate*(
   except CatchableError as err:
     failure(tessError(tekTriangulationFailed, -1, -1, err.msg))
 
-proc tessellate*(input: TessInput, options = defaultTessOptions()): TessResult =
+proc tessellate*(workspace: var TessWorkspace, input: TessInput): TessResult =
+  tessellateStatic[true, true, false, false](workspace, input)
+
+proc tessellateTrusted*(
+    workspace: var TessWorkspace, input: TessInput, epsilon = DefaultTessEpsilon
+): TessResult =
+  ## Fast path for already-clean, already-valid, already-oriented input.
+  ##
+  ## The outer contour must be counterclockwise, holes must be clockwise,
+  ## contours must be simple with no duplicate or degenerate points, and any
+  ## Steiner points must be inside the outer contour.
+  tessellateStatic[false, false, false, true](workspace, input, epsilon)
+
+proc tessellate*(input: TessInput): TessResult =
+  var workspace: TessWorkspace
+  workspace.tessellate(input)
+
+proc tessellate*(input: TessInput, options: TessOptions): TessResult =
   var workspace: TessWorkspace
   workspace.tessellate(input, options)
+
+proc tessellateTrusted*(input: TessInput, epsilon = DefaultTessEpsilon): TessResult =
+  var workspace: TessWorkspace
+  workspace.tessellateTrusted(input, epsilon)
 
 # A single triangulation is inherently serial (the advancing front is one chain
 # of data dependencies), but distinct inputs are independent. tessellateBatch

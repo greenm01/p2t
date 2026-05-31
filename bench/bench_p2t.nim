@@ -19,17 +19,42 @@ proc readDat(name: string): seq[Vec2] =
     let parts = trimmed.splitWhitespace()
     result.add vec2(parseFloat(parts[0]), parseFloat(parts[1]))
 
-proc bench(name: string, iterations: int, input: TessInput) =
+proc oriented(input: TessInput): TessInput =
+  result = input
+  result.outer.points.ensureOrientation(ccw = true)
+  for hole in result.holes.mitems:
+    hole.points.ensureOrientation(ccw = false)
+
+proc benchSafe(name: string, iterations: int, input: TessInput) =
   var workspace: TessWorkspace
+  var options = defaultTessOptions()
+  options.validate = false
   let start = getMonoTime()
   var triangles = 0
   for _ in 0 ..< iterations:
-    let result = workspace.tessellate(input)
+    let result = workspace.tessellate(input, options)
     if not result.ok:
       raise newException(ValueError, result.error.message)
     triangles += result.triangles.len
   let elapsed = inMicroseconds(getMonoTime() - start)
-  echo &"{name}: {iterations} runs, {triangles} triangles, {elapsed} us"
+  echo &"{name} no-validate: {iterations} runs, {triangles} triangles, {elapsed} us"
+
+proc benchTrusted(name: string, iterations: int, input: TessInput) =
+  var workspace: TessWorkspace
+  let trustedInput = input.oriented()
+  let start = getMonoTime()
+  var triangles = 0
+  for _ in 0 ..< iterations:
+    let result = workspace.tessellateTrusted(trustedInput)
+    if not result.ok:
+      raise newException(ValueError, result.error.message)
+    triangles += result.triangles.len
+  let elapsed = inMicroseconds(getMonoTime() - start)
+  echo &"{name} trusted: {iterations} runs, {triangles} triangles, {elapsed} us"
+
+proc bench(name: string, iterations: int, input: TessInput) =
+  benchSafe(name, iterations, input)
+  benchTrusted(name, iterations, input)
 
 bench(
   "small-ui-quad",
