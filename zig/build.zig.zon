@@ -1,0 +1,13 @@
+.{
+    .name = .p2t,
+    .version = "0.1.0",
+    .fingerprint = 0x11a8501682ffc0da,
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "docs",
+        "src",
+        "tests",
+    },
+}

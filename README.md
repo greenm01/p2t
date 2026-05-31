@@ -1,6 +1,8 @@
 # p2t
 
-`p2t` is a backend-neutral polygon tessellation library for Nim.
+`p2t` is a backend-neutral polygon tessellation sandbox. The original package is
+Nim-based; the `zig/` subtree contains the GPU-oriented Zig port being developed
+as a lightweight renderer tessellation library.
 
 The package intentionally has no dependency on Koi, Pixie, NanoVG, WGPU, WebGPU,
 or a graphics backend. It accepts plain contours and returns plain vertices,
@@ -11,7 +13,14 @@ to any backend.
 
 This package implements validation, contour cleanup, and a Nim port of the
 Poly2Tri advancing-front constrained-Delaunay triangulation algorithm behind the
-public API planned for Koi's future vector renderer.
+public API used by the renderer tessellation experiments.
+
+The Zig port exposes `GpuFillTess`, a renderer-facing workspace that accepts
+trusted fill contours and returns indexed triangles, optional boundary edges, and
+diagnostics. It is intentionally independent from okys, NanoVG, libtess2, Sokol,
+Wayland, and any GPU backend. okys should later consume it through a thin local
+Zig package dependency and keep path classification, caching, AA, and upload on
+the okys side.
 
 ## Commands
 
@@ -23,6 +32,19 @@ nimble benchLibtess2
 nimble benchParallel
 nimble tidy
 ```
+
+Zig port:
+
+```sh
+cd zig
+zig build test
+zig build bench
+zig build bench-compare
+zig build bench-gl-wayland
+```
+
+`zig build test` includes a package-consumer smoke test that imports `p2t` by
+module name, matching how okys should consume the library later.
 
 ## Parallelism
 
