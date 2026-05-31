@@ -65,8 +65,9 @@ proc benchRaw(name: string, iterations: int, input: TessInput) =
   benchLine(name, "raw", iterations):
     for _ in 0 ..< iterations:
       let result = workspace.tessellateTrustedRaw(trustedInput)
-      if not result.ok:
-        raise newException(ValueError, result.error.message)
+      when not defined(p2tFastRawCdt):
+        if not result.ok:
+          raise newException(ValueError, result.error.message)
       triangles += result.rawTriangleCount
 
 proc bench(name: string, iterations: int, input: TessInput) =

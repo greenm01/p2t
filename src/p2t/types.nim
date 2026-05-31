@@ -57,10 +57,15 @@ type
     edgeEvent*: CdtEdgeEvent
 
 when defined(p2tArenaCdt):
+  when defined(p2tFloat32Cdt):
+    type ArenaReal* = float32
+  else:
+    type ArenaReal* = float64
+
   type
     ArenaPoint* = object
       firstEdge*: ptr ArenaEdge
-      x*, y*: float64
+      x*, y*: ArenaReal
       sourceIndex*, id*: int32
 
     ArenaEdge* = object
@@ -76,14 +81,14 @@ when defined(p2tArenaCdt):
       next*, prev*: ptr ArenaNode
       point*: ptr ArenaPoint
       triangle*: ptr ArenaTriangle
-      value*: float64
+      value*: ArenaReal
 
     ArenaFront* = object
       head*, tail*, searchNode*: ptr ArenaNode
 
     ArenaBasin* = object
       leftNode*, bottomNode*, rightNode*: ptr ArenaNode
-      width*: float64
+      width*: ArenaReal
       leftHighest*: bool
 
     ArenaEdgeEvent* = object
@@ -99,7 +104,7 @@ when defined(p2tArenaCdt):
       sortTemp*: seq[ptr ArenaPoint]
       meshStack*: seq[ptr ArenaTriangle]
       interiorTriangles*: seq[ptr ArenaTriangle]
-      pointCount*, edgeCount*, triangleCount*, nodeCount*: int
+      pointCount*, edgeCount*, triangleCount*, nodeCount*, rawInteriorCount*: int
       front*: ArenaFront
       head*, tail*: ptr ArenaPoint
       afHead*, afMiddle*, afTail*: ptr ArenaNode

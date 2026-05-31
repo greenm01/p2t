@@ -129,6 +129,14 @@ task testArenaCdt, "run p2t tests with arena-backed CDT":
     nimcache = "/tmp/p2t_test_arena_cdt_d",
   )
 
+task testArenaFloat32Cdt, "run p2t tests with arena-backed float32 CDT":
+  nimRun(
+    "tests/test_p2t",
+    flags = "-d:p2tArenaCdt -d:p2tFloat32Cdt",
+    outPath = "/tmp/p2t_test_arena_float32_cdt",
+    nimcache = "/tmp/p2t_test_arena_float32_cdt_d",
+  )
+
 task testMemory, "run repeated tessellation memory smoke":
   nimRun(
     "tests/test_memory",
@@ -167,6 +175,17 @@ task benchArenaCdt, "run p2t benchmark with arena-backed CDT":
   sh "strip " & quoteShell("/tmp/p2t_bench_arena_cdt")
   echo "p2t arena CDT"
   sh quoteShell("/tmp/p2t_bench_arena_cdt")
+
+task benchArenaFloat32Cdt, "run p2t benchmark with arena-backed float32 CDT":
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tFloat32Cdt",
+    outPath = "/tmp/p2t_bench_arena_float32_cdt",
+    nimcache = "/tmp/p2t_bench_arena_float32_cdt_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_arena_float32_cdt")
+  echo "p2t arena float32 CDT"
+  sh quoteShell("/tmp/p2t_bench_arena_float32_cdt")
 
 task sizes, "report core p2t CDT struct sizes":
   nimRun(
@@ -284,6 +303,58 @@ task benchFastPoly2TriArena, "compare arena CDT p2t against local fast-poly2tri"
   sh "strip " & quoteShell("/tmp/p2t_bench_cross_arena_cdt")
   echo "p2t arena unsafe CDT"
   sh quoteShell("/tmp/p2t_bench_cross_arena_cdt")
+
+  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
+  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
+  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
+  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
+  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+
+task benchBestFastPoly2Tri, "compare best raw trusted p2t against local fast-poly2tri":
+  let fastDir = findFastPoly2TriDir()
+  if fastDir.len == 0:
+    quit(
+      "fast-poly2tri not found; set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
+      QuitFailure,
+    )
+
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt",
+    outPath = "/tmp/p2t_bench_best",
+    nimcache = "/tmp/p2t_bench_best_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_best")
+  echo "p2t best raw trusted CDT"
+  sh quoteShell("/tmp/p2t_bench_best")
+
+  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
+  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
+  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
+  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
+  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+
+task benchBestFastPoly2TriFloat32, "compare best float32 raw trusted p2t against local fast-poly2tri":
+  let fastDir = findFastPoly2TriDir()
+  if fastDir.len == 0:
+    quit(
+      "fast-poly2tri not found; set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
+      QuitFailure,
+    )
+
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFloat32Cdt -d:p2tFastRawCdt",
+    outPath = "/tmp/p2t_bench_best_float32",
+    nimcache = "/tmp/p2t_bench_best_float32_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_best_float32")
+  echo "p2t best float32 raw trusted CDT"
+  sh quoteShell("/tmp/p2t_bench_best_float32")
 
   let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
   sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &

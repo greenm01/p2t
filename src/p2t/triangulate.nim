@@ -209,7 +209,8 @@ proc tessellateTrustedRaw*(
   ## cleared or reused. Use `rawTriangleCount`, `rawTrianglePoints`, and
   ## `rawTriangleVertices` to inspect the triangulation without materializing a
   ## public `TessResult`.
-  workspace.clear()
+  when not defined(p2tFastRawCdt):
+    workspace.clear()
 
   if input.outer.points.len == 0:
     return TessRawResult(ok: false, error: tessError(tekEmptyOuter, input.outer.id))
@@ -231,26 +232,43 @@ proc tessellateTrustedRaw*(
         ),
       )
 
-  try:
+  when defined(p2tFastRawCdt):
     let raw = workspace.triangulateCdtRaw(input)
     when defined(p2tArenaCdt):
-      TessRawResult(
+      return TessRawResult(
         ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
       )
     else:
-      TessRawResult(
+      return TessRawResult(
         ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
       )
-  except CatchableError as err:
-    TessRawResult(ok: false, error: tessError(tekTriangulationFailed, -1, -1, err.msg))
+  else:
+    try:
+      let raw = workspace.triangulateCdtRaw(input)
+      when defined(p2tArenaCdt):
+        TessRawResult(
+          ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
+        )
+      else:
+        TessRawResult(
+          ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
+        )
+    except CatchableError as err:
+      TessRawResult(
+        ok: false, error: tessError(tekTriangulationFailed, -1, -1, err.msg)
+      )
 
-proc rawTriangleCount*(raw: TessRawResult): int =
+proc rawTriangleCount*(raw: TessRawResult): int {.inline.} =
   cdt.rawTriangleCount(raw)
 
-proc rawTrianglePoints*(raw: TessRawResult, triangleIndex: int): array[3, CdtPointId] =
+proc rawTrianglePoints*(
+    raw: TessRawResult, triangleIndex: int
+): array[3, CdtPointId] {.inline.} =
   cdt.rawTrianglePoints(raw, triangleIndex)
 
-proc rawTriangleVertices*(raw: TessRawResult, triangleIndex: int): array[3, Vec2] =
+proc rawTriangleVertices*(
+    raw: TessRawResult, triangleIndex: int
+): array[3, Vec2] {.inline.} =
   cdt.rawTriangleVertices(raw, triangleIndex)
 
 proc tessellate*(input: TessInput): TessResult =
