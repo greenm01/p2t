@@ -132,29 +132,41 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
         allocator: std.mem.Allocator,
         points: std.ArrayList(Vec),
         contours: std.ArrayList(ContourRange),
+        refiner: MeshRefiner,
+        fist_backend: FistBackend,
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return .{
                 .allocator = allocator,
                 .points = .empty,
                 .contours = .empty,
+                .refiner = MeshRefiner.init(allocator),
+                .fist_backend = FistBackend.init(allocator),
             };
         }
 
         pub fn deinit(self: *Self) void {
             self.points.deinit(self.allocator);
             self.contours.deinit(self.allocator);
+            self.refiner.deinit();
+            self.fist_backend.deinit();
             self.* = undefined;
         }
 
         pub fn reset(self: *Self) void {
             self.points.clearRetainingCapacity();
             self.contours.clearRetainingCapacity();
+            self.refiner.reset();
+            self.fist_backend.reset();
         }
 
         pub fn reserve(self: *Self, point_count: usize, contour_count: usize) !void {
             try self.points.ensureTotalCapacity(self.allocator, point_count);
             try self.contours.ensureTotalCapacity(self.allocator, contour_count);
+            if (point_count >= 3) {
+                try self.refiner.reserve(point_count - 2, point_count);
+                try self.fist_backend.reserve(point_count, contour_count);
+            }
         }
 
         pub fn addContour(self: *Self, points: []const Vec, kind: ContourKind) !void {
@@ -178,6 +190,7 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
             errdefer indices.deinit(self.allocator);
             var boundary_edges: std.ArrayList(BoundaryEdge) = .empty;
             errdefer boundary_edges.deinit(self.allocator);
+            try self.reserveOutput(options, &vertices, &indices, &boundary_edges);
 
             var diagnostics = Diagnostics{
                 .contours = self.contours.items.len,
@@ -357,8 +370,7 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
             defer constraints.deinit(self.allocator);
             try self.addConstraintEdgesForGroup(outer_range, hole_ranges, &constraints);
 
-            const stats = try MeshRefiner.refine(
-                self.allocator,
+            const stats = try self.refiner.refineInPlace(
                 mesh.vertices,
                 mesh.indices,
                 constraints.items,
@@ -389,7 +401,7 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
             diagnostics.triangle_strategy = .fist_earcut_raw;
             diagnostics.seed_backend = .fist_earcut;
 
-            var mesh = try FistBackend.triangulateRaw(self.allocator, outer, holes);
+            var mesh = try self.fist_backend.tessellateRaw(outer, holes);
             defer mesh.deinit();
             diagnostics.area_error = relativeAreaError(mesh, outer, holes);
             if (diagnostics.area_error > experimental_area_error_limit) {
@@ -418,7 +430,7 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
             diagnostics.triangle_strategy = .fist_earcut_balanced;
             diagnostics.seed_backend = .fist_earcut;
 
-            var mesh = try FistBackend.triangulateRaw(self.allocator, outer, holes);
+            var mesh = try self.fist_backend.tessellateRaw(outer, holes);
             defer mesh.deinit();
             diagnostics.area_error = relativeAreaError(mesh, outer, holes);
 
@@ -426,8 +438,7 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
             defer constraints.deinit(self.allocator);
             try self.addConstraintEdgesForGroup(outer_range, hole_ranges, &constraints);
 
-            const stats = try MeshRefiner.refine(
-                self.allocator,
+            const stats = try self.refiner.refineInPlace(
                 mesh.vertices,
                 mesh.indices,
                 constraints.items,
@@ -475,6 +486,24 @@ pub fn FillTessellator(comptime Coord: type, comptime Index: type) type {
                 try addLoopEdges(base, @intCast(outer_range.len), boundary_edges, self.allocator);
             }
             return true;
+        }
+
+        fn reserveOutput(
+            self: *Self,
+            options: Options,
+            vertices: *std.ArrayList(Vec),
+            indices: *std.ArrayList(Index),
+            boundary_edges: *std.ArrayList(BoundaryEdge),
+        ) !void {
+            const point_count = self.points.items.len;
+            try vertices.ensureTotalCapacity(self.allocator, point_count);
+            if (point_count >= 3) {
+                const contour_slack = self.contours.items.len * 2;
+                try indices.ensureTotalCapacity(self.allocator, (point_count + contour_slack) * 3);
+            }
+            if (options.keep_boundary_edges) {
+                try boundary_edges.ensureTotalCapacity(self.allocator, point_count);
+            }
         }
 
         fn addBoundaryEdgesForGroup(

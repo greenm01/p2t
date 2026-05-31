@@ -158,6 +158,37 @@ test "fist earcut z-order path covers large concave contour" {
     try std.testing.expectEqual(@as(usize, n - 2), m.triangleCount());
 }
 
+test "fist earcut workspace can be reused" {
+    const E = tess.FistEarcut(Vec, u32);
+    const a = [_]Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 20, .y = 0 },
+        .{ .x = 20, .y = 10 },
+        .{ .x = 0, .y = 10 },
+    };
+    const b = [_]Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 8, .y = 0 },
+        .{ .x = 12, .y = 6 },
+        .{ .x = 4, .y = 12 },
+        .{ .x = -2, .y = 5 },
+    };
+
+    var earcut = E.init(std.testing.allocator);
+    defer earcut.deinit();
+    try earcut.reserve(16, 0);
+
+    var ma = try earcut.tessellateRaw(&a, &.{});
+    defer ma.deinit();
+    try expectValidCover(polygonArea(&a), ma);
+    try std.testing.expectEqual(@as(usize, 2), ma.triangleCount());
+
+    var mb = try earcut.tessellateRaw(&b, &.{});
+    defer mb.deinit();
+    try expectValidCover(polygonArea(&b), mb);
+    try std.testing.expectEqual(@as(usize, 3), mb.triangleCount());
+}
+
 fn triMinAngleDeg(a: Vec, b: Vec, c: Vec) f64 {
     const la = @sqrt((b.x - c.x) * (b.x - c.x) + (b.y - c.y) * (b.y - c.y));
     const lb = @sqrt((a.x - c.x) * (a.x - c.x) + (a.y - c.y) * (a.y - c.y));
@@ -547,4 +578,28 @@ test "mutable mesh inserts missing constraint by edge swap" {
         }
     }
     try std.testing.expect(has_constraint);
+}
+
+test "mutable mesh refiner workspace can be reused" {
+    const F = tess.GpuFillTess;
+    const R = mutable.Refiner(F.Vec, u32);
+    const pts = [_]F.Vec{
+        .{ .x = 0, .y = 0 },
+        .{ .x = 1, .y = 0 },
+        .{ .x = 1, .y = 1 },
+        .{ .x = 0, .y = 1 },
+    };
+    const constraints = [_]R.Edge{.{ 0, 2 }};
+    var refiner = R.init(std.testing.allocator);
+    defer refiner.deinit();
+
+    var first = [_]u32{ 0, 1, 3, 1, 2, 3 };
+    const first_stats = try refiner.refineInPlace(&pts, &first, &constraints, 0);
+    try std.testing.expectEqual(@as(usize, 0), first_stats.missing_constraints);
+    try std.testing.expectEqual(@as(usize, 1), first_stats.constraint_flips);
+
+    var second = [_]u32{ 0, 1, 3, 1, 2, 3 };
+    const second_stats = try refiner.refineInPlace(&pts, &second, &constraints, 0);
+    try std.testing.expectEqual(@as(usize, 0), second_stats.missing_constraints);
+    try std.testing.expectEqual(@as(usize, 1), second_stats.constraint_flips);
 }

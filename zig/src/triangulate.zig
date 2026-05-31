@@ -519,6 +519,10 @@ pub fn Tessellator(comptime Coord: type, comptime Index: type) type {
         ) !Mesh {
             var total: usize = outer.len;
             for (holes) |h| total += h.len;
+            try self.nodes.ensureTotalCapacity(self.a, total + total / 2 + holes.len * 2 + 8);
+            if (total >= 3) {
+                try self.out.ensureTotalCapacity(self.a, (total + holes.len * 2) * 3);
+            }
 
             const verts = try self.a.alloc(Vec, total);
             errdefer self.a.free(verts);

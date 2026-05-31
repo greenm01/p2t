@@ -54,9 +54,45 @@ pub fn FistEarcut(comptime VecType: type, comptime Index: type) type {
             }
         };
 
+        const ZRef = struct {
+            z: u32,
+            node: u32,
+        };
+
         nodes: std.ArrayList(Node),
         out: std.ArrayList(Index),
+        sort_queue: std.ArrayList(ZRef) = .empty,
         a: std.mem.Allocator,
+
+        pub fn init(allocator: std.mem.Allocator) Self {
+            return .{
+                .nodes = .empty,
+                .out = .empty,
+                .a = allocator,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.nodes.deinit(self.a);
+            self.out.deinit(self.a);
+            self.sort_queue.deinit(self.a);
+            self.* = undefined;
+        }
+
+        pub fn reset(self: *Self) void {
+            self.nodes.clearRetainingCapacity();
+            self.out.clearRetainingCapacity();
+            self.sort_queue.clearRetainingCapacity();
+        }
+
+        pub fn reserve(self: *Self, point_count: usize, hole_count: usize) !void {
+            const node_capacity = point_count + point_count / 2 + hole_count * 2 + 8;
+            try self.nodes.ensureTotalCapacity(self.a, node_capacity);
+            if (point_count >= 3) {
+                try self.out.ensureTotalCapacity(self.a, (point_count + hole_count * 2) * 3);
+            }
+            try self.sort_queue.ensureTotalCapacity(self.a, point_count);
+        }
 
         inline fn node(self: *Self, k: u32) *Node {
             return &self.nodes.items[k];
@@ -182,7 +218,7 @@ pub fn FistEarcut(comptime VecType: type, comptime Index: type) type {
         fn earcutLinked(self: *Self, ear_in: u32, bounds: Bounds, pass: i32) std.mem.Allocator.Error!void {
             var ear = if (pass == -1) self.filterPoints(ear_in, nil) else ear_in;
             if (ear == nil) return;
-            if (pass == -1 and bounds.enabled()) self.indexCurve(ear, bounds);
+            if (pass == -1 and bounds.enabled()) try self.indexCurve(ear, bounds);
 
             var stop = ear;
             while (self.node(ear).prev != self.node(ear).next) {
@@ -296,23 +332,28 @@ pub fn FistEarcut(comptime VecType: type, comptime Index: type) type {
             return lx | (ly << 1);
         }
 
-        fn indexCurve(self: *Self, start: u32, bounds: Bounds) void {
+        fn indexCurve(self: *Self, start: u32, bounds: Bounds) !void {
+            self.sort_queue.clearRetainingCapacity();
             var p = start;
             while (true) {
                 if (!self.node(p).z_valid) {
                     self.node(p).z = zOrder(self.node(p).x, self.node(p).y, bounds);
                     self.node(p).z_valid = true;
                 }
-                self.node(p).prev_z = self.node(p).prev;
-                self.node(p).next_z = self.node(p).next;
+                try self.sort_queue.append(self.a, .{ .z = self.node(p).z, .node = p });
                 p = self.node(p).next;
                 if (p == start) break;
             }
 
-            const tail = self.node(p).prev_z;
-            self.node(tail).next_z = nil;
-            self.node(p).prev_z = nil;
-            _ = self.sortLinked(p);
+            std.mem.sortUnstable(ZRef, self.sort_queue.items, {}, lessZRef);
+            for (self.sort_queue.items, 0..) |item, idx| {
+                self.node(item.node).prev_z = if (idx == 0) nil else self.sort_queue.items[idx - 1].node;
+                self.node(item.node).next_z = if (idx + 1 == self.sort_queue.items.len) nil else self.sort_queue.items[idx + 1].node;
+            }
+        }
+
+        fn lessZRef(_: void, lhs: ZRef, rhs: ZRef) bool {
+            return lhs.z < rhs.z;
         }
 
         fn sortLinked(self: *Self, list: u32) u32 {
@@ -656,9 +697,11 @@ pub fn FistEarcut(comptime VecType: type, comptime Index: type) type {
             return .{ .min_x = min_x, .min_y = min_y, .inv_size = if (size == 0) 0 else 32767.0 / size };
         }
 
-        fn buildMesh(self: *Self, outer: []const Vec, holes: []const []const Vec) !Mesh {
+        fn buildMesh(self: *Self, outer: []const Vec, holes: []const []const Vec, retain_scratch: bool) !Mesh {
+            self.reset();
             var total: usize = outer.len;
             for (holes) |h| total += h.len;
+            try self.reserve(total, holes.len);
 
             const verts = try self.a.alloc(Vec, total);
             errdefer self.a.free(verts);
@@ -675,9 +718,15 @@ pub fn FistEarcut(comptime VecType: type, comptime Index: type) type {
                 try self.earcutLinked(ring, computeBounds(outer, holes), -1);
             }
 
+            const out_indices = if (retain_scratch)
+                try self.a.dupe(Index, self.out.items)
+            else
+                try self.out.toOwnedSlice(self.a);
+            errdefer self.a.free(out_indices);
+
             return .{
                 .vertices = verts,
-                .indices = try self.out.toOwnedSlice(self.a),
+                .indices = out_indices,
                 .allocator = self.a,
             };
         }
@@ -687,10 +736,13 @@ pub fn FistEarcut(comptime VecType: type, comptime Index: type) type {
             outer: []const Vec,
             holes: []const []const Vec,
         ) !Mesh {
-            var self = Self{ .nodes = .empty, .out = .empty, .a = allocator };
-            defer self.nodes.deinit(allocator);
-            errdefer self.out.deinit(allocator);
-            return self.buildMesh(outer, holes);
+            var self = Self.init(allocator);
+            defer self.deinit();
+            return self.buildMesh(outer, holes, false);
+        }
+
+        pub fn tessellateRaw(self: *Self, outer: []const Vec, holes: []const []const Vec) !Mesh {
+            return self.buildMesh(outer, holes, true);
         }
 
         pub fn triangulateSimple(allocator: std.mem.Allocator, points: []const Vec) !Mesh {

@@ -27,8 +27,67 @@ pub fn Refiner(comptime VecType: type, comptime Index: type) type {
             slot: u8,
         };
 
+        allocator: std.mem.Allocator,
+        tv: std.ArrayList([3]Index) = .empty,
+        tn: std.ArrayList([3]u32) = .empty,
+        stack: std.ArrayList(u32) = .empty,
+        adjacency: std.AutoHashMap(u64, HalfEdge),
+        constraints: std.AutoHashMap(u64, void),
+        edge_set: std.AutoHashMap(u64, void),
+
+        pub fn init(allocator: std.mem.Allocator) Self {
+            return .{
+                .allocator = allocator,
+                .adjacency = std.AutoHashMap(u64, HalfEdge).init(allocator),
+                .constraints = std.AutoHashMap(u64, void).init(allocator),
+                .edge_set = std.AutoHashMap(u64, void).init(allocator),
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            const allocator = self.allocator;
+            self.tv.deinit(allocator);
+            self.tn.deinit(allocator);
+            self.stack.deinit(allocator);
+            self.adjacency.deinit();
+            self.constraints.deinit();
+            self.edge_set.deinit();
+            self.* = undefined;
+        }
+
+        pub fn reset(self: *Self) void {
+            self.tv.clearRetainingCapacity();
+            self.tn.clearRetainingCapacity();
+            self.stack.clearRetainingCapacity();
+            self.adjacency.clearRetainingCapacity();
+            self.constraints.clearRetainingCapacity();
+            self.edge_set.clearRetainingCapacity();
+        }
+
+        pub fn reserve(self: *Self, triangle_count: usize, constraint_count: usize) !void {
+            const allocator = self.allocator;
+            try self.tv.ensureTotalCapacity(allocator, triangle_count);
+            try self.tn.ensureTotalCapacity(allocator, triangle_count);
+            try self.stack.ensureTotalCapacity(allocator, triangle_count * 3);
+            try self.adjacency.ensureTotalCapacity(@intCast(triangle_count * 3));
+            try self.constraints.ensureTotalCapacity(@intCast(constraint_count));
+            try self.edge_set.ensureTotalCapacity(@intCast(triangle_count * 3));
+        }
+
         pub fn refine(
             allocator: std.mem.Allocator,
+            vertices: []const Vec,
+            indices: []Index,
+            constraints_in: []const Edge,
+            budget_in: usize,
+        ) !Stats {
+            var self = Self.init(allocator);
+            defer self.deinit();
+            return self.refineInPlace(vertices, indices, constraints_in, budget_in);
+        }
+
+        pub fn refineInPlace(
+            self: *Self,
             vertices: []const Vec,
             indices: []Index,
             constraints_in: []const Edge,
@@ -37,48 +96,45 @@ pub fn Refiner(comptime VecType: type, comptime Index: type) type {
             var stats = Stats{};
             if (indices.len < 6) return stats;
 
+            const allocator = self.allocator;
             const ntri = indices.len / 3;
-            var tv = try allocator.alloc([3]Index, ntri);
-            defer allocator.free(tv);
-            var tn = try allocator.alloc([3]u32, ntri);
-            defer allocator.free(tn);
+            self.reset();
+            try self.reserve(ntri, constraints_in.len);
+            try self.tv.resize(allocator, ntri);
+            try self.tn.resize(allocator, ntri);
+            const tv = self.tv.items;
+            const tn = self.tn.items;
             for (0..ntri) |t| {
                 tv[t] = .{ indices[t * 3], indices[t * 3 + 1], indices[t * 3 + 2] };
                 tn[t] = .{ nil, nil, nil };
             }
 
-            var constraints = std.AutoHashMap(u64, void).init(allocator);
-            defer constraints.deinit();
             for (constraints_in) |edge| {
-                try constraints.put(edgeKey(edge[0], edge[1]), {});
+                try self.constraints.put(edgeKey(edge[0], edge[1]), {});
             }
 
-            try buildAdjacency(allocator, tv, tn);
-            var edge_set = std.AutoHashMap(u64, void).init(allocator);
-            defer edge_set.deinit();
-            try buildEdgeSet(tv, &edge_set);
+            try self.buildAdjacency(tv, tn);
+            try buildEdgeSet(tv, &self.edge_set);
 
             var constraint_budget = 16 * ntri + 64;
             for (constraints_in) |edge| {
-                const present = edge_set.contains(edgeKey(edge[0], edge[1]));
+                const present = self.edge_set.contains(edgeKey(edge[0], edge[1]));
                 if (!present) {
-                    _ = insertConstraintBySwaps(vertices, tv, tn, &constraints, edge[0], edge[1], &constraint_budget, &stats);
+                    _ = insertConstraintBySwaps(vertices, tv, tn, &self.constraints, edge[0], edge[1], &constraint_budget, &stats);
                 }
                 if (!present and !edgeExists(tv, edge[0], edge[1])) stats.missing_constraints += 1;
             }
             if (stats.missing_constraints != 0) return stats;
 
-            var stack: std.ArrayList(u32) = .empty;
-            defer stack.deinit(allocator);
-            try stack.ensureTotalCapacity(allocator, ntri * 3);
+            try self.stack.ensureTotalCapacity(allocator, ntri * 3);
             for (0..ntri) |t| {
-                for (0..3) |slot| stack.appendAssumeCapacity(@intCast(t * 3 + slot));
+                for (0..3) |slot| self.stack.appendAssumeCapacity(@intCast(t * 3 + slot));
             }
 
             var budget = if (budget_in == 0) 32 * ntri + 64 else budget_in;
-            while (stack.pop()) |he| {
+            while (self.stack.pop()) |he| {
                 if (budget == 0) {
-                    stats.quality_budget_exhausted = stack.items.len > 0;
+                    stats.quality_budget_exhausted = self.stack.items.len > 0;
                     break;
                 }
                 budget -= 1;
@@ -91,7 +147,7 @@ pub fn Refiner(comptime VecType: type, comptime Index: type) type {
 
                 const s1 = tv[t][(e + 1) % 3];
                 const s2 = tv[t][(e + 2) % 3];
-                if (constraints.contains(edgeKey(s1, s2))) continue;
+                if (self.constraints.contains(edgeKey(s1, s2))) continue;
 
                 var f: usize = 0;
                 while (f < 3 and tn[ot][f] != t) : (f += 1) {}
@@ -104,10 +160,10 @@ pub fn Refiner(comptime VecType: type, comptime Index: type) type {
                 if (!flipEdge(vertices, tv, tn, t, e)) continue;
 
                 stats.quality_flips += 1;
-                try stack.append(allocator, @intCast(t * 3 + 1));
-                try stack.append(allocator, @intCast(t * 3 + 2));
-                try stack.append(allocator, @intCast(ot * 3 + 0));
-                try stack.append(allocator, @intCast(ot * 3 + 2));
+                try self.stack.append(allocator, @intCast(t * 3 + 1));
+                try self.stack.append(allocator, @intCast(t * 3 + 2));
+                try self.stack.append(allocator, @intCast(ot * 3 + 0));
+                try self.stack.append(allocator, @intCast(ot * 3 + 2));
             }
 
             for (0..ntri) |t| {
@@ -118,20 +174,19 @@ pub fn Refiner(comptime VecType: type, comptime Index: type) type {
             return stats;
         }
 
-        fn buildAdjacency(allocator: std.mem.Allocator, tv: []const [3]Index, tn: [][3]u32) !void {
-            var map = std.AutoHashMap(u64, HalfEdge).init(allocator);
-            defer map.deinit();
+        fn buildAdjacency(self: *Self, tv: []const [3]Index, tn: [][3]u32) !void {
+            try self.adjacency.ensureTotalCapacity(@intCast(tv.len * 3));
             for (tv, 0..) |tri, t| {
                 for (0..3) |slot| {
                     const a = tri[(slot + 1) % 3];
                     const b = tri[(slot + 2) % 3];
                     const key = edgeKey(a, b);
-                    if (map.fetchRemove(key)) |kv| {
+                    if (self.adjacency.fetchRemove(key)) |kv| {
                         const other = kv.value;
                         tn[t][slot] = other.tri;
                         tn[other.tri][other.slot] = @intCast(t);
                     } else {
-                        try map.put(key, .{ .tri = @intCast(t), .slot = @intCast(slot) });
+                        try self.adjacency.put(key, .{ .tri = @intCast(t), .slot = @intCast(slot) });
                     }
                 }
             }
