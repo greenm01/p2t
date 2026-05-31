@@ -1,17 +1,6 @@
 # p2t
 
-`p2t` is a backend-neutral polygon tessellation library for Nim.
-
-The package intentionally has no dependency on Koi, Pixie, NanoVG, WGPU, WebGPU,
-or a graphics backend. It accepts plain contours and returns plain vertices,
-triangle indices, and optional boundary-edge metadata that a renderer can upload
-to any backend.
-
-## Status
-
-This package implements validation, contour cleanup, and a Nim port of the
-Poly2Tri advancing-front constrained-Delaunay triangulation algorithm behind the
-public API planned for Koi's future vector renderer.
+`p2t` a tessellation library for Nim.
 
 ## Commands
 
@@ -23,24 +12,6 @@ nimble benchLibtess2
 nimble benchParallel
 nimble tidy
 ```
-
-## Parallelism
-
-A single triangulation is serial (the advancing front is one chain of data
-dependencies), but distinct inputs are independent. `tessellateBatch` triangulates
-many inputs across threads — one reused `TessWorkspace` per thread — which is the
-practical way to get high throughput from a renderer tessellating many shapes.
-
-Compile multi-threaded callers with `-d:useMalloc`: worker threads allocate the
-result buffers the caller then owns, and Nim's default per-thread heap regions
-make that cross-thread transfer unsafe. `nimble benchParallel` shows the scaling.
-
-`nimble testLibtess2` compares the `dude.dat` fixture against a local libtess2
-checkout. It auto-detects `~/src/libtess2` and `../libtess2`; otherwise set
-`LIBTESS2_DIR=/path/to/libtess2`.
-`nimble benchLibtess2` runs the same fixture as a release benchmark.
-`nimble qualityLibtess2` reports the Delaunay triangle quality (angle
-distribution, slivers, aspect ratio) of `p2t` against libtess2.
 
 ## References
 
