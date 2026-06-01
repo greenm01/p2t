@@ -3,6 +3,7 @@ const Io = std.Io;
 const parser = @import("parser.zig");
 const mesh = @import("mesh.zig");
 const triangulate = @import("triangulate.zig");
+const corridor_module = @import("corridor.zig");
 
 pub fn readFile(allocator: std.mem.Allocator, io: Io, path: []const u8) ![]u8 {
     const dir = Io.Dir.cwd();
@@ -51,6 +52,27 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
 
         for (vertices) |v| {
             try engine.insertPoint(&arena, v);
+        }
+
+        // Phase 5: Constraint Recovery
+        var corridor = corridor_module.Corridor{};
+        defer corridor.deinit(allocator);
+
+        for (0..vertices.len) |i| {
+            const start_idx = @as(i32, @intCast(i));
+            const end_idx = @as(i32, @intCast((i + 1) % vertices.len));
+            
+            const start_pt = engine.getVertex(start_idx);
+            const end_pt = engine.getVertex(end_idx);
+
+            corridor.pierced_triangles.clearRetainingCapacity();
+
+            // Find triangle containing start_pt to begin tracing
+            const start_tri = engine.walk(engine.last_valid_tri, start_pt);
+            if (start_tri >= 0) {
+                try corridor.trace(allocator, &engine, start_tri, end_pt, start_pt);
+                try corridor.clearAndRetriangulate(allocator, &engine, &arena, start_idx, end_idx);
+            }
         }
 
         var ts_end: std.os.linux.timespec = undefined;

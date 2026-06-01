@@ -98,11 +98,11 @@ pub const Corridor = struct {
 
         std.mem.sortUnstable(i32, wall, Context{ .engine = engine, .start = start_pt, .dx = dx, .dy = dy }, Context.lessThan);
 
-        var stack = std.ArrayList(i32).init(allocator);
-        defer stack.deinit();
+        var stack: std.ArrayListUnmanaged(i32) = .empty;
+        defer stack.deinit(allocator);
 
-        try stack.append(start_pt_idx);
-        try stack.append(wall[0]);
+        try stack.append(allocator, start_pt_idx);
+        try stack.append(allocator, wall[0]);
 
         for (wall[1..]) |p_idx| {
             const p = engine.getVertex(p_idx);
@@ -145,7 +145,7 @@ pub const Corridor = struct {
                     break;
                 }
             }
-            try stack.append(p_idx);
+            try stack.append(allocator, p_idx);
         }
 
         // Connect remaining stack to end_pt
@@ -183,12 +183,14 @@ pub const Corridor = struct {
             try arena.tombstone(allocator, t_idx);
         }
 
+        const EdgeKey = struct { v1: i32, v2: i32 };
+
         // 2. Extract boundaries
         // We collect all boundary edges of the corridor. A boundary edge is one that belongs to exactly one pierced triangle.
-        var edge_counts = std.AutoHashMap(struct {v1: i32, v2: i32}, usize).init(allocator);
+        var edge_counts = std.AutoHashMap(EdgeKey, usize).init(allocator);
         defer edge_counts.deinit();
         
-        var edge_to_adj = std.AutoHashMap(struct {v1: i32, v2: i32}, i32).init(allocator);
+        var edge_to_adj = std.AutoHashMap(EdgeKey, i32).init(allocator);
         defer edge_to_adj.deinit();
 
         for (self.pierced_triangles.items) |t_idx| {
@@ -202,7 +204,7 @@ pub const Corridor = struct {
             for (edges) |e| {
                 const min_v = @min(e.v1, e.v2);
                 const max_v = @max(e.v1, e.v2);
-                const key = .{ .v1 = min_v, .v2 = max_v };
+                const key = EdgeKey{ .v1 = min_v, .v2 = max_v };
                 
                 const count = edge_counts.get(key) orelse 0;
                 try edge_counts.put(key, count + 1);
@@ -246,15 +248,15 @@ pub const Corridor = struct {
             }
         }
 
-        var left_wall = std.ArrayList(i32).init(allocator);
-        defer left_wall.deinit();
+        var left_wall: std.ArrayListUnmanaged(i32) = .empty;
+        defer left_wall.deinit(allocator);
         var left_it = left_wall_set.keyIterator();
-        while (left_it.next()) |v| try left_wall.append(v.*);
+        while (left_it.next()) |v| try left_wall.append(allocator, v.*);
         
-        var right_wall = std.ArrayList(i32).init(allocator);
-        defer right_wall.deinit();
+        var right_wall: std.ArrayListUnmanaged(i32) = .empty;
+        defer right_wall.deinit(allocator);
         var right_it = right_wall_set.keyIterator();
-        while (right_it.next()) |v| try right_wall.append(v.*);
+        while (right_it.next()) |v| try right_wall.append(allocator, v.*);
 
         // 3. Linear Triangulation (Stack-based algorithm for monotone polygon)
         try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, left_wall.items, true);
