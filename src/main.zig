@@ -68,13 +68,13 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
             try engine.initSuperTriangle(vertices);
 
             for (sorted_indices) |idx| {
-                mesh_ids[idx] = try engine.insertUniquePoint(&arena, vertices[idx]);
+                mesh_ids[idx] = try engine.insertUniquePointTrusted(&arena, vertices[idx]);
             }
 
             for (0..vertices.len) |i| {
                 const start_idx = mesh_ids[i];
                 const end_idx = mesh_ids[(i + 1) % vertices.len];
-                try corridor.recoverConstraint(allocator, &engine, &arena, start_idx, end_idx);
+                try corridor.recoverConstraintTrusted(allocator, &engine, &arena, start_idx, end_idx);
             }
 
             total_triangles += engine.liveTriangleCount();
@@ -106,13 +106,13 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
         engine.initSuperTriangle(vertices) catch unreachable;
 
         for (sorted_indices) |idx| {
-            mesh_ids[idx] = engine.insertUniquePoint(&arena, vertices[idx]) catch unreachable;
+            mesh_ids[idx] = engine.insertUniquePointTrusted(&arena, vertices[idx]) catch unreachable;
         }
 
         for (0..vertices.len) |i| {
             const start_idx = mesh_ids[i];
             const end_idx = mesh_ids[(i + 1) % vertices.len];
-            corridor.recoverConstraint(allocator, &engine, &arena, start_idx, end_idx) catch unreachable;
+            corridor.recoverConstraintTrusted(allocator, &engine, &arena, start_idx, end_idx) catch unreachable;
         }
 
         engine.validateTopology() catch unreachable;

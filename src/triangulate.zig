@@ -1020,7 +1020,7 @@ pub const Engine = struct {
 
     pub fn insertPoint(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
         for (0..max_transaction_attempts) |_| {
-            return self.insertPointAttempt(arena, pt, true) catch |err| {
+            return self.insertPointAttempt(arena, pt, true, true) catch |err| {
                 if (isRetryableTransactionError(err)) continue;
                 return err;
             };
@@ -1030,7 +1030,7 @@ pub const Engine = struct {
 
     pub fn insertUniquePoint(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
         for (0..max_transaction_attempts) |_| {
-            return self.insertPointAttempt(arena, pt, false) catch |err| {
+            return self.insertPointAttempt(arena, pt, false, true) catch |err| {
                 if (isRetryableTransactionError(err)) continue;
                 return err;
             };
@@ -1038,8 +1038,13 @@ pub const Engine = struct {
         return error.TransactionConflict;
     }
 
+    /// Single-thread fast path for already-deduplicated input. Not safe for concurrent mesh mutation.
+    pub fn insertUniquePointTrusted(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
+        return self.insertPointAttempt(arena, pt, false, false);
+    }
+
     // Simplified Bowyer-Watson insertion for testing
-    fn insertPointAttempt(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex, check_duplicate: bool) !i32 {
+    fn insertPointAttempt(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex, check_duplicate: bool, use_transaction: bool) !i32 {
         // Prevent duplicate or extremely close points
         if (check_duplicate) {
             var v_idx: usize = 0;
@@ -1108,15 +1113,19 @@ pub const Engine = struct {
             break;
         }
 
-        var footprint: std.ArrayListUnmanaged(i32) = .empty;
-        try self.collectCavityTransactionFootprint(scratch_allocator, cavity.items, edges.items, &footprint);
-
-        var expected_versions: std.ArrayListUnmanaged(TriangleVersionSnapshot) = .empty;
-        if (!try self.snapshotTransactionFootprint(scratch_allocator, footprint.items, &expected_versions)) return error.TransactionConflict;
-
         var tx = TriangleTransaction{};
-        if (!try self.beginTriangleTransactionWithVersions(scratch_allocator, footprint.items, expected_versions.items, &tx)) return error.TransactionConflict;
-        errdefer self.endTriangleTransaction(&tx);
+        var tx_started = false;
+        errdefer if (tx_started) self.endTriangleTransaction(&tx);
+        if (use_transaction) {
+            var footprint: std.ArrayListUnmanaged(i32) = .empty;
+            try self.collectCavityTransactionFootprint(scratch_allocator, cavity.items, edges.items, &footprint);
+
+            var expected_versions: std.ArrayListUnmanaged(TriangleVersionSnapshot) = .empty;
+            if (!try self.snapshotTransactionFootprint(scratch_allocator, footprint.items, &expected_versions)) return error.TransactionConflict;
+
+            if (!try self.beginTriangleTransactionWithVersions(scratch_allocator, footprint.items, expected_versions.items, &tx)) return error.TransactionConflict;
+            tx_started = true;
+        }
 
         var new_tri_indices: std.ArrayListUnmanaged(i32) = .empty;
         const reused_cavity_count = @min(edges.items.len, cavity.items.len);
@@ -1183,7 +1192,10 @@ pub const Engine = struct {
             }
         }
         try self.linkNewTriangles(new_tri_indices.items);
-        self.endTriangleTransaction(&tx);
+        if (tx_started) {
+            self.endTriangleTransaction(&tx);
+            tx_started = false;
+        }
         return pt_idx;
     }
 };

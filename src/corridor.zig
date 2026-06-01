@@ -632,7 +632,7 @@ pub const Corridor = struct {
         }
     }
 
-    pub fn clearAndRetriangulate(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
+    fn clearAndRetriangulateInternal(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32, use_transaction: bool) !void {
         const scratch_allocator = arena.resetScratch(allocator);
 
         var edge_counts = std.AutoHashMap(EdgeKey, usize).init(scratch_allocator);
@@ -700,15 +700,19 @@ pub const Corridor = struct {
             };
         }
 
-        var footprint: std.ArrayListUnmanaged(i32) = .empty;
-        try self.collectTransactionFootprint(scratch_allocator, engine, outer_edges.items, &footprint);
-
-        var expected_versions: std.ArrayListUnmanaged(triangulate.TriangleVersionSnapshot) = .empty;
-        if (!try engine.snapshotTransactionFootprint(scratch_allocator, footprint.items, &expected_versions)) return error.TransactionConflict;
-
         var tx = triangulate.TriangleTransaction{};
-        if (!try engine.beginTriangleTransactionWithVersions(scratch_allocator, footprint.items, expected_versions.items, &tx)) return error.TransactionConflict;
-        errdefer engine.endTriangleTransaction(&tx);
+        var tx_started = false;
+        errdefer if (tx_started) engine.endTriangleTransaction(&tx);
+        if (use_transaction) {
+            var footprint: std.ArrayListUnmanaged(i32) = .empty;
+            try self.collectTransactionFootprint(scratch_allocator, engine, outer_edges.items, &footprint);
+
+            var expected_versions: std.ArrayListUnmanaged(triangulate.TriangleVersionSnapshot) = .empty;
+            if (!try engine.snapshotTransactionFootprint(scratch_allocator, footprint.items, &expected_versions)) return error.TransactionConflict;
+
+            if (!try engine.beginTriangleTransactionWithVersions(scratch_allocator, footprint.items, expected_versions.items, &tx)) return error.TransactionConflict;
+            tx_started = true;
+        }
 
         // 2. Detach live outer neighbors from the soon-to-be-cleared corridor.
         for (self.pierced_triangles.items) |t_idx| {
@@ -767,11 +771,27 @@ pub const Corridor = struct {
 
         if (!try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true)) return error.MissingConstraintEdge;
         if (!use_local_cavity) {
-            // A concurrent worker should abort and retry if legalization needs to
-            // expand beyond the locked corridor footprint.
-            try engine.legalizeFromTrianglesInTransaction(scratch_allocator, emitted.items, &tx);
+            if (use_transaction) {
+                // A concurrent worker should abort and retry if legalization needs to
+                // expand beyond the locked corridor footprint.
+                try engine.legalizeFromTrianglesInTransaction(scratch_allocator, emitted.items, &tx);
+            } else {
+                try engine.legalizeFromTriangles(scratch_allocator, emitted.items);
+            }
         }
-        engine.endTriangleTransaction(&tx);
+        if (tx_started) {
+            engine.endTriangleTransaction(&tx);
+            tx_started = false;
+        }
+    }
+
+    pub fn clearAndRetriangulate(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
+        try self.clearAndRetriangulateInternal(allocator, engine, arena, start_pt_idx, end_pt_idx, true);
+    }
+
+    /// Single-thread fast path. Not safe for concurrent mesh mutation.
+    pub fn clearAndRetriangulateTrusted(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
+        try self.clearAndRetriangulateInternal(allocator, engine, arena, start_pt_idx, end_pt_idx, false);
     }
 
     pub fn recoverConstraint(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
@@ -797,6 +817,21 @@ pub const Corridor = struct {
         }
 
         return error.TransactionConflict;
+    }
+
+    /// Single-thread fast path. Not safe for concurrent mesh mutation.
+    pub fn recoverConstraintTrusted(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
+        if (engine.hasLiveEdge(start_pt_idx, end_pt_idx)) {
+            _ = try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true);
+            return;
+        }
+
+        const start_pt = engine.getVertex(start_pt_idx);
+        const start_tri = engine.walk(engine.last_valid_tri, start_pt);
+        if (start_tri < 0) return error.WalkFailed;
+
+        try self.trace(allocator, engine, start_tri, end_pt_idx, start_pt_idx);
+        try self.clearAndRetriangulateTrusted(allocator, engine, arena, start_pt_idx, end_pt_idx);
     }
 };
 
@@ -853,7 +888,7 @@ test "corridor cavity vertex ordering" {
     try std.testing.expectEqualSlices(i32, &[_]i32{ 1, 10, 11, 12, 2 }, right.items);
 }
 
-fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path: []const u8) !void {
+fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path: []const u8, trusted: bool) !void {
     const fixture = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, fixture_path, allocator, .limited(1024 * 1024));
     defer allocator.free(fixture);
 
@@ -881,7 +916,10 @@ fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path:
     defer allocator.free(mesh_ids);
 
     for (sorted_indices) |idx| {
-        mesh_ids[idx] = try engine.insertPoint(&arena, vertices[idx]);
+        mesh_ids[idx] = if (trusted)
+            try engine.insertUniquePointTrusted(&arena, vertices[idx])
+        else
+            try engine.insertPoint(&arena, vertices[idx]);
         try engine.validateTopology();
     }
 
@@ -891,7 +929,11 @@ fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path:
     for (0..vertices.len) |i| {
         const start_idx = mesh_ids[i];
         const end_idx = mesh_ids[(i + 1) % vertices.len];
-        try corridor.recoverConstraint(allocator, &engine, &arena, start_idx, end_idx);
+        if (trusted) {
+            try corridor.recoverConstraintTrusted(allocator, &engine, &arena, start_idx, end_idx);
+        } else {
+            try corridor.recoverConstraint(allocator, &engine, &arena, start_idx, end_idx);
+        }
         try engine.validateTopology();
         try engine.validateConstraintFlags();
         try engine.validateCdtLegality();
@@ -903,8 +945,16 @@ fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path:
 
 test "fixture constraint recovery remains manifold" {
     const allocator = std.testing.allocator;
-    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/test.dat");
-    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/diamond.dat");
-    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/star.dat");
-    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/dude.dat");
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/test.dat", false);
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/diamond.dat", false);
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/star.dat", false);
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/dude.dat", false);
+}
+
+test "trusted fixture constraint recovery remains manifold" {
+    const allocator = std.testing.allocator;
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/test.dat", true);
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/diamond.dat", true);
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/star.dat", true);
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/dude.dat", true);
 }
