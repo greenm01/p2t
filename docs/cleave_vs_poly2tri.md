@@ -1,53 +1,148 @@
-# Cleave vs. Poly2tri (Zalik CDT): Architecture and Soundness
+# Cleave vs. Poly2tri: Architecture, Tradeoffs, and Roadmap
 
-This document analyzes the fundamental architectural differences between the **Cleave** triangulation algorithm (detailed in `cleave.md`) and the **Poly2tri / Zalik CDT** (sweep-line) algorithm. It outlines why the Cleave hybrid approach is mathematically more sound and details the roadmap for exceeding Poly2tri's performance.
+This document compares the Cleave constrained-Delaunay triangulation direction with
+Poly2tri / Zalik-style sweep-line CDT. The goal is not to claim that one design is
+universally better. The important engineering question is which workload each design
+can win, what costs are inherent, and what must be measured before making stronger
+performance claims.
 
-## 1. The Hybrid Approach: Best of Both Worlds
+## 1. Algorithmic Shape
 
-The Cleave architecture is intentionally designed as a hybrid. It synthesizes the strengths of Zalik's sweep-line approach with the mathematical guarantees of Bowyer-Watson:
-- **From Zalik CDT (Sweep-line):** We take the concept of **spatial predictability**. By sorting points along a space-filling curve (Morton/Z-order), we achieve the cache-locality and ordered insertion benefits that make Zalik's sweep-line so incredibly fast.
-- **From Bowyer-Watson:** We replace the fragile "advancing front" of the sweep-line with **topological localization**. Instead of maintaining a complex, global front, we insert points sequentially into a mathematically guaranteed Delaunay base mesh via local cavities.
-- **Corridor Clearing:** We enforce constraints not by flipping edges iteratively, but by locking an isolated corridor and triangulating it in linear time.
+Poly2tri is a sweep-line/front algorithm. Its scalar hot path is extremely small:
+maintain the advancing front, place the next point, perform orientation tests, and
+link a small number of triangles. That gives it excellent latency on small polygons
+and makes it a difficult single-core target.
 
-## 2. Robustness: Exact Predicates vs. Advancing Fronts
+Cleave is a hybrid:
 
-**Poly2tri / Zalik CDT (Sweep-line):**
-Sweep-line algorithms are inherently fragile when dealing with floating-point precision and degenerate geometries (e.g., nearly collinear points, co-circular points). They rely on maintaining a complex "advancing front" data structure. If floating-point roundoff errors corrupt the logic of this front, the algorithm can easily crash, hang, or produce invalid, overlapping geometry.
+- Morton ordering keeps point insertion spatially local.
+- Bowyer-Watson insertion builds a Delaunay base mesh via local cavities.
+- Constraint recovery clears a corridor and retriangulates the two resulting
+  pseudo-polygons.
+- The mesh is represented with flat index-based storage rather than pointer-heavy
+  topology.
 
-**Cleave (Hybrid Bowyer-Watson):**
-Cleave is built purely on exact geometric predicates (such as robust `orient2d` and `incircle` checks). The Bowyer-Watson insertion method guarantees a mathematically perfect Delaunay mesh at every step. Because point insertion only evaluates and mutates its immediate local cavity, the algorithm is virtually immune to the cascading, systemic failures that plague sweep-line approaches.
+This trades a heavier scalar insertion path for stronger locality, clearer mutation
+boundaries, and a plausible path toward safe parallel mutation.
 
-## 3. The Concurrency Ceiling
+## 2. Robustness Tradeoff
 
-**Poly2tri (Sequential Constraint):**
-A sweep-line algorithm is unavoidably sequential. The algorithm cannot safely process point $N$ until it knows the exact state of the advancing front after processing point $N-1$. This sequential dependency makes it practically impossible to efficiently multi-thread a single sweep-line instance across a single mesh.
+The sweep-line/front approach is fast partly because it does less work per point.
+It also depends on the advancing front remaining topologically consistent under
+floating-point decisions. Well-engineered sweep implementations can be reliable, but
+degenerate inputs and near-degenerate predicates are an important risk area.
 
-**Cleave (Infinite Horizontal Scaling):**
-The Cleave architecture is designed specifically to shatter this concurrency ceiling:
-- **Phase 1 (Spatial Chunking):** By calculating Z-order Morton curves, the point cloud is segmented into geographically isolated chunks.
-- **Phase 2 (Concurrent Insertion):** Because a Bowyer-Watson insertion only affects a highly localized neighborhood, multiple threads can safely execute insertions simultaneously in different spatial chunks using isolated, fine-grained atomic spin-locks.
-- **Phase 3 (Parallel Corridor Clearing):** Enforcing constraint edges is also fully parallelizable. Threads independently grab line segments, march across the mesh, lock the bounding triangles, and execute isolated retriangulations.
+Cleave's Bowyer-Watson core leans more directly on geometric predicates such as
+`orient2d` and `incircle`. The default predicate policy is adaptive and can fall
+back to exact `f128` arithmetic. That is a robustness advantage, but it is not free:
+exact fallback can dominate some runs, and even the adaptive filter costs more than
+a minimal scalar front update.
 
-## 4. Single-Threaded Performance Analysis: The Tradeoff
+The right framing is: Cleave buys robustness and mutation isolation with additional
+per-point work.
 
-It is highly likely that **Cleave will never beat a highly-optimized Poly2tri implementation on a single, scalar thread.**
+## 3. Performance Reality Today
 
-An optimized sweep-line algorithm (like `fastpoly2tri`) is incredibly lightweight per-point. It simply evaluates the active front, performs a basic orientation check, and links 1 or 2 new triangles.
+Current small-fixture measurements show the tradeoff clearly. Robust Cleave is much
+faster than earlier versions, but fast-poly2tri still wins scalar latency on the
+overlapping fixtures.
 
-Cleave fundamentally performs a heavier "tax" of work per point inserted:
-1. It must execute a stochastic walk to find the container triangle.
-2. It must calculate exact `incircle` determinants to map the cavity boundaries.
-3. It must tombstone old triangles and carefully wire up new internal and external adjacencies.
+Approximate recent robust Cleave timings:
 
-Our pure-Zig benchmark confirms this reality. Cleave is not designed to win a single-threaded scalar race. It explicitly trades this raw single-threaded speed for absolute mathematical robustness and the ability to scale.
+- `fixture-test`: about `0.91 us/run`
+- `diamond`: about `2.58 us/run`
+- `star`: about `2.02 us/run`
 
-## 5. The Roadmap to Beating Poly2tri
+Against fast-poly2tri on the same small fixtures, Cleave is still roughly `4-6x`
+slower. The exact ratio varies by run, compiler, CPU state, and float/double mode,
+but the conclusion is stable: Poly2tri remains the scalar latency target.
 
-To realize the high-throughput performance envisioned in the Cleave blueprint and surpass Poly2tri, the implementation must be advanced to utilize hardware-level concurrency and vectorization:
+Cleave also has an unsafe measurement mode, `-Dpredicate-policy=fast`, which removes
+exact fallback and shows a lower performance ceiling. That mode is useful for
+isolating predicate cost, but it is not the correctness baseline.
 
-1. **SIMD Cavity Evaluation:** Instead of checking adjacent triangles sequentially during point insertion, the engine must load the coordinates of 4 or 8 neighbors into vector registers (`@Vector`) and evaluate the `incircle` determinant on all of them simultaneously in a single CPU cycle.
-2. **Multi-threading the Pipeline:** The geographically localized chunks (created by Morton sorting) must be distributed to a thread pool for asynchronous point insertion. Similarly, Corridor Clearing must be dispatched to concurrent workers.
-3. **Explicit Prefetching:** Using compiler intrinsics (`@prefetch`) during the stochastic walk and line-marching phases to hide main memory latency behind the CPU's orientation math.
+## 4. Amdahl's Law and Throughput
 
-**Conclusion:** 
-The Cleave architecture trades a slight increase in scalar algorithmic work for absolute mathematical robustness and the ability to scale linearly across modern multi-core, SIMD-capable CPUs.
+The phrase "infinite horizontal scaling" is not accurate for a single triangulation.
+Amdahl's law still applies:
+
+```text
+speedup(N) = 1 / (serial_fraction + parallel_fraction / N + overhead)
+```
+
+Single-mesh latency is bounded by work that is serial or effectively serial:
+
+- input setup and spatial ordering
+- chunk boundary conflicts and retries
+- long constraints that cross many chunks
+- exact predicate fallback
+- final extraction/validation
+- memory bandwidth and cache-coherence pressure
+
+Cleave's more realistic advantage is throughput. There are two distinct scaling
+modes:
+
+- **Batch throughput:** many independent polygons or triangulation jobs distributed
+  across workers. This is the easiest and most likely near-term win because workers
+  do not share a mutable mesh.
+- **Large single-mesh throughput/latency:** one large mesh split into spatial chunks.
+  This can work if mutations stay local and conflict rates are low, but it requires
+  careful transaction design and real contention measurements.
+
+Small fixtures are the wrong place to expect thread-level latency wins. Queueing,
+thread wakeup, locking, and barriers can cost more than fast-poly2tri spends on the
+entire triangulation.
+
+## 5. SIMD and Prefetching
+
+SIMD and prefetching are useful, but they should be treated as measured experiments,
+not guaranteed wins.
+
+SIMD can help the floating-point filter portion of cavity evaluation by testing
+several candidate triangles together. It does not remove the scalar exact fallback,
+nor does it solve irregular topology traversal. SIMD is most promising when cavity
+frontiers can be batched without excessive gather/scatter overhead.
+
+Prefetching can help stochastic walks and corridor traces when memory latency is the
+bottleneck. It can also hurt by increasing bandwidth pressure or prefetching the
+wrong neighbor. It should be added only around measured cache-miss hot paths and kept
+only if perf counters improve.
+
+## 6. Roadmap
+
+The next work should be measurement-first.
+
+1. Add a batch-throughput benchmark.
+   Measure many independent triangulations across `1, 2, 4, 8, ...` workers. Reuse
+   per-thread engines and arenas. Compare wall time, jobs/sec, and scaling efficiency.
+
+2. Add a larger single-mesh benchmark.
+   The current fixtures are too small to judge threaded mesh mutation. Add fixtures
+   large enough to expose chunking, conflict rate, memory bandwidth, and predicate
+   fallback behavior.
+
+3. Instrument parallel-readiness metrics.
+   Track lock attempts, lock failures, retries, deferred points, corridor lengths,
+   exact predicate fallback counts, and time spent in insertion versus constraint
+   recovery.
+
+4. Prototype coarse job-level parallelism first.
+   This validates the runtime, worker setup, per-thread memory reuse, and benchmark
+   reporting without adding shared-mesh transaction complexity.
+
+5. Prototype chunked single-mesh insertion after measurement exists.
+   Start with Morton chunks, per-thread deferred queues, strict transaction
+   revalidation, and serial cleanup for high-conflict leftovers.
+
+6. Treat SIMD and prefetch as opt-in experiments.
+   Keep adaptive predicates as the default. Add SIMD or prefetch behind build flags,
+   benchmark both robust and fast predicate policies, and remove experiments that do
+   not improve measured throughput.
+
+## Conclusion
+
+Cleave should not be sold as a guaranteed scalar replacement for fast-poly2tri. The
+engineering case is different: robust CDT construction, data-oriented mutation, and a
+path to throughput scaling on workloads large enough to amortize coordination costs.
+The next milestone is not another claim of parallelism; it is benchmark evidence
+showing where Cleave actually scales.
