@@ -43,6 +43,10 @@ fn brioPlanWindow() usize {
     return build_options.brio_plan_window;
 }
 
+fn brioDisjointDiagnostic() bool {
+    return build_options.brio_disjoint_diagnostic;
+}
+
 fn lfqtDiagnosticMode() bool {
     return build_options.lfqt_diagnostic_mode;
 }
@@ -103,6 +107,10 @@ const RoundTiming = struct {
     brio_parallel_committed: usize = 0,
     brio_parallel_invalidated: usize = 0,
     brio_parallel_serial_fallbacks: usize = 0,
+    brio_parallel_disjoint_waves: usize = 0,
+    brio_parallel_disjoint_first_wave: usize = 0,
+    brio_parallel_disjoint_max_wave: usize = 0,
+    brio_parallel_disjoint_plans: usize = 0,
     predicate_stats: predicates.PredicateStats = .{},
     engine_stats: triangulate.EngineStats = .{},
 };
@@ -137,6 +145,10 @@ const BrioParallelStats = struct {
     committed: usize = 0,
     invalidated: usize = 0,
     serial_fallbacks: usize = 0,
+    disjoint_waves: usize = 0,
+    disjoint_first_wave: usize = 0,
+    disjoint_max_wave: usize = 0,
+    disjoint_plans: usize = 0,
 };
 
 const BrioWorkerStats = struct {
@@ -150,6 +162,72 @@ const BrioWorkerContext = struct {
     arena: mesh.ThreadArena = .{},
     stats: BrioWorkerStats = .{},
 };
+
+fn containsTriangleId(list: []const i32, tri_idx: i32) bool {
+    for (list) |item| {
+        if (item == tri_idx) return true;
+    }
+    return false;
+}
+
+fn footprintsOverlap(a: []const i32, b: []const i32) bool {
+    for (b) |tri_idx| {
+        if (containsTriangleId(a, tri_idx)) return true;
+    }
+    return false;
+}
+
+const DisjointPlanStats = struct {
+    waves: usize = 0,
+    first_wave: usize = 0,
+    max_wave: usize = 0,
+    plans: usize = 0,
+};
+
+fn computeDisjointPlanStats(allocator: std.mem.Allocator, plans: []const triangulate.InsertionPlan) !DisjointPlanStats {
+    var wave_starts: std.ArrayListUnmanaged(usize) = .empty;
+    defer wave_starts.deinit(allocator);
+    var wave_lens: std.ArrayListUnmanaged(usize) = .empty;
+    defer wave_lens.deinit(allocator);
+    var wave_counts: std.ArrayListUnmanaged(usize) = .empty;
+    defer wave_counts.deinit(allocator);
+    var wave_triangles: std.ArrayListUnmanaged(i32) = .empty;
+    defer wave_triangles.deinit(allocator);
+
+    var stats = DisjointPlanStats{};
+    for (plans) |plan| {
+        if (plan.err != null or plan.footprint.items.len == 0) continue;
+        stats.plans += 1;
+
+        var target_wave: ?usize = null;
+        for (0..wave_starts.items.len) |wave_i| {
+            const start = wave_starts.items[wave_i];
+            const len = wave_lens.items[wave_i];
+            if (!footprintsOverlap(wave_triangles.items[start .. start + len], plan.footprint.items)) {
+                target_wave = wave_i;
+                break;
+            }
+        }
+
+        const wave_i = if (target_wave) |wave_i|
+            wave_i
+        else blk: {
+            try wave_starts.append(allocator, wave_triangles.items.len);
+            try wave_lens.append(allocator, 0);
+            try wave_counts.append(allocator, 0);
+            break :blk wave_starts.items.len - 1;
+        };
+
+        try wave_triangles.appendSlice(allocator, plan.footprint.items);
+        wave_lens.items[wave_i] += plan.footprint.items.len;
+        wave_counts.items[wave_i] += 1;
+        stats.max_wave = @max(stats.max_wave, wave_counts.items[wave_i]);
+    }
+
+    stats.waves = wave_counts.items.len;
+    stats.first_wave = if (wave_counts.items.len == 0) 0 else wave_counts.items[0];
+    return stats;
+}
 
 fn brioConfiguredWorkerCount() !usize {
     const requested = build_options.brio_threads;
@@ -265,6 +343,10 @@ const BrioParallelExecutor = struct {
             stats.committed += window_stats.committed;
             stats.invalidated += window_stats.invalidated;
             stats.serial_fallbacks += window_stats.serial_fallbacks;
+            stats.disjoint_waves += window_stats.disjoint_waves;
+            stats.disjoint_first_wave += window_stats.disjoint_first_wave;
+            stats.disjoint_max_wave = @max(stats.disjoint_max_wave, window_stats.disjoint_max_wave);
+            stats.disjoint_plans += window_stats.disjoint_plans;
             window_start = window_end;
         }
         return stats;
@@ -328,6 +410,13 @@ const BrioParallelExecutor = struct {
         for (self.contexts[0..active_workers]) |context| {
             stats.planned += context.stats.planned;
             stats.invalidated += context.stats.plan_errors;
+        }
+        if (brioDisjointDiagnostic()) {
+            const disjoint_stats = try computeDisjointPlanStats(self.allocator, plans);
+            stats.disjoint_waves = disjoint_stats.waves;
+            stats.disjoint_first_wave = disjoint_stats.first_wave;
+            stats.disjoint_max_wave = disjoint_stats.max_wave;
+            stats.disjoint_plans = disjoint_stats.plans;
         }
 
         const commit_start = timer.now(self.io);
@@ -974,6 +1063,10 @@ fn runBrioParallelInsertion(
         stats.committed += bucket_stats.committed;
         stats.invalidated += bucket_stats.invalidated;
         stats.serial_fallbacks += bucket_stats.serial_fallbacks;
+        stats.disjoint_waves += bucket_stats.disjoint_waves;
+        stats.disjoint_first_wave += bucket_stats.disjoint_first_wave;
+        stats.disjoint_max_wave = @max(stats.disjoint_max_wave, bucket_stats.disjoint_max_wave);
+        stats.disjoint_plans += bucket_stats.disjoint_plans;
         start = end;
     }
     return stats;
@@ -1245,6 +1338,10 @@ fn runRound(
                 timing.brio_parallel_committed += parallel_stats.committed;
                 timing.brio_parallel_invalidated += parallel_stats.invalidated;
                 timing.brio_parallel_serial_fallbacks += parallel_stats.serial_fallbacks;
+                timing.brio_parallel_disjoint_waves += parallel_stats.disjoint_waves;
+                timing.brio_parallel_disjoint_first_wave += parallel_stats.disjoint_first_wave;
+                timing.brio_parallel_disjoint_max_wave = @max(timing.brio_parallel_disjoint_max_wave, parallel_stats.disjoint_max_wave);
+                timing.brio_parallel_disjoint_plans += parallel_stats.disjoint_plans;
             } else {
                 for (order.indices) |idx| {
                     mesh_ids[idx] = try engine.insertUniquePointTrusted(arena, case.vertices[idx]);
@@ -1469,6 +1566,17 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
                 perRun(best.brio_parallel_lock_hold_us, case.iterations),
             },
         );
+        if (brioDisjointDiagnostic()) {
+            std.debug.print(
+                "  brio disjoint plans/run: plans {d:>.1}, waves {d:>.1}, first wave {d:>.1}, max wave {d}\n",
+                .{
+                    @as(f64, @floatFromInt(best.brio_parallel_disjoint_plans)) / iterations_f64,
+                    @as(f64, @floatFromInt(best.brio_parallel_disjoint_waves)) / iterations_f64,
+                    @as(f64, @floatFromInt(best.brio_parallel_disjoint_first_wave)) / iterations_f64,
+                    best.brio_parallel_disjoint_max_wave,
+                },
+            );
+        }
     } else if (build_options.trapezoid_dd_mode) {
         const avg_pieces = @as(f64, @floatFromInt(best.dd_pieces)) / @as(f64, @floatFromInt(case.iterations));
         const avg_diagonals = @as(f64, @floatFromInt(best.dd_diagonals)) / @as(f64, @floatFromInt(case.iterations));

@@ -32,6 +32,7 @@ pub fn build(b: *std.Build) void {
     const brio_parallel_mode = b.option(bool, "brio-parallel-mode", "Run BRIO insertion through the experimental threaded benchmark path") orelse false;
     const brio_threads = b.option(usize, "brio-threads", "Worker count for experimental BRIO parallel benchmark mode; 0 uses detected CPU count") orelse 0;
     const brio_plan_window = b.option(usize, "brio-plan-window", "Maximum staged BRIO plans per commit window; 0 plans a whole BRIO round") orelse 0;
+    const brio_disjoint_diagnostic = b.option(bool, "brio-disjoint-diagnostic", "Compute staged BRIO disjoint-footprint wave diagnostics") orelse false;
     const lfqt_diagnostic_mode = b.option(bool, "lfqt-diagnostic-mode", "Run linear floating-point quadtree bin diagnostics in bench-single") orelse false;
     const lfqt_bin_vertices = b.option(usize, "lfqt-bin-vertices", "Target maximum vertices per LFQT diagnostic bin") orelse 128;
     const polygon_output_mode = b.option(bool, "polygon-output-mode", "Cull exterior/super triangles after boundary recovery in polygon-output benchmark prototypes") orelse false;
@@ -74,6 +75,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "brio_parallel_mode", brio_parallel_mode);
     build_options.addOption(usize, "brio_threads", brio_threads);
     build_options.addOption(usize, "brio_plan_window", brio_plan_window);
+    build_options.addOption(bool, "brio_disjoint_diagnostic", brio_disjoint_diagnostic);
     build_options.addOption(bool, "lfqt_diagnostic_mode", lfqt_diagnostic_mode);
     build_options.addOption(usize, "lfqt_bin_vertices", lfqt_bin_vertices);
     build_options.addOption(bool, "polygon_output_mode", polygon_output_mode);

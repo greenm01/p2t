@@ -271,6 +271,20 @@ Current 4-worker macOS results with fast predicates and spatial hints:
 
 This rejects micro-batched speculative planning. Smaller windows do raise the commit rate, but repeated worker dispatch and planning dominate, and the total remains much slower than both whole-round staged planning and the serial BRIO baseline. The next BRIO parallel attempt needs true concurrent disjoint-cavity commits or a different independent-work structure; more serial replan/commit windows are not promising.
 
+## Latest BRIO Disjoint-Footprint Diagnostic
+
+`-Dbrio-disjoint-diagnostic=true` now computes a greedy wave grouping over staged BRIO insertion-plan footprints. The diagnostic is intentionally opt-in because the naive grouping is O(plan footprint comparisons) and pollutes runtime; use it for structure, not timing.
+
+Current 4-worker whole-round macOS results with fast predicates and spatial hints:
+
+- `dude`: `94` planned footprints, `43` disjoint waves/run, first waves total `34` plans/run, max wave `22`.
+- `nazca-monkey`: `1203` planned footprints, `85` disjoint waves/run, first waves total `834` plans/run, max wave `463`.
+- `nazca-heron`: `1036` planned footprints, `78` disjoint waves/run, first waves total `569` plans/run, max wave `344`.
+
+This shows there is substantial disjoint planned work inside BRIO buckets. The current staged commit loop still commits only about one plan per bucket because it switches the whole remaining bucket to serial fallback after the first stale plan. Before attempting true concurrent commits, test a deterministic serial "continue after stale" commit loop that tries later planned footprints individually.
+
+That serial "continue after stale" experiment was attempted and rejected before commit. Even though later plans may still pass the version snapshot check, allowing commits after an intervening fallback produced `InvalidTriangleAdjacency` during the benchmark. The version footprint is therefore not a sufficient safety proof once fallback mutation has occurred. Any next BRIO parallel commit experiment must either commit a locked disjoint wave before any fallback mutation, or strengthen the transaction validation to cover the topology assumptions used by plan emission.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.
