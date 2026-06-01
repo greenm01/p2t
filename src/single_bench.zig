@@ -180,15 +180,28 @@ fn printCase(case: Case, best: RoundTiming, median: RoundTiming) void {
             },
         );
         std.debug.print(
-            "  topology/insert: cavity tris {d:>.2}, cavity edges {d:>.2}; legalization/run: tests {d:>.1}, flips {d:>.1}; corridor tris/trace {d:>.2}\n",
+            "  topology/insert: cavity tris {d:>.2}, cavity edges {d:>.2}; legalization/run: tests {d:>.1}, flips {d:>.1}; corridor tris/trace {d:>.2}, max {d}\n",
             .{
                 @as(f64, @floatFromInt(best.engine_stats.cavity_triangles)) / inserted_f64,
                 @as(f64, @floatFromInt(best.engine_stats.cavity_edges)) / inserted_f64,
                 @as(f64, @floatFromInt(best.engine_stats.legalization_tests)) / iterations_f64,
                 @as(f64, @floatFromInt(best.engine_stats.edge_flips)) / iterations_f64,
                 @as(f64, @floatFromInt(best.engine_stats.corridor_triangles)) / traces_f64,
+                best.engine_stats.corridor_max_triangles,
             },
         );
+        if (best.engine_stats.local_cavity_attempts != 0 or best.engine_stats.corridor_augmented_traces != 0) {
+            std.debug.print(
+                "  corridor/local: augmented/run {d:>.1}, augmented tris/aug {d:>.2}; local attempts {d:>.1}, successes {d:>.1}, fallbacks {d:>.1}\n",
+                .{
+                    @as(f64, @floatFromInt(best.engine_stats.corridor_augmented_traces)) / iterations_f64,
+                    @as(f64, @floatFromInt(best.engine_stats.corridor_augmented_triangles)) / @max(@as(f64, @floatFromInt(best.engine_stats.corridor_augmented_traces)), 1.0),
+                    @as(f64, @floatFromInt(best.engine_stats.local_cavity_attempts)) / iterations_f64,
+                    @as(f64, @floatFromInt(best.engine_stats.local_cavity_successes)) / iterations_f64,
+                    @as(f64, @floatFromInt(best.engine_stats.local_cavity_invalid_fallbacks + best.engine_stats.local_cavity_nondelaunay_fallbacks + best.engine_stats.local_cavity_repeated_fallbacks)) / iterations_f64,
+                },
+            );
+        }
         std.debug.print(
             "  edge lookup/run: global calls {d:>.1}, scanned tris {d:>.1}; fast calls {d:>.1}, fallbacks {d:>.1}\n",
             .{

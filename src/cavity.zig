@@ -21,7 +21,11 @@ const LinkedCavity = struct {
     next: []usize,
     prev: []usize,
     permutation: []usize,
+    distance: []f64,
 };
+
+const EdgeKey = struct { a: i32, b: i32 };
+const AdjRef = struct { tri: usize, side: usize };
 
 fn localTriangleEdge(tri: LocalTriangle, side: usize) struct { v1: i32, v2: i32 } {
     return switch (side) {
@@ -78,6 +82,10 @@ fn makeLocalTriangle(engine: *triangulate.Engine, a: i32, b: i32, c: i32) !Local
     return .{ .v0 = a, .v1 = v1, .v2 = v2 };
 }
 
+fn canonicalEdge(a: i32, b: i32) EdgeKey {
+    return .{ .a = @min(a, b), .b = @max(a, b) };
+}
+
 fn hasRepeatedVertex(vertices: []const i32) bool {
     for (vertices, 0..) |v, i| {
         for (vertices[i + 1 ..]) |other| {
@@ -91,14 +99,16 @@ fn initLinkedCavity(allocator: std.mem.Allocator, vertex_count: usize) !LinkedCa
     const next = try allocator.alloc(usize, vertex_count);
     const prev = try allocator.alloc(usize, vertex_count);
     const permutation = try allocator.alloc(usize, vertex_count);
+    const distance = try allocator.alloc(f64, vertex_count);
 
     for (0..vertex_count) |i| {
         next[i] = if (i + 1 < vertex_count) i + 1 else vertex_count;
         prev[i] = if (i > 0) i - 1 else vertex_count;
         permutation[i] = i;
+        distance[i] = 0.0;
     }
 
-    return .{ .next = next, .prev = prev, .permutation = permutation };
+    return .{ .next = next, .prev = prev, .permutation = permutation, .distance = distance };
 }
 
 fn mixSeed(seed: u64) u64 {
@@ -113,18 +123,21 @@ fn nextRandom(state: *u64) u64 {
     return state.*;
 }
 
-fn lineDistanceScore(engine: *triangulate.Engine, a: i32, b: i32, p: i32) f64 {
-    return @abs(predicates.orient2d(engine.getVertex(a), engine.getVertex(b), engine.getVertex(p)));
+fn lineDistanceScoreRaw(engine: *triangulate.Engine, a: i32, b: i32, p: i32) f64 {
+    const av = engine.getVertex(a);
+    const bv = engine.getVertex(b);
+    const pv = engine.getVertex(p);
+    return @abs((av.x - pv.x) * (bv.y - pv.y) - (av.y - pv.y) * (bv.x - pv.x));
 }
 
-fn vertexCloserThanNeighbors(engine: *triangulate.Engine, list: *const LinkedCavity, vertices: []const i32, segment_a: i32, segment_b: i32, pos: usize) bool {
+fn vertexCloserThanNeighbors(list: *const LinkedCavity, vertices: []const i32, pos: usize) bool {
     const prev_pos = list.prev[pos];
     const next_pos = list.next[pos];
     if (prev_pos >= vertices.len or next_pos >= vertices.len) return false;
 
-    const score = lineDistanceScore(engine, segment_a, segment_b, vertices[pos]);
-    const prev_score = lineDistanceScore(engine, segment_a, segment_b, vertices[prev_pos]);
-    const next_score = lineDistanceScore(engine, segment_a, segment_b, vertices[next_pos]);
+    const score = list.distance[pos];
+    const prev_score = list.distance[prev_pos];
+    const next_score = list.distance[next_pos];
     return score <= prev_score and score <= next_score;
 }
 
@@ -132,16 +145,15 @@ fn selectDeletionPermutationIndex(
     engine: *triangulate.Engine,
     list: *const LinkedCavity,
     vertices: []const i32,
-    segment_a: i32,
-    segment_b: i32,
     last_perm_index: usize,
     rng_state: *u64,
 ) usize {
+    _ = engine;
     const first_perm_index: usize = 1;
     var candidate_perm_index = first_perm_index + @as(usize, @intCast(nextRandom(rng_state) % (last_perm_index - first_perm_index + 1)));
     for (0..last_perm_index) |_| {
         const pos = list.permutation[candidate_perm_index];
-        if (!vertexCloserThanNeighbors(engine, list, vertices, segment_a, segment_b, pos)) return candidate_perm_index;
+        if (!vertexCloserThanNeighbors(list, vertices, pos)) return candidate_perm_index;
         candidate_perm_index += 1;
         if (candidate_perm_index > last_perm_index) candidate_perm_index = first_perm_index;
     }
@@ -161,17 +173,22 @@ fn prepareCavityOrder(engine: *triangulate.Engine, allocator: std.mem.Allocator,
         allocator.free(list.next);
         allocator.free(list.prev);
         allocator.free(list.permutation);
+        allocator.free(list.distance);
     }
 
     if (vertices.len <= 3) return list;
 
     const segment_a = vertices[vertices.len - 1];
     const segment_b = vertices[0];
+    for (vertices, 0..) |vertex_idx, i| {
+        list.distance[i] = lineDistanceScoreRaw(engine, segment_a, segment_b, vertex_idx);
+    }
+
     var rng_state = mixSeed(@as(u64, @intCast(segment_a)) ^ (@as(u64, @intCast(segment_b)) << 32) ^ @as(u64, @intCast(vertices.len)));
 
     var last_perm_index = vertices.len - 2;
     while (last_perm_index >= 2) : (last_perm_index -= 1) {
-        const selected_perm_index = selectDeletionPermutationIndex(engine, &list, vertices, segment_a, segment_b, last_perm_index, &rng_state);
+        const selected_perm_index = selectDeletionPermutationIndex(engine, &list, vertices, last_perm_index, &rng_state);
         const selected_pos = list.permutation[selected_perm_index];
         deleteLinkedVertex(&list, selected_pos);
         const tmp = list.permutation[last_perm_index];
@@ -215,28 +232,130 @@ fn appendTempTriangle(allocator: std.mem.Allocator, engine: *triangulate.Engine,
     try tris.append(allocator, .{ .tri = try makeLocalTriangle(engine, a, b, c) });
 }
 
+fn appendMarkedVertex(allocator: std.mem.Allocator, marked: *std.ArrayListUnmanaged(i32), vertex_idx: i32) !void {
+    for (marked.items) |existing| {
+        if (existing == vertex_idx) return;
+    }
+    try marked.append(allocator, vertex_idx);
+}
+
+fn tempTriangleAllMarked(tri: LocalTriangle, marked: []const i32) bool {
+    const vertices = [_]i32{ tri.v0, tri.v1, tri.v2 };
+    for (vertices) |vertex_idx| {
+        var found = false;
+        for (marked) |marked_idx| {
+            if (marked_idx == vertex_idx) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+const FanSortContext = struct {
+    engine: *triangulate.Engine,
+    cx: f64,
+    cy: f64,
+};
+
+fn fanHalf(dx: f64, dy: f64) bool {
+    return dy > 0.0 or (dy == 0.0 and dx >= 0.0);
+}
+
+fn fanVertexLess(ctx: FanSortContext, a: i32, b: i32) bool {
+    const av = ctx.engine.getVertex(a);
+    const bv = ctx.engine.getVertex(b);
+    const adx = av.x - ctx.cx;
+    const ady = av.y - ctx.cy;
+    const bdx = bv.x - ctx.cx;
+    const bdy = bv.y - ctx.cy;
+    const ah = fanHalf(adx, ady);
+    const bh = fanHalf(bdx, bdy);
+    if (ah != bh) return ah;
+    const cross = adx * bdy - ady * bdx;
+    if (cross != 0.0) return cross > 0.0;
+    return a < b;
+}
+
+fn repairMarkedFan(
+    allocator: std.mem.Allocator,
+    engine: *triangulate.Engine,
+    tris: *std.ArrayListUnmanaged(TempTriangle),
+    marked: *std.ArrayListUnmanaged(i32),
+) anyerror!void {
+    if (marked.items.len < 4) {
+        marked.clearRetainingCapacity();
+        return;
+    }
+
+    var fan_triangle_count: usize = 0;
+    for (tris.items) |tri| {
+        if (!tri.dead and tempTriangleAllMarked(tri.tri, marked.items)) fan_triangle_count += 1;
+    }
+    if (fan_triangle_count <= 1) {
+        marked.clearRetainingCapacity();
+        return;
+    }
+
+    var cx: f64 = 0.0;
+    var cy: f64 = 0.0;
+    for (marked.items) |vertex_idx| {
+        const vertex = engine.getVertex(vertex_idx);
+        cx += vertex.x;
+        cy += vertex.y;
+    }
+    cx /= @as(f64, @floatFromInt(marked.items.len));
+    cy /= @as(f64, @floatFromInt(marked.items.len));
+    std.mem.sort(i32, marked.items, FanSortContext{ .engine = engine, .cx = cx, .cy = cy }, fanVertexLess);
+
+    var fan_tris: std.ArrayListUnmanaged(LocalTriangle) = .empty;
+    defer fan_tris.deinit(allocator);
+    try triangulateCavity(allocator, engine, marked.items, &fan_tris);
+
+    for (tris.items) |*tri| {
+        if (!tri.dead and tempTriangleAllMarked(tri.tri, marked.items)) tri.dead = true;
+    }
+    for (fan_tris.items) |local_tri| {
+        try tris.append(allocator, .{ .tri = local_tri });
+    }
+    marked.clearRetainingCapacity();
+}
+
 fn addPointCavity(
     allocator: std.mem.Allocator,
     engine: *triangulate.Engine,
     tris: *std.ArrayListUnmanaged(TempTriangle),
+    marked: *std.ArrayListUnmanaged(i32),
     u: i32,
     v: i32,
     w: i32,
     depth: usize,
+    known_positive_orientation: bool,
 ) !void {
     if (depth > 256) return error.InvalidCavity;
     if (u == v or v == w or u == w) return error.InvalidCavity;
 
     const adjacent = findAdjacentTemp(tris.items, w, v);
     var insert = true;
+    var positive_orientation = known_positive_orientation;
     if (adjacent) |adj| {
         const inside = incircleInside(engine, w, v, adj.opposite, u);
-        const orient = predicates.orient2d(engine.getVertex(u), engine.getVertex(v), engine.getVertex(w));
-        insert = !inside and orient > 0.0;
+        if (!positive_orientation) {
+            positive_orientation = predicates.orient2d(engine.getVertex(u), engine.getVertex(v), engine.getVertex(w)) > 0.0;
+        }
+        insert = !inside and positive_orientation;
         if (!insert) {
             tris.items[adj.tri_index].dead = true;
-            try addPointCavity(allocator, engine, tris, u, v, adj.opposite, depth + 1);
-            try addPointCavity(allocator, engine, tris, u, adj.opposite, w, depth + 1);
+            try addPointCavity(allocator, engine, tris, marked, u, v, adj.opposite, depth + 1, positive_orientation);
+            try addPointCavity(allocator, engine, tris, marked, u, adj.opposite, w, depth + 1, positive_orientation);
+            if (!inside) {
+                try appendMarkedVertex(allocator, marked, u);
+                try appendMarkedVertex(allocator, marked, v);
+                try appendMarkedVertex(allocator, marked, w);
+                try appendMarkedVertex(allocator, marked, adj.opposite);
+            }
             return;
         }
     }
@@ -244,27 +363,54 @@ fn addPointCavity(
     try appendTempTriangle(allocator, engine, tris, u, v, w);
 }
 
-fn buildLocalAdjacency(tris: []LocalTriangle) !void {
+fn buildLocalAdjacency(allocator: std.mem.Allocator, tris: []LocalTriangle) !void {
     for (tris) |*tri| {
         tri.adj0 = -1;
         tri.adj1 = -1;
         tri.adj2 = -1;
     }
 
+    var edge_map = std.AutoHashMap(EdgeKey, AdjRef).init(allocator);
+    defer edge_map.deinit();
+    try edge_map.ensureTotalCapacity(@intCast(tris.len * 3));
+
     for (tris, 0..) |tri_a, i| {
-        for (tris[i + 1 ..], i + 1..) |tri_b, j| {
-            inline for (0..3) |side_a| {
-                const edge = localTriangleEdge(tri_a, side_a);
-                if (localEdgeSide(tri_b, edge.v1, edge.v2)) |side_b| {
-                    if (localTriangleAdj(tris[i], side_a) != -1 or localTriangleAdj(tris[j], side_b) != -1) {
-                        return error.InvalidCavity;
-                    }
-                    setLocalTriangleAdj(&tris[i], side_a, @as(i32, @intCast(j)));
-                    setLocalTriangleAdj(&tris[j], side_b, @as(i32, @intCast(i)));
+        _ = tri_a;
+        inline for (0..3) |side_a| {
+            const edge = localTriangleEdge(tris[i], side_a);
+            const key = canonicalEdge(edge.v1, edge.v2);
+            const entry = try edge_map.getOrPut(key);
+            if (!entry.found_existing) {
+                entry.value_ptr.* = .{ .tri = i, .side = side_a };
+            } else {
+                const other = entry.value_ptr.*;
+                if (localTriangleAdj(tris[i], side_a) != -1 or localTriangleAdj(tris[other.tri], other.side) != -1) {
+                    return error.InvalidCavity;
                 }
+                setLocalTriangleAdj(&tris[i], side_a, @as(i32, @intCast(other.tri)));
+                setLocalTriangleAdj(&tris[other.tri], other.side, @as(i32, @intCast(i)));
+                _ = edge_map.remove(key);
             }
         }
     }
+}
+
+fn compactAdjacentDuplicates(allocator: std.mem.Allocator, vertices: []const i32) ![]i32 {
+    var compacted: std.ArrayListUnmanaged(i32) = .empty;
+    errdefer compacted.deinit(allocator);
+    try compacted.ensureTotalCapacity(allocator, vertices.len);
+
+    for (vertices) |vertex_idx| {
+        if (compacted.items.len == 0 or compacted.items[compacted.items.len - 1] != vertex_idx) {
+            compacted.appendAssumeCapacity(vertex_idx);
+        }
+    }
+
+    if (compacted.items.len > 1 and compacted.items[0] == compacted.items[compacted.items.len - 1]) {
+        _ = compacted.pop();
+    }
+
+    return try compacted.toOwnedSlice(allocator);
 }
 
 fn appendLiveTriangles(allocator: std.mem.Allocator, temp_tris: []const TempTriangle, out: *std.ArrayListUnmanaged(LocalTriangle)) !void {
@@ -303,32 +449,42 @@ fn validateLocalDelaunay(engine: *triangulate.Engine, tris: []const LocalTriangl
 pub fn triangulateCavity(allocator: std.mem.Allocator, engine: *triangulate.Engine, vertices: []const i32, out: *std.ArrayListUnmanaged(LocalTriangle)) !void {
     out.clearRetainingCapacity();
     if (vertices.len < 3) return;
-    if (hasRepeatedVertex(vertices)) return error.InvalidCavity;
-    if (vertices.len == 3) {
-        try out.append(allocator, try makeLocalTriangle(engine, vertices[0], vertices[1], vertices[2]));
+
+    const work_vertices = try compactAdjacentDuplicates(allocator, vertices);
+    defer allocator.free(work_vertices);
+
+    if (work_vertices.len < 3) return;
+    if (hasRepeatedVertex(work_vertices)) return error.RepeatedCavityVertex;
+    if (work_vertices.len == 3) {
+        try out.append(allocator, try makeLocalTriangle(engine, work_vertices[0], work_vertices[1], work_vertices[2]));
         return;
     }
 
-    const list = try prepareCavityOrder(engine, allocator, vertices);
+    const list = try prepareCavityOrder(engine, allocator, work_vertices);
     defer {
         allocator.free(list.next);
         allocator.free(list.prev);
         allocator.free(list.permutation);
+        allocator.free(list.distance);
     }
 
     var temp_tris: std.ArrayListUnmanaged(TempTriangle) = .empty;
     defer temp_tris.deinit(allocator);
 
-    try appendTempTriangle(allocator, engine, &temp_tris, vertices[0], vertices[list.permutation[1]], vertices[vertices.len - 1]);
-    if (vertices.len > 3) {
-        for (2..vertices.len - 1) |perm_index| {
+    var marked_vertices: std.ArrayListUnmanaged(i32) = .empty;
+    defer marked_vertices.deinit(allocator);
+
+    try appendTempTriangle(allocator, engine, &temp_tris, work_vertices[0], work_vertices[list.permutation[1]], work_vertices[work_vertices.len - 1]);
+    if (work_vertices.len > 3) {
+        for (2..work_vertices.len - 1) |perm_index| {
             const pos = list.permutation[perm_index];
-            try addPointCavity(allocator, engine, &temp_tris, vertices[pos], vertices[list.next[pos]], vertices[list.prev[pos]], 0);
+            try addPointCavity(allocator, engine, &temp_tris, &marked_vertices, work_vertices[pos], work_vertices[list.next[pos]], work_vertices[list.prev[pos]], 0, false);
+            try repairMarkedFan(allocator, engine, &temp_tris, &marked_vertices);
         }
     }
 
     try appendLiveTriangles(allocator, temp_tris.items, out);
-    try buildLocalAdjacency(out.items);
+    try buildLocalAdjacency(allocator, out.items);
     try validateLocalDelaunay(engine, out.items);
 }
 
@@ -355,7 +511,7 @@ test "local cavity triangulates a convex polygon" {
     try std.testing.expectEqual(@as(usize, 2), out.items.len);
 }
 
-test "local cavity rejects repeated vertices" {
+test "local cavity rejects non-adjacent repeated vertices with distinct reason" {
     var engine = triangulate.Engine.init(std.testing.allocator);
     defer engine.deinit();
 
@@ -372,6 +528,29 @@ test "local cavity rejects repeated vertices" {
     var out: std.ArrayListUnmanaged(LocalTriangle) = .empty;
     defer out.deinit(std.testing.allocator);
 
-    const cavity_vertices = [_]i32{ 3, 4, 4, 5 };
-    try std.testing.expectError(error.InvalidCavity, triangulateCavity(std.testing.allocator, &engine, &cavity_vertices, &out));
+    const cavity_vertices = [_]i32{ 3, 4, 5, 4 };
+    try std.testing.expectError(error.RepeatedCavityVertex, triangulateCavity(std.testing.allocator, &engine, &cavity_vertices, &out));
+}
+
+test "local cavity compacts adjacent repeated vertices" {
+    var engine = triangulate.Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const vertices = [_]mesh.Vertex{
+        .{ .x = 0.0, .y = 0.0 },
+        .{ .x = 1.0, .y = 0.0 },
+        .{ .x = 1.0, .y = 1.0 },
+        .{ .x = 0.0, .y = 1.0 },
+    };
+    try engine.initSuperTriangle(&vertices);
+    for (vertices) |vertex| {
+        try engine.mesh.vertices.append(std.testing.allocator, vertex);
+    }
+
+    var out: std.ArrayListUnmanaged(LocalTriangle) = .empty;
+    defer out.deinit(std.testing.allocator);
+
+    const cavity_vertices = [_]i32{ 3, 4, 4, 5, 6 };
+    try triangulateCavity(std.testing.allocator, &engine, &cavity_vertices, &out);
+    try std.testing.expectEqual(@as(usize, 2), out.items.len);
 }

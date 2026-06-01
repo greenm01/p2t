@@ -68,6 +68,14 @@ pub const EngineStats = struct {
     edge_flips: u64 = 0,
     corridor_traces: u64 = 0,
     corridor_triangles: u64 = 0,
+    corridor_max_triangles: u64 = 0,
+    corridor_augmented_traces: u64 = 0,
+    corridor_augmented_triangles: u64 = 0,
+    local_cavity_attempts: u64 = 0,
+    local_cavity_successes: u64 = 0,
+    local_cavity_invalid_fallbacks: u64 = 0,
+    local_cavity_nondelaunay_fallbacks: u64 = 0,
+    local_cavity_repeated_fallbacks: u64 = 0,
     find_live_edge_calls: u64 = 0,
     find_live_edge_scan_tris: u64 = 0,
     find_live_edge_fast_calls: u64 = 0,
@@ -255,6 +263,12 @@ pub const Engine = struct {
     pub inline fn statAdd(self: *Engine, comptime field: []const u8, value: u64) void {
         if (build_options.instrument_mesh_stats) {
             @field(self.stats, field) += value;
+        }
+    }
+
+    pub inline fn statMax(self: *Engine, comptime field: []const u8, value: u64) void {
+        if (build_options.instrument_mesh_stats and value > @field(self.stats, field)) {
+            @field(self.stats, field) = value;
         }
     }
 

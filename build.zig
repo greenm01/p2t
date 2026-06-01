@@ -189,6 +189,23 @@ pub fn build(b: *std.Build) void {
     const single_bench_step = b.step("bench-single", "Run Cleave larger single-mesh benchmarks in ReleaseFast");
     single_bench_step.dependOn(&single_bench_cmd.step);
 
+    const segment_bench_module = b.createModule(.{
+        .root_source_file = b.path("src/segment_bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "p2t", .module = mod },
+        },
+    });
+    segment_bench_module.addOptions("build_options", build_options);
+    const segment_bench_exe = b.addExecutable(.{
+        .name = "p2t-segment-bench",
+        .root_module = segment_bench_module,
+    });
+    const segment_bench_cmd = b.addRunArtifact(segment_bench_exe);
+    const segment_bench_step = b.step("bench-segment", "Run Cleave long-constraint corridor benchmarks in ReleaseFast");
+    segment_bench_step.dependOn(&segment_bench_cmd.step);
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.

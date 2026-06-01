@@ -116,6 +116,8 @@ coverage now includes:
 - `zig build bench-batch` for independent-job throughput across worker counts.
 - `zig build bench-single` for larger single-mesh latency with insertion versus
   constraint-recovery timing.
+- `zig build bench-segment` for synthetic long interior constraints that cross
+  many triangles and exercise the segment-insertion corridor path.
 - `zig build bench-single -Dinstrument-predicates=true` for predicate call and exact
   fallback counters.
 - `zig build bench-single -Dinstrument-predicates=true -Dinstrument-mesh-stats=true`
@@ -177,6 +179,22 @@ formula and a median/opposite-edge skewness threshold after the timed `bench-sin
 runs. These metrics are intentionally diagnostic only: Cleave does not run the
 paper's iterative node relocation, insertion, deletion, or boundary snapping in the
 triangulation hot path.
+
+The Shewchuk/Brown fast segment-insertion paper is now represented by a separate
+long-segment benchmark and by local-cavity diagnostics. The current implementation
+uses cached segment-line distance scores during CavityCDT deletion ordering, avoids
+some recursive orientation retests, distinguishes repeated-vertex fallbacks, and can
+try the local cavity path after the robust boundary-scan fallback. It also attempts
+a conservative marked-vertex crossed-triangle fan retriangulation inside the
+temporary local cavity. The current path still validates local output and falls back
+to pseudo-polygon triangulation when the paper-style cavity cannot be proven valid.
+
+The latest single-core constraint pass replaced the old one-triangle endpoint trace
+plus full-mesh augmentation with an adjacency-based segment marcher. Long synthetic
+constraints now report `augmented/run 0.0` and trace corridors of roughly
+`93-128` triangles directly. Boundary-ring fixtures also avoid the augmentation path
+and spend far less time in constraint recovery; the remaining large-fixture cost is
+again dominated by point insertion and topology/memory traversal.
 
 1. Add a batch-throughput benchmark.
    Measure many independent triangulations across `1, 2, 4, 8, ...` workers. Reuse

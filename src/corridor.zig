@@ -10,6 +10,8 @@ pub const Corridor = struct {
     pierced_triangles: std.ArrayListUnmanaged(i32) = .empty,
     left_vertices: std.ArrayListUnmanaged(i32) = .empty,
     right_vertices: std.ArrayListUnmanaged(i32) = .empty,
+    pierced_marks: std.ArrayListUnmanaged(u32) = .empty,
+    pierced_generation: u32 = 1,
 
     const EdgeKey = struct { v1: i32, v2: i32 };
     const EdgeRecord = struct { v1: i32, v2: i32 };
@@ -40,16 +42,38 @@ pub const Corridor = struct {
     };
 
     pub fn deinit(self: *Corridor, allocator: std.mem.Allocator) void {
+        self.pierced_marks.deinit(allocator);
         self.pierced_triangles.deinit(allocator);
         self.left_vertices.deinit(allocator);
         self.right_vertices.deinit(allocator);
     }
 
     fn containsPierced(self: *const Corridor, tri_idx: i32) bool {
-        for (self.pierced_triangles.items) |pierced_idx| {
-            if (pierced_idx == tri_idx) return true;
+        if (tri_idx < 0) return false;
+        const slot: usize = @intCast(tri_idx);
+        return slot < self.pierced_marks.items.len and self.pierced_marks.items[slot] == self.pierced_generation;
+    }
+
+    fn beginPiercedGeneration(self: *Corridor, allocator: std.mem.Allocator, triangle_count: usize) !void {
+        try self.pierced_marks.ensureTotalCapacity(allocator, triangle_count);
+        while (self.pierced_marks.items.len < triangle_count) {
+            try self.pierced_marks.append(allocator, 0);
         }
-        return false;
+        self.pierced_generation +%= 1;
+        if (self.pierced_generation == 0) {
+            @memset(self.pierced_marks.items, 0);
+            self.pierced_generation = 1;
+        }
+    }
+
+    fn appendPierced(self: *Corridor, allocator: std.mem.Allocator, tri_idx: i32) !bool {
+        if (tri_idx < 0) return false;
+        const slot: usize = @intCast(tri_idx);
+        if (slot >= self.pierced_marks.items.len) return false;
+        if (self.pierced_marks.items[slot] == self.pierced_generation) return false;
+        self.pierced_marks.items[slot] = self.pierced_generation;
+        try self.pierced_triangles.append(allocator, tri_idx);
+        return true;
     }
 
     fn collectTransactionFootprint(self: *const Corridor, allocator: std.mem.Allocator, engine: *const triangulate.Engine, outer_edges: []const BoundaryEdge, footprint: *std.ArrayListUnmanaged(i32)) !void {
@@ -147,25 +171,136 @@ pub const Corridor = struct {
             const enters_from_start = triangleHasVertex(tri, start_pt_idx) and pointInTriangle(engine, tri, near_start);
             const enters_from_end = triangleHasVertex(tri, end_pt_idx) and pointInTriangle(engine, tri, near_end);
             if (enters_from_start or enters_from_end or segmentIntersectsTriangle(engine, tri, start_pt, end_pt)) {
-                try self.pierced_triangles.append(allocator, tri_i32);
+                _ = try self.appendPierced(allocator, tri_i32);
             }
         }
+    }
+
+    fn pointInTriangleEps(engine: *triangulate.Engine, tri: mesh.Triangle, pt: mesh.Vertex, eps: f64) bool {
+        const v0 = engine.getVertex(tri.v0);
+        const v1 = engine.getVertex(tri.v1);
+        const v2 = engine.getVertex(tri.v2);
+        return predicates.orient2d(v0, v1, pt) >= -eps and
+            predicates.orient2d(v1, v2, pt) >= -eps and
+            predicates.orient2d(v2, v0, pt) >= -eps;
+    }
+
+    fn sampleAlong(start_pt: mesh.Vertex, dx: f64, dy: f64, t: f64) mesh.Vertex {
+        return .{ .x = start_pt.x + dx * t, .y = start_pt.y + dy * t };
+    }
+
+    fn segmentParam(start_pt: mesh.Vertex, dx: f64, dy: f64, p: mesh.Vertex) f64 {
+        const denom = dx * dx + dy * dy;
+        if (denom == 0.0) return 0.0;
+        return ((p.x - start_pt.x) * dx + (p.y - start_pt.y) * dy) / denom;
+    }
+
+    fn edgeIntersectionParam(start_pt: mesh.Vertex, end_pt: mesh.Vertex, a: mesh.Vertex, b: mesh.Vertex) ?f64 {
+        const dx = end_pt.x - start_pt.x;
+        const dy = end_pt.y - start_pt.y;
+        const ex = b.x - a.x;
+        const ey = b.y - a.y;
+        const denom = dx * ey - dy * ex;
+        if (@abs(denom) > 1e-18) {
+            const ax = a.x - start_pt.x;
+            const ay = a.y - start_pt.y;
+            const t = (ax * ey - ay * ex) / denom;
+            const u = (ax * dy - ay * dx) / denom;
+            if (t >= -1e-10 and t <= 1.0 + 1e-10 and u >= -1e-10 and u <= 1.0 + 1e-10) return std.math.clamp(t, 0.0, 1.0);
+            return null;
+        }
+
+        const a_on = predicates.pointOnSegment(start_pt, end_pt, a);
+        const b_on = predicates.pointOnSegment(start_pt, end_pt, b);
+        if (a_on and b_on) return @min(segmentParam(start_pt, dx, dy, a), segmentParam(start_pt, dx, dy, b));
+        if (a_on) return segmentParam(start_pt, dx, dy, a);
+        if (b_on) return segmentParam(start_pt, dx, dy, b);
+        return null;
+    }
+
+    fn findIncidentTriangleContaining(engine: *triangulate.Engine, vertex_idx: i32, hint_tri: i32, pt: mesh.Vertex) i32 {
+        var stack: [96]i32 = undefined;
+        var visited: [96]i32 = undefined;
+        var stack_len: usize = 0;
+        var visited_len: usize = 0;
+
+        if (hint_tri >= 0) {
+            stack[stack_len] = hint_tri;
+            stack_len += 1;
+        }
+
+        while (stack_len > 0) {
+            stack_len -= 1;
+            const tri_idx = stack[stack_len];
+            if (tri_idx < 0) continue;
+
+            var seen = false;
+            for (visited[0..visited_len]) |visited_idx| {
+                if (visited_idx == tri_idx) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (seen) continue;
+            if (visited_len == visited.len) break;
+            visited[visited_len] = tri_idx;
+            visited_len += 1;
+
+            const tri_slot: usize = @intCast(tri_idx);
+            if (tri_slot >= engine.mesh.triangles.len) continue;
+            const tri = engine.mesh.triangles.get(tri_slot);
+            if (mesh.isDeadTriangle(tri) or !triangleHasVertex(tri, vertex_idx)) continue;
+            if (pointInTriangleEps(engine, tri, pt, 1e-9)) return tri_idx;
+
+            const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
+            for (neighbors) |neighbor_idx| {
+                if (neighbor_idx < 0) continue;
+                const neighbor_slot: usize = @intCast(neighbor_idx);
+                if (neighbor_slot >= engine.mesh.triangles.len) continue;
+                const neighbor = engine.mesh.triangles.get(neighbor_slot);
+                if (mesh.isDeadTriangle(neighbor) or !triangleHasVertex(neighbor, vertex_idx)) continue;
+                if (stack_len == stack.len) break;
+                stack[stack_len] = neighbor_idx;
+                stack_len += 1;
+            }
+        }
+
+        return hint_tri;
+    }
+
+    fn triangleContainsPoint(engine: *triangulate.Engine, tri_idx: i32, pt: mesh.Vertex) bool {
+        if (tri_idx < 0) return false;
+        const tri_slot: usize = @intCast(tri_idx);
+        if (tri_slot >= engine.mesh.triangles.len) return false;
+        const tri = engine.mesh.triangles.get(tri_slot);
+        if (mesh.isDeadTriangle(tri)) return false;
+        return pointInTriangleEps(engine, tri, pt, 1e-9);
     }
 
     pub fn trace(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, start_tri: i32, end_pt_idx: i32, start_pt_idx: i32) !void {
         self.pierced_triangles.clearRetainingCapacity();
         self.left_vertices.clearRetainingCapacity();
         self.right_vertices.clearRetainingCapacity();
+        try self.beginPiercedGeneration(allocator, engine.mesh.triangles.len);
 
         const start_pt = engine.getVertex(start_pt_idx);
         const end_pt = engine.getVertex(end_pt_idx);
-        var curr = start_tri;
+        const dx = end_pt.x - start_pt.x;
+        const dy = end_pt.y - start_pt.y;
+        const segment_len = @sqrt(dx * dx + dy * dy);
+        if (segment_len == 0.0) return;
+
+        const step_eps = @min(1e-7, 0.25 / segment_len);
+        const near_start = sampleAlong(start_pt, dx, dy, step_eps);
+        var curr = findIncidentTriangleContaining(engine, start_pt_idx, start_tri, near_start);
+        var prev: i32 = -1;
+        var current_t: f64 = 0.0;
 
         // Safety limit
-        var limit: usize = 10000;
+        var limit: usize = engine.mesh.triangles.len + 8;
 
         while (curr != -1 and limit > 0) : (limit -= 1) {
-            try self.pierced_triangles.append(allocator, curr);
+            _ = try self.appendPierced(allocator, curr);
 
             const tri = engine.mesh.triangles.get(@as(usize, @intCast(curr)));
             const v0 = engine.getVertex(tri.v0);
@@ -178,41 +313,35 @@ pub const Corridor = struct {
                 break;
             }
 
-            // Which edge does the segment (start_pt, end_pt) intersect?
-            // We check the 3 edges. We don't want to step back, so we should step forward.
-            // A segment intersects an edge if `intersect` is true.
-            // Also need to handle collinear cases or vertex intersections in a robust way,
-            // but for a strict Delaunay base mesh without co-circular/collinear degeneracies,
-            // strict intersection works.
-
             var next_tri: i32 = -1;
             var crossed_side: ?usize = null;
+            var best_t = std.math.inf(f64);
+            const edges = [_]struct { a: mesh.Vertex, b: mesh.Vertex, adj: i32, side: usize }{
+                .{ .a = v0, .b = v1, .adj = tri.adj0, .side = 0 },
+                .{ .a = v1, .b = v2, .adj = tri.adj1, .side = 1 },
+                .{ .a = v2, .b = v0, .adj = tri.adj2, .side = 2 },
+            };
 
-            if (tri.v0 != start_pt_idx and tri.v1 != start_pt_idx and tri.v0 != end_pt_idx and tri.v1 != end_pt_idx and segmentHitsEdge(start_pt, end_pt, v0, v1)) {
-                // To avoid stepping backwards, we should verify it's moving closer to end_pt
-                // Actually, if it intersects and is not the triangle we came from, we can go there.
-                // But since we just append, let's just check if we already visited it.
-                if (self.pierced_triangles.items.len < 2 or self.pierced_triangles.items[self.pierced_triangles.items.len - 2] != tri.adj0) {
-                    next_tri = tri.adj0;
-                    crossed_side = 0;
+            for (edges) |edge| {
+                if (edge.adj == prev) continue;
+                const t = edgeIntersectionParam(start_pt, end_pt, edge.a, edge.b) orelse continue;
+                if (t <= current_t + 1e-10 or t > 1.0 + 1e-10) continue;
+                const probe_t = @min(1.0, t + step_eps);
+                if (edge.adj >= 0 and probe_t < 1.0 and !triangleContainsPoint(engine, edge.adj, sampleAlong(start_pt, dx, dy, probe_t))) {
+                    continue;
+                }
+                if (t < best_t) {
+                    best_t = t;
+                    next_tri = edge.adj;
+                    crossed_side = edge.side;
                 }
             }
-            if (next_tri == -1 and tri.v1 != start_pt_idx and tri.v2 != start_pt_idx and tri.v1 != end_pt_idx and tri.v2 != end_pt_idx and segmentHitsEdge(start_pt, end_pt, v1, v2)) {
-                if (self.pierced_triangles.items.len < 2 or self.pierced_triangles.items[self.pierced_triangles.items.len - 2] != tri.adj1) {
-                    next_tri = tri.adj1;
-                    crossed_side = 1;
-                }
-            }
-            if (next_tri == -1 and tri.v2 != start_pt_idx and tri.v0 != start_pt_idx and tri.v2 != end_pt_idx and tri.v0 != end_pt_idx and segmentHitsEdge(start_pt, end_pt, v2, v0)) {
-                if (self.pierced_triangles.items.len < 2 or self.pierced_triangles.items[self.pierced_triangles.items.len - 2] != tri.adj2) {
-                    next_tri = tri.adj2;
-                    crossed_side = 2;
-                }
+
+            if (next_tri == -1 and pointInTriangleEps(engine, tri, end_pt, 1e-9)) {
+                break;
             }
 
             if (next_tri == -1) {
-                // Should not happen in a valid mesh unless we hit an exact vertex.
-                // For this proof of concept, we just break.
                 break;
             }
 
@@ -220,6 +349,8 @@ pub const Corridor = struct {
             try self.appendTraceVertex(allocator, engine, start_pt_idx, end_pt_idx, crossed.v1);
             try self.appendTraceVertex(allocator, engine, start_pt_idx, end_pt_idx, crossed.v2);
 
+            prev = curr;
+            current_t = best_t;
             curr = next_tri;
         }
     }
@@ -490,13 +621,12 @@ pub const Corridor = struct {
         comptime trusted: bool,
     ) !void {
         const base = emitted.items.len;
-        const map = try allocator.alloc(i32, local_tris.len);
-        for (local_tris, 0..) |local_tri, i| {
+        try emitted.ensureUnusedCapacity(allocator, local_tris.len);
+        for (local_tris) |local_tri| {
             _ = local_tri;
             const new_tri_idx = arena.getFreeSlot() orelse @as(i32, @intCast(engine.mesh.triangles.len));
             try engine.mesh.ensureTriangleSlot(allocator, new_tri_idx);
-            map[i] = new_tri_idx;
-            try emitted.append(allocator, new_tri_idx);
+            emitted.appendAssumeCapacity(new_tri_idx);
         }
 
         for (local_tris, 0..) |local_tri, i| {
@@ -504,9 +634,9 @@ pub const Corridor = struct {
                 .v0 = local_tri.v0,
                 .v1 = local_tri.v1,
                 .v2 = local_tri.v2,
-                .adj0 = if (local_tri.adj0 >= 0) map[@as(usize, @intCast(local_tri.adj0))] else -1,
-                .adj1 = if (local_tri.adj1 >= 0) map[@as(usize, @intCast(local_tri.adj1))] else -1,
-                .adj2 = if (local_tri.adj2 >= 0) map[@as(usize, @intCast(local_tri.adj2))] else -1,
+                .adj0 = if (local_tri.adj0 >= 0) emitted.items[base + @as(usize, @intCast(local_tri.adj0))] else -1,
+                .adj1 = if (local_tri.adj1 >= 0) emitted.items[base + @as(usize, @intCast(local_tri.adj1))] else -1,
+                .adj2 = if (local_tri.adj2 >= 0) emitted.items[base + @as(usize, @intCast(local_tri.adj2))] else -1,
             };
             if (predicates.orient2d(engine.getVertex(tri.v0), engine.getVertex(tri.v1), engine.getVertex(tri.v2)) < 0.0) return error.InvalidCavity;
             if (trusted) {
@@ -681,12 +811,13 @@ pub const Corridor = struct {
         var outer_edges: std.ArrayListUnmanaged(BoundaryEdge) = .empty;
         try self.collectOuterBoundaryEdges(scratch_allocator, engine, &edge_counts, &outer_edges);
 
-        var used_boundary_fallback = false;
         var left_wall = self.left_vertices.items;
         var right_wall = self.right_vertices.items;
         if (self.left_vertices.items.len == 0 or self.right_vertices.items.len == 0) {
-            used_boundary_fallback = true;
             try self.augmentPiercedBySegmentScan(allocator, engine, start_pt_idx, end_pt_idx);
+            engine.statInc("corridor_augmented_traces");
+            engine.statAdd("corridor_augmented_triangles", @intCast(self.pierced_triangles.items.len));
+            engine.statMax("corridor_max_triangles", @intCast(self.pierced_triangles.items.len));
             edge_counts.clearRetainingCapacity();
             try self.countPiercedEdges(engine, &edge_counts);
             try self.collectOuterBoundaryEdges(scratch_allocator, engine, &edge_counts, &outer_edges);
@@ -728,14 +859,27 @@ pub const Corridor = struct {
         }
 
         var local_cavities = LocalCavityPair{};
-        var use_local_cavity = !used_boundary_fallback and shouldUseLocalCavity(left_wall, right_wall, self.pierced_triangles.items);
+        var use_local_cavity = shouldUseLocalCavity(left_wall, right_wall, self.pierced_triangles.items);
         if (use_local_cavity) {
+            engine.statInc("local_cavity_attempts");
             buildLocalCavities(scratch_allocator, engine, start_pt_idx, end_pt_idx, left_wall, right_wall, outer_edges.items, &local_cavities) catch |err| {
                 switch (err) {
-                    error.InvalidCavity, error.NonDelaunayLocalCavity => use_local_cavity = false,
+                    error.InvalidCavity => {
+                        engine.statInc("local_cavity_invalid_fallbacks");
+                        use_local_cavity = false;
+                    },
+                    error.NonDelaunayLocalCavity => {
+                        engine.statInc("local_cavity_nondelaunay_fallbacks");
+                        use_local_cavity = false;
+                    },
+                    error.RepeatedCavityVertex => {
+                        engine.statInc("local_cavity_repeated_fallbacks");
+                        use_local_cavity = false;
+                    },
                     else => return err,
                 }
             };
+            if (use_local_cavity) engine.statInc("local_cavity_successes");
         }
 
         var tx = triangulate.TriangleTransaction{};
@@ -760,14 +904,7 @@ pub const Corridor = struct {
             for (neighbors) |neighbor_idx| {
                 if (neighbor_idx == -1) continue;
 
-                var neighbor_is_pierced = false;
-                for (self.pierced_triangles.items) |pierced_idx| {
-                    if (neighbor_idx == pierced_idx) {
-                        neighbor_is_pierced = true;
-                        break;
-                    }
-                }
-                if (neighbor_is_pierced) continue;
+                if (self.containsPierced(neighbor_idx)) continue;
 
                 const neighbor_slot = @as(usize, @intCast(neighbor_idx));
                 var neighbor = engine.mesh.triangles.get(neighbor_slot);
@@ -873,6 +1010,7 @@ pub const Corridor = struct {
             try self.trace(allocator, engine, start_tri, end_pt_idx, start_pt_idx);
             engine.statInc("corridor_traces");
             engine.statAdd("corridor_triangles", @intCast(self.pierced_triangles.items.len));
+            engine.statMax("corridor_max_triangles", @intCast(self.pierced_triangles.items.len));
             self.clearAndRetriangulate(allocator, engine, arena, start_pt_idx, end_pt_idx) catch |err| {
                 switch (err) {
                     error.TransactionConflict => continue,
@@ -899,6 +1037,7 @@ pub const Corridor = struct {
         try self.trace(allocator, engine, start_tri, end_pt_idx, start_pt_idx);
         engine.statInc("corridor_traces");
         engine.statAdd("corridor_triangles", @intCast(self.pierced_triangles.items.len));
+        engine.statMax("corridor_max_triangles", @intCast(self.pierced_triangles.items.len));
         try self.clearAndRetriangulateTrusted(allocator, engine, arena, start_pt_idx, end_pt_idx);
     }
 };
