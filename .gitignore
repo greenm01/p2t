@@ -5,3 +5,7 @@
 *.so
 *.dylib
 *.dSYM/
+
+# Zig
+.zig-cache/
+zig-out/
