@@ -171,6 +171,13 @@ The edge-lookup counters show only a few global fallback scans per run, but thos
 fallbacks can scan thousands of triangles. A trial routing of trusted constraint
 marking through the fast lookup did not reduce those scans and was rejected.
 
+The Perumal mesh optimisation paper is useful here as a quality-diagnostics source,
+not as a faster CDT construction method. Cleave now reports the paper's aspect-ratio
+formula and a median/opposite-edge skewness threshold after the timed `bench-single`
+runs. These metrics are intentionally diagnostic only: Cleave does not run the
+paper's iterative node relocation, insertion, deletion, or boundary snapping in the
+triangulation hot path.
+
 1. Add a batch-throughput benchmark.
    Measure many independent triangulations across `1, 2, 4, 8, ...` workers. Reuse
    per-thread engines and arenas. Compare wall time, jobs/sec, and scaling efficiency.

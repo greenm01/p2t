@@ -6,6 +6,7 @@ const corridor_module = p2t.corridor;
 const mesh = p2t.mesh;
 const parser = p2t.parser;
 const predicates = p2t.predicates;
+const quality = p2t.quality;
 const spatial = p2t.spatial;
 const triangulate = p2t.triangulate;
 
@@ -223,6 +224,21 @@ fn benchCase(allocator: std.mem.Allocator, case: Case) !void {
 
     std.mem.sortUnstable(RoundTiming, &timings, {}, lessTotal);
     printCase(case, timings[0], timings[rounds / 2]);
+
+    var stats = quality.QualityStats{};
+    for (0..engine.mesh.triangles.len) |i| {
+        const tri = engine.mesh.triangles.get(i);
+        if (mesh.isDeadTriangle(tri)) continue;
+        if (tri.v0 < 3 or tri.v1 < 3 or tri.v2 < 3) continue;
+
+        stats.accumulate(
+            engine.getVertex(tri.v0),
+            engine.getVertex(tri.v1),
+            engine.getVertex(tri.v2),
+        );
+    }
+    stats.finalize();
+    stats.print(case.name);
 }
 
 pub fn main(init: std.process.Init) !void {
