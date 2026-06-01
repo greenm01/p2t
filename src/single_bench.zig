@@ -35,7 +35,9 @@ const RoundTiming = struct {
     legalization_us: u64 = 0,
     decomposition_us: u64 = 0,
     piece_bw_us: u64 = 0,
+    piece_bw_serial_us: u64 = 0,
     piece_bw_max_us: u64 = 0,
+    piece_merge_us: u64 = 0,
     assembly_us: u64 = 0,
     local_legalization_us: u64 = 0,
     seam_legalization_us: u64 = 0,
@@ -47,12 +49,50 @@ const RoundTiming = struct {
     dd_diagonals: usize = 0,
     dd_max_piece_vertices: usize = 0,
     dd_total_piece_vertices: usize = 0,
+    piece_bw_threads: usize = 0,
     local_legalization_tests: u64 = 0,
     local_edge_flips: u64 = 0,
     seam_legalization_tests: u64 = 0,
     seam_edge_flips: u64 = 0,
     predicate_stats: predicates.PredicateStats = .{},
     engine_stats: triangulate.EngineStats = .{},
+};
+
+fn partitionedBwMode() bool {
+    return build_options.partitioned_bw_mode or build_options.partitioned_bw_parallel_mode;
+}
+
+fn partitionedBwParallelMode() bool {
+    return build_options.partitioned_bw_parallel_mode;
+}
+
+const PieceBuildResult = struct {
+    indices: []i32 = &.{},
+    elapsed_us: u64 = 0,
+    err: ?anyerror = null,
+
+    fn deinit(self: *PieceBuildResult) void {
+        if (self.indices.len != 0) std.heap.page_allocator.free(self.indices);
+        self.* = .{};
+    }
+};
+
+const PieceBuildStats = struct {
+    wall_us: u64 = 0,
+    serial_us: u64 = 0,
+    max_us: u64 = 0,
+    merge_us: u64 = 0,
+    threads: usize = 1,
+};
+
+const PieceWorkerContext = struct {
+    io: Io,
+    vertices: []const mesh.Vertex,
+    rings: []const i32,
+    pieces: []const trapezoid_dd.Piece,
+    stride: usize,
+    offset: usize,
+    results: []PieceBuildResult,
 };
 
 fn appendLiveLocalTrianglesAsGlobal(
@@ -136,6 +176,127 @@ fn appendPieceBowyerWatsonSeed(
     return appendLiveLocalTrianglesAsGlobal(allocator, &local_engine, local_to_global, out_indices);
 }
 
+fn buildPieceBowyerWatsonResult(io: Io, vertices: []const mesh.Vertex, ring: []const i32) PieceBuildResult {
+    const start = timer.now(io);
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const allocator = arena_state.allocator();
+
+    var local_indices: std.ArrayListUnmanaged(i32) = .empty;
+    defer local_indices.deinit(allocator);
+
+    _ = appendPieceBowyerWatsonSeed(allocator, vertices, ring, &local_indices) catch |err| {
+        return .{ .elapsed_us = timer.elapsedMicros(start, timer.now(io)), .err = err };
+    };
+    const owned_indices = std.heap.page_allocator.dupe(i32, local_indices.items) catch |err| {
+        return .{ .elapsed_us = timer.elapsedMicros(start, timer.now(io)), .err = err };
+    };
+    return .{
+        .indices = owned_indices,
+        .elapsed_us = timer.elapsedMicros(start, timer.now(io)),
+    };
+}
+
+fn partitionedBwPieceWorker(context: *PieceWorkerContext) void {
+    var piece_idx = context.offset;
+    while (piece_idx < context.pieces.len) : (piece_idx += context.stride) {
+        const piece = context.pieces[piece_idx];
+        const ring = context.rings[piece.start .. piece.start + piece.len];
+        context.results[piece_idx] = buildPieceBowyerWatsonResult(context.io, context.vertices, ring);
+    }
+}
+
+fn partitionedBwWorkerCount(piece_count: usize) !usize {
+    if (piece_count == 0) return 1;
+    const requested = build_options.partitioned_bw_threads;
+    const detected = if (requested == 0) try std.Thread.getCpuCount() else requested;
+    return @max(@as(usize, 1), @min(detected, piece_count));
+}
+
+fn appendPartitionedBwPiecesSerial(
+    io: Io,
+    allocator: std.mem.Allocator,
+    vertices: []const mesh.Vertex,
+    decomposition: *const trapezoid_dd.Decomposition,
+    out_indices: *std.ArrayListUnmanaged(i32),
+) !PieceBuildStats {
+    var stats = PieceBuildStats{};
+    const wall_start = timer.now(io);
+    for (decomposition.pieces.items) |piece| {
+        const piece_start = timer.now(io);
+        const ring = decomposition.rings.items[piece.start .. piece.start + piece.len];
+        _ = try appendPieceBowyerWatsonSeed(allocator, vertices, ring, out_indices);
+        const piece_elapsed = timer.elapsedMicros(piece_start, timer.now(io));
+        stats.serial_us += piece_elapsed;
+        stats.max_us = @max(stats.max_us, piece_elapsed);
+    }
+    stats.wall_us = timer.elapsedMicros(wall_start, timer.now(io));
+    stats.threads = 1;
+    return stats;
+}
+
+fn appendPartitionedBwPiecesParallel(
+    io: Io,
+    allocator: std.mem.Allocator,
+    vertices: []const mesh.Vertex,
+    decomposition: *const trapezoid_dd.Decomposition,
+    out_indices: *std.ArrayListUnmanaged(i32),
+) !PieceBuildStats {
+    const piece_count = decomposition.pieces.items.len;
+    const thread_count = try partitionedBwWorkerCount(piece_count);
+    if (thread_count == 1) {
+        return appendPartitionedBwPiecesSerial(io, allocator, vertices, decomposition, out_indices);
+    }
+
+    const results = try allocator.alloc(PieceBuildResult, piece_count);
+    defer allocator.free(results);
+    for (results) |*result| result.* = .{};
+    defer for (results) |*result| result.deinit();
+
+    const contexts = try allocator.alloc(PieceWorkerContext, thread_count);
+    defer allocator.free(contexts);
+    const threads = try allocator.alloc(std.Thread, thread_count);
+    defer allocator.free(threads);
+
+    const wall_start = timer.now(io);
+    var started_threads: usize = 0;
+    for (0..thread_count) |i| {
+        contexts[i] = .{
+            .io = io,
+            .vertices = vertices,
+            .rings = decomposition.rings.items,
+            .pieces = decomposition.pieces.items,
+            .stride = thread_count,
+            .offset = i,
+            .results = results,
+        };
+        threads[i] = std.Thread.spawn(.{}, partitionedBwPieceWorker, .{&contexts[i]}) catch |err| {
+            for (threads[0..started_threads]) |thread| thread.join();
+            return err;
+        };
+        started_threads += 1;
+    }
+    for (threads[0..started_threads]) |thread| thread.join();
+    const wall_us = timer.elapsedMicros(wall_start, timer.now(io));
+
+    var stats = PieceBuildStats{
+        .wall_us = wall_us,
+        .threads = thread_count,
+    };
+    for (results) |result| {
+        if (result.err) |err| return err;
+        stats.serial_us += result.elapsed_us;
+        stats.max_us = @max(stats.max_us, result.elapsed_us);
+    }
+
+    const merge_start = timer.now(io);
+    for (results) |result| {
+        try out_indices.appendSlice(allocator, result.indices);
+    }
+    stats.merge_us = timer.elapsedMicros(merge_start, timer.now(io));
+    return stats;
+}
+
 fn readFile(allocator: std.mem.Allocator, io: Io, path: []const u8) ![]u8 {
     const dir = Io.Dir.cwd();
     var file = try dir.openFile(io, path, .{});
@@ -215,29 +376,31 @@ fn runRound(
         var legalization_end = insertion_start;
         var decomposition_start = insertion_start;
         var decomposition_end = insertion_start;
-        var piece_bw_start = insertion_start;
-        var piece_bw_end = insertion_start;
+        var piece_bw_wall_us: u64 = 0;
+        var piece_bw_serial_us: u64 = 0;
         var piece_bw_max_us: u64 = 0;
+        var piece_merge_us: u64 = 0;
+        var piece_bw_threads: usize = 0;
         var assembly_start = insertion_start;
         var assembly_end = insertion_start;
         var local_legalization_end = insertion_start;
         var seam_legalization_end = insertion_start;
 
-        if (build_options.partitioned_bw_mode) {
+        if (partitionedBwMode()) {
             decomposition_start = timer.now(io);
             try trapezoid_dd.decomposeSimple(allocator, case.vertices, 256, &decomposition);
             decomposition_end = timer.now(io);
 
             seed_indices.clearRetainingCapacity();
-            piece_bw_start = timer.now(io);
-            for (decomposition.pieces.items) |piece| {
-                const piece_start = timer.now(io);
-                const ring = decomposition.rings.items[piece.start .. piece.start + piece.len];
-                _ = try appendPieceBowyerWatsonSeed(allocator, case.vertices, ring, &seed_indices);
-                const piece_elapsed = timer.elapsedMicros(piece_start, timer.now(io));
-                piece_bw_max_us = @max(piece_bw_max_us, piece_elapsed);
-            }
-            piece_bw_end = timer.now(io);
+            const piece_stats = if (partitionedBwParallelMode())
+                try appendPartitionedBwPiecesParallel(io, allocator, case.vertices, &decomposition, &seed_indices)
+            else
+                try appendPartitionedBwPiecesSerial(io, allocator, case.vertices, &decomposition, &seed_indices);
+            piece_bw_wall_us = piece_stats.wall_us;
+            piece_bw_serial_us = piece_stats.serial_us;
+            piece_bw_max_us = piece_stats.max_us;
+            piece_merge_us = piece_stats.merge_us;
+            piece_bw_threads = piece_stats.threads;
 
             assembly_start = timer.now(io);
             try engine.buildPolygonSeedMesh(case.vertices, seed_indices.items);
@@ -259,11 +422,11 @@ fn runRound(
             timing.seam_legalization_tests += seam_stats.legalization_tests - seam_stats_start.legalization_tests;
             timing.seam_edge_flips += seam_stats.edge_flips - seam_stats_start.edge_flips;
 
-            seed_start = piece_bw_start;
+            seed_start = decomposition_end;
             seed_end = assembly_end;
             legalization_end = seam_legalization_end;
             insertion_start = decomposition_start;
-            insertion_end = piece_bw_end;
+            insertion_end = assembly_start;
             constraint_end = seam_legalization_end;
             local_legalization_end = assembly_end;
         } else if (build_options.trapezoid_dd_mode) {
@@ -354,13 +517,13 @@ fn runRound(
         }
 
         const cull_start = constraint_end;
-        if (build_options.polygon_output_mode and !build_options.polygon_seed_mode and !build_options.trapezoid_dd_mode and !build_options.partitioned_bw_mode) {
+        if (build_options.polygon_output_mode and !build_options.polygon_seed_mode and !build_options.trapezoid_dd_mode and !partitionedBwMode()) {
             _ = try engine.cullExteriorTrianglesTrusted();
         }
         const cull_end = timer.now(io);
 
         const extraction_start = cull_end;
-        const interior_triangles = if (build_options.polygon_output_mode or build_options.polygon_seed_mode or build_options.trapezoid_dd_mode or build_options.partitioned_bw_mode)
+        const interior_triangles = if (build_options.polygon_output_mode or build_options.polygon_seed_mode or build_options.trapezoid_dd_mode or partitionedBwMode())
             engine.liveTriangleCount()
         else
             try engine.countInteriorTriangles();
@@ -371,8 +534,11 @@ fn runRound(
         timing.seed_us += timer.elapsedMicros(seed_start, seed_end);
         timing.legalization_us += timer.elapsedMicros(seed_end, legalization_end);
         timing.decomposition_us += timer.elapsedMicros(decomposition_start, decomposition_end);
-        timing.piece_bw_us += timer.elapsedMicros(piece_bw_start, piece_bw_end);
+        timing.piece_bw_us += piece_bw_wall_us;
+        timing.piece_bw_serial_us += piece_bw_serial_us;
         timing.piece_bw_max_us += piece_bw_max_us;
+        timing.piece_merge_us += piece_merge_us;
+        timing.piece_bw_threads = @max(timing.piece_bw_threads, piece_bw_threads);
         timing.assembly_us += timer.elapsedMicros(assembly_start, assembly_end);
         timing.local_legalization_us += timer.elapsedMicros(seed_end, local_legalization_end);
         timing.seam_legalization_us += timer.elapsedMicros(local_legalization_end, seam_legalization_end);
@@ -418,8 +584,8 @@ fn printCavityRelevance(case: Case, order: Order, stats: triangulate.EngineStats
 }
 
 fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) void {
-    const phase_us = if (build_options.partitioned_bw_mode)
-        best.decomposition_us + best.piece_bw_us + best.assembly_us + best.seam_legalization_us + best.cull_us + best.extraction_us
+    const phase_us = if (partitionedBwMode())
+        best.decomposition_us + best.piece_bw_us + best.piece_merge_us + best.assembly_us + best.seam_legalization_us + best.cull_us + best.extraction_us
     else if (build_options.trapezoid_dd_mode)
         best.decomposition_us + best.seed_us + best.local_legalization_us + best.seam_legalization_us + best.cull_us + best.extraction_us
     else if (build_options.polygon_seed_mode)
@@ -447,23 +613,25 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
             median.total_us,
         },
     );
-    if (build_options.partitioned_bw_mode) {
+    if (partitionedBwMode()) {
         const avg_pieces = @as(f64, @floatFromInt(best.dd_pieces)) / @as(f64, @floatFromInt(case.iterations));
         const avg_diagonals = @as(f64, @floatFromInt(best.dd_diagonals)) / @as(f64, @floatFromInt(case.iterations));
         const mean_piece_vertices = @as(f64, @floatFromInt(best.dd_total_piece_vertices)) / @max(@as(f64, @floatFromInt(best.dd_pieces)), 1.0);
         const critical_path = perRun(best.decomposition_us, case.iterations) +
-            perRun(best.piece_bw_max_us, case.iterations) +
+            perRun(best.piece_bw_us + best.piece_merge_us, case.iterations) +
             perRun(best.assembly_us, case.iterations) +
             perRun(best.seam_legalization_us, case.iterations);
-        const critical_path_without_decomp = perRun(best.piece_bw_max_us, case.iterations) +
+        const critical_path_without_decomp = perRun(best.piece_bw_us + best.piece_merge_us, case.iterations) +
             perRun(best.assembly_us, case.iterations) +
             perRun(best.seam_legalization_us, case.iterations);
         std.debug.print(
-            "  phase best/run: decomposition {d:>.3} us, total piece BW {d:>.3} us, max piece BW {d:>.3} us, assembly {d:>.3} us, seam legalize {d:>.3} us, extraction {d:>.3} us, setup+other {d:>.3} us\n",
+            "  phase best/run: decomposition {d:>.3} us, piece BW wall {d:>.3} us, piece BW serial {d:>.3} us, max piece BW {d:>.3} us, piece merge {d:>.3} us, assembly {d:>.3} us, seam legalize {d:>.3} us, extraction {d:>.3} us, setup+other {d:>.3} us\n",
             .{
                 perRun(best.decomposition_us, case.iterations),
                 perRun(best.piece_bw_us, case.iterations),
+                perRun(best.piece_bw_serial_us, case.iterations),
                 perRun(best.piece_bw_max_us, case.iterations),
+                perRun(best.piece_merge_us, case.iterations),
                 perRun(best.assembly_us, case.iterations),
                 perRun(best.seam_legalization_us, case.iterations),
                 perRun(best.extraction_us, case.iterations),
@@ -471,12 +639,13 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
             },
         );
         std.debug.print(
-            "  decomposition/run: pieces {d:>.1}, diagonals {d:>.1}, max piece {d}, mean piece vertices {d:>.1}; est critical path {d:>.3} us/run ({d:>.3} us without decomp)\n",
+            "  decomposition/run: pieces {d:>.1}, diagonals {d:>.1}, max piece {d}, mean piece vertices {d:>.1}, workers {d}; measured critical path {d:>.3} us/run ({d:>.3} us without decomp)\n",
             .{
                 avg_pieces,
                 avg_diagonals,
                 best.dd_max_piece_vertices,
                 mean_piece_vertices,
+                best.piece_bw_threads,
                 critical_path,
                 critical_path_without_decomp,
             },
@@ -661,7 +830,7 @@ fn benchCase(io: Io, allocator: std.mem.Allocator, case: Case, order: Order) !vo
     std.mem.sortUnstable(RoundTiming, &timings, {}, lessTotal);
     printCase(case, order, timings[0], timings[rounds / 2]);
 
-    if (build_options.partitioned_bw_mode) {
+    if (partitionedBwMode()) {
         for (0..case.vertices.len) |i| {
             mesh_ids[i] = @intCast(i);
         }
@@ -672,7 +841,7 @@ fn benchCase(io: Io, allocator: std.mem.Allocator, case: Case, order: Order) !vo
 
     var interior: std.ArrayListUnmanaged(bool) = .empty;
     defer interior.deinit(allocator);
-    if (build_options.polygon_seed_mode or build_options.trapezoid_dd_mode or build_options.partitioned_bw_mode) {
+    if (build_options.polygon_seed_mode or build_options.trapezoid_dd_mode or partitionedBwMode()) {
         interior.clearRetainingCapacity();
         try interior.ensureTotalCapacity(allocator, engine.mesh.triangles.len);
         for (0..engine.mesh.triangles.len) |tri_idx| {
@@ -742,7 +911,9 @@ pub fn main(init: std.process.Init) !void {
     cases[2] = try loadCase(allocator, init.io, "nazca-heron", "tests/fixtures/nazca_heron.dat", 30);
     defer for (cases) |case| deinitCase(allocator, case);
 
-    if (build_options.partitioned_bw_mode) {
+    if (build_options.partitioned_bw_parallel_mode) {
+        std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, parallel partitioned Bowyer-Watson prototype)\n", .{});
+    } else if (build_options.partitioned_bw_mode) {
         std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, partitioned Bowyer-Watson prototype)\n", .{});
     } else if (build_options.trapezoid_dd_mode) {
         std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, trapezoid domain-decomposition prototype)\n", .{});
@@ -754,7 +925,9 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, validation skipped)\n", .{});
     }
     for (cases) |case| {
-        if (build_options.partitioned_bw_mode) {
+        if (build_options.partitioned_bw_parallel_mode) {
+            try benchCase(init.io, allocator, case, .{ .name = "partitioned-bw-parallel", .indices = case.morton_indices });
+        } else if (build_options.partitioned_bw_mode) {
             try benchCase(init.io, allocator, case, .{ .name = "partitioned-bw", .indices = case.morton_indices });
         } else if (build_options.trapezoid_dd_mode) {
             try benchCase(init.io, allocator, case, .{ .name = "trapezoid-dd", .indices = case.morton_indices });

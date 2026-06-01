@@ -88,6 +88,20 @@ This rejects the current scaffold as a single-core win because decomposition dom
 
 Next serious experiment: replace the O(n * sampled-diagonal) visibility splitter with a low-overhead partition builder. Keep the local Bowyer-Watson merge path; the bottleneck has moved to decomposition, not piece triangulation or seam repair.
 
+## Latest Parallel Partitioned Bowyer-Watson Smoke Test
+
+`bench-single -Dpredicate-policy=fast -Dinstrument-mesh-stats=true -Dspatial-hints=true -Dpartitioned-bw-parallel-mode=true` now runs local piece Bowyer-Watson construction on worker threads. Decomposition, global assembly, temporary partition constraints, seam legalization, extraction, and validation remain serial. `-Dpartitioned-bw-threads=N` controls workers; `0` uses detected CPU count, capped by piece count.
+
+Current macOS 4-worker results:
+
+- `dude/partitioned-bw-parallel`: `92` interior triangles/run, `92` live mesh, about `26.7 us/run`; only one piece, so no parallelism.
+- `nazca-monkey/partitioned-bw-parallel`: `1202` interior triangles/run, `1202` live mesh, about `2079.1 us/run`; decomposition about `1826.7 us/run`, piece BW wall about `172.4 us/run`, serial piece sum about `319.1 us/run`, assembly about `34.3 us/run`, seam legalization about `33.0 us/run`.
+- `nazca-heron/partitioned-bw-parallel`: `1034` interior triangles/run, `1034` live mesh, about `1240.9 us/run`; decomposition about `1026.3 us/run`, piece BW wall about `141.8 us/run`, serial piece sum about `284.2 us/run`, assembly about `29.2 us/run`, seam legalization about `35.5 us/run`.
+
+CPU-count mode used `7` workers for monkey and `5` for heron. It produced similar totals (`2028.3 us/run` monkey, `1262.7 us/run` heron) and did not materially change the conclusion.
+
+This validates that piece construction can be run independently and merged deterministically, but it is not enough to beat current BRIO. Thread spawn/allocation overhead keeps the piece phase above the ideal max-piece bound, and the serial visibility decomposition is still the dominant cost. The next serious optimization remains a cheaper partition builder; a reusable worker pool is only worth building after decomposition stops dominating.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.

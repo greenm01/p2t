@@ -32,6 +32,8 @@ pub fn build(b: *std.Build) void {
     const polygon_seed_mode = b.option(bool, "polygon-seed-mode", "Build simple polygon interiors from an Earcut-style seed, then legalize unconstrained diagonals") orelse false;
     const trapezoid_dd_mode = b.option(bool, "trapezoid-dd-mode", "Partition simple polygons with visibility diagonals, legalize pieces, then legalize seams") orelse false;
     const partitioned_bw_mode = b.option(bool, "partitioned-bw-mode", "Partition simple polygons, run local Bowyer-Watson per piece, merge, then legalize seams") orelse false;
+    const partitioned_bw_parallel_mode = b.option(bool, "partitioned-bw-parallel-mode", "Run partitioned Bowyer-Watson piece construction in parallel for benchmark diagnostics") orelse false;
+    const partitioned_bw_threads = b.option(usize, "partitioned-bw-threads", "Worker count for partitioned Bowyer-Watson parallel mode; 0 uses detected CPU count") orelse 0;
     const predicate_policy: PredicatePolicy = if (std.mem.eql(u8, predicate_policy_name, "adaptive"))
         .adaptive
     else if (std.mem.eql(u8, predicate_policy_name, "strict"))
@@ -51,6 +53,8 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "polygon_seed_mode", polygon_seed_mode);
     build_options.addOption(bool, "trapezoid_dd_mode", trapezoid_dd_mode);
     build_options.addOption(bool, "partitioned_bw_mode", partitioned_bw_mode);
+    build_options.addOption(bool, "partitioned_bw_parallel_mode", partitioned_bw_parallel_mode);
+    build_options.addOption(usize, "partitioned_bw_threads", partitioned_bw_threads);
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
