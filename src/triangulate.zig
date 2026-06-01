@@ -178,7 +178,6 @@ pub const Engine = struct {
             .adj0 = -1,
             .adj1 = -1,
             .adj2 = -1,
-            .lock = 0,
         });
         self.last_valid_tri = 0;
     }
@@ -320,13 +319,18 @@ pub const Engine = struct {
     fn isTriangleLocked(self: *const Engine, tri_idx: i32) bool {
         if (tri_idx < 0) return false;
         const slot = @as(usize, @intCast(tri_idx));
-        if (slot >= self.mesh.triangles.len) return false;
-        return self.mesh.triangles.items(.lock)[slot] != 0;
+        if (slot >= self.mesh.triangle_locks.items.len) return false;
+        return self.mesh.triangle_locks.items[slot].load(.acquire) != 0;
     }
 
-    fn setTriangleLock(self: *Engine, tri_idx: i32, locked: bool) void {
+    fn tryLockTriangle(self: *Engine, tri_idx: i32) bool {
         const slot = @as(usize, @intCast(tri_idx));
-        self.mesh.triangles.items(.lock)[slot] = if (locked) 1 else 0;
+        return self.mesh.triangle_locks.items[slot].cmpxchgStrong(0, 1, .acquire, .monotonic) == null;
+    }
+
+    fn unlockTriangle(self: *Engine, tri_idx: i32) void {
+        const slot = @as(usize, @intCast(tri_idx));
+        self.mesh.triangle_locks.items[slot].store(0, .release);
     }
 
     fn containsTriangle(list: []const i32, tri_idx: i32) bool {
@@ -357,19 +361,18 @@ pub const Engine = struct {
 
         var acquired: usize = 0;
         for (tx.locked.items) |tri_idx| {
-            if (self.isTriangleLocked(tri_idx)) {
+            if (!self.tryLockTriangle(tri_idx)) {
                 for (tx.locked.items[0..acquired]) |locked_tri| {
-                    self.setTriangleLock(locked_tri, false);
+                    self.unlockTriangle(locked_tri);
                 }
                 tx.locked.clearRetainingCapacity();
                 tx.versions.clearRetainingCapacity();
                 return false;
             }
-            self.setTriangleLock(tri_idx, true);
             acquired += 1;
             tx.versions.append(allocator, self.snapshotTriangleVersion(tri_idx)) catch |err| {
                 for (tx.locked.items[0..acquired]) |locked_tri| {
-                    self.setTriangleLock(locked_tri, false);
+                    self.unlockTriangle(locked_tri);
                 }
                 tx.locked.clearRetainingCapacity();
                 tx.versions.clearRetainingCapacity();
@@ -379,7 +382,7 @@ pub const Engine = struct {
 
         if (!self.revalidateTriangleTransaction(tx)) {
             for (tx.locked.items[0..acquired]) |locked_tri| {
-                self.setTriangleLock(locked_tri, false);
+                self.unlockTriangle(locked_tri);
             }
             tx.locked.clearRetainingCapacity();
             tx.versions.clearRetainingCapacity();
@@ -404,7 +407,7 @@ pub const Engine = struct {
             if (tri_idx < 0) continue;
             const slot = @as(usize, @intCast(tri_idx));
             if (slot >= self.mesh.triangles.len) continue;
-            self.setTriangleLock(tri_idx, false);
+            self.unlockTriangle(tri_idx);
         }
         tx.locked.clearRetainingCapacity();
         tx.versions.clearRetainingCapacity();
@@ -502,7 +505,8 @@ pub const Engine = struct {
 
     pub fn validateTopology(self: *Engine) !void {
         if (self.mesh.triangles.len != self.mesh.edge_flags.items.len or
-            self.mesh.triangles.len != self.mesh.triangle_versions.items.len) return error.InvalidTriangleAdjacency;
+            self.mesh.triangles.len != self.mesh.triangle_versions.items.len or
+            self.mesh.triangles.len != self.mesh.triangle_locks.items.len) return error.InvalidTriangleAdjacency;
         for (0..self.mesh.triangles.len) |i| {
             const tri = self.mesh.triangles.get(i);
             if (mesh.isDeadTriangle(tri)) continue;
@@ -541,7 +545,8 @@ pub const Engine = struct {
 
     pub fn validateConstraintFlags(self: *Engine) !void {
         if (self.mesh.triangles.len != self.mesh.edge_flags.items.len or
-            self.mesh.triangles.len != self.mesh.triangle_versions.items.len) return error.InvalidTriangleAdjacency;
+            self.mesh.triangles.len != self.mesh.triangle_versions.items.len or
+            self.mesh.triangles.len != self.mesh.triangle_locks.items.len) return error.InvalidTriangleAdjacency;
 
         for (0..self.mesh.triangles.len) |i| {
             const tri = self.mesh.triangles.get(i);
@@ -661,7 +666,6 @@ pub const Engine = struct {
             .adj0 = -1,
             .adj1 = -1,
             .adj2 = -1,
-            .lock = 0,
         };
     }
 
@@ -1033,7 +1037,6 @@ pub const Engine = struct {
                 .adj0 = -1,
                 .adj1 = -1,
                 .adj2 = -1,
-                .lock = 0,
             });
 
             if (e.adj_tri != -1) {
@@ -1107,7 +1110,6 @@ fn initIllegalQuad(engine: *Engine) !struct { a: i32, b: i32, c: i32, d: i32 } {
         .adj0 = 1,
         .adj1 = -1,
         .adj2 = -1,
-        .lock = 0,
     });
     try engine.mesh.appendTriangle(allocator, .{
         .v0 = 4,
@@ -1116,7 +1118,6 @@ fn initIllegalQuad(engine: *Engine) !struct { a: i32, b: i32, c: i32, d: i32 } {
         .adj0 = 0,
         .adj1 = -1,
         .adj2 = -1,
-        .lock = 0,
     });
     return .{ .a = 3, .b = 4, .c = 5, .d = 6 };
 }
@@ -1153,7 +1154,7 @@ test "triangle version snapshots detect metadata and topology mutation" {
         engine.snapshotTriangleVersion(1),
     };
     try engine.mesh.ensureTriangleSlot(std.testing.allocator, 2);
-    engine.mesh.setTriangleFresh(2, .{ .v0 = 3, .v1 = 5, .v2 = 6, .adj0 = -1, .adj1 = -1, .adj2 = -1, .lock = 0 });
+    engine.mesh.setTriangleFresh(2, .{ .v0 = 3, .v1 = 5, .v2 = 6, .adj0 = -1, .adj1 = -1, .adj2 = -1 });
     try std.testing.expect(engine.validateTriangleVersions(&snapshots));
 
     engine.mesh.markDead(0);

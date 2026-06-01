@@ -12,7 +12,6 @@ pub const Triangle = struct {
     adj0: i32,
     adj1: i32,
     adj2: i32,
-    lock: u8,
 };
 
 pub fn deadTriangle() Triangle {
@@ -23,7 +22,6 @@ pub fn deadTriangle() Triangle {
         .adj0 = -1,
         .adj1 = -1,
         .adj2 = -1,
-        .lock = 0,
     };
 }
 
@@ -36,12 +34,14 @@ pub const GlobalMesh = struct {
     triangles: std.MultiArrayList(Triangle) = .empty,
     edge_flags: std.ArrayListUnmanaged(u8) = .empty,
     triangle_versions: std.ArrayListUnmanaged(u32) = .empty,
+    triangle_locks: std.ArrayListUnmanaged(std.atomic.Value(u8)) = .empty,
 
     pub fn deinit(self: *GlobalMesh, allocator: std.mem.Allocator) void {
         self.vertices.deinit(allocator);
         self.triangles.deinit(allocator);
         self.edge_flags.deinit(allocator);
         self.triangle_versions.deinit(allocator);
+        self.triangle_locks.deinit(allocator);
     }
 
     pub fn appendTriangle(self: *GlobalMesh, allocator: std.mem.Allocator, tri: Triangle) !void {
@@ -50,6 +50,8 @@ pub const GlobalMesh = struct {
         try self.edge_flags.append(allocator, 0);
         errdefer _ = self.edge_flags.pop();
         try self.triangle_versions.append(allocator, 1);
+        errdefer _ = self.triangle_versions.pop();
+        try self.triangle_locks.append(allocator, std.atomic.Value(u8).init(0));
     }
 
     pub fn ensureTriangleSlot(self: *GlobalMesh, allocator: std.mem.Allocator, triangle_index: i32) !void {
@@ -119,11 +121,12 @@ test "GlobalMesh and ThreadArena" {
 
     try mesh.vertices.append(allocator, .{ .x = 1.0, .y = 2.0 });
     try std.testing.expectEqual(1, mesh.vertices.len);
-    try mesh.appendTriangle(allocator, .{ .v0 = 0, .v1 = 0, .v2 = 0, .adj0 = -1, .adj1 = -1, .adj2 = -1, .lock = 0 });
+    try mesh.appendTriangle(allocator, .{ .v0 = 0, .v1 = 0, .v2 = 0, .adj0 = -1, .adj1 = -1, .adj2 = -1 });
     try std.testing.expectEqual(mesh.triangles.len, mesh.edge_flags.items.len);
     try std.testing.expectEqual(mesh.triangles.len, mesh.triangle_versions.items.len);
+    try std.testing.expectEqual(mesh.triangles.len, mesh.triangle_locks.items.len);
     const version = mesh.triangle_versions.items[0];
-    mesh.setTriangleFresh(0, .{ .v0 = 0, .v1 = 0, .v2 = 0, .adj0 = -1, .adj1 = -1, .adj2 = -1, .lock = 0 });
+    mesh.setTriangleFresh(0, .{ .v0 = 0, .v1 = 0, .v2 = 0, .adj0 = -1, .adj1 = -1, .adj2 = -1 });
     try std.testing.expect(mesh.triangle_versions.items[0] != version);
 
     var arena = ThreadArena{};

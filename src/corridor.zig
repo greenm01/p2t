@@ -365,7 +365,6 @@ pub const Corridor = struct {
                         .adj0 = -1, // Adjacency linking is omitted for brevity
                         .adj1 = -1,
                         .adj2 = -1,
-                        .lock = 0,
                     });
 
                     _ = stack.pop();
@@ -403,7 +402,6 @@ pub const Corridor = struct {
                 .adj0 = -1,
                 .adj1 = -1,
                 .adj2 = -1,
-                .lock = 0,
             });
 
             _ = stack.pop();
