@@ -15,6 +15,17 @@ const LegalizeEdge = struct {
     side: usize,
 };
 
+pub const max_transaction_attempts = 8;
+
+pub fn isRetryableTransactionError(err: anyerror) bool {
+    return switch (err) {
+        error.TransactionConflict,
+        error.TransactionFootprintExpansionRequired,
+        => true,
+        else => false,
+    };
+}
+
 pub const TriangleVersionSnapshot = struct {
     tri: i32,
     version: u32,
@@ -187,7 +198,10 @@ pub const Engine = struct {
         var limit: usize = 10000;
 
         while (curr != -1 and limit > 0) : (limit -= 1) {
-            const tri = self.mesh.triangles.get(@as(usize, @intCast(curr)));
+            if (curr < 0) break;
+            const curr_slot = @as(usize, @intCast(curr));
+            if (curr_slot >= self.mesh.triangles.len) break;
+            const tri = self.mesh.triangles.get(curr_slot);
             if (mesh.isDeadTriangle(tri)) break;
 
             const v0 = self.mesh.vertices.get(@as(usize, @intCast(tri.v0)));
@@ -995,8 +1009,18 @@ pub const Engine = struct {
         return added;
     }
 
-    // Simplified Bowyer-Watson insertion for testing
     pub fn insertPoint(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
+        for (0..max_transaction_attempts) |_| {
+            return self.insertPointAttempt(arena, pt) catch |err| {
+                if (isRetryableTransactionError(err)) continue;
+                return err;
+            };
+        }
+        return error.TransactionConflict;
+    }
+
+    // Simplified Bowyer-Watson insertion for testing
+    fn insertPointAttempt(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
         // Prevent duplicate or extremely close points
         var v_idx: usize = 0;
         while (v_idx < self.mesh.vertices.len) : (v_idx += 1) {
@@ -1007,13 +1031,11 @@ pub const Engine = struct {
         }
 
         const pt_idx = @as(i32, @intCast(self.mesh.vertices.len));
-        try self.mesh.vertices.append(self.allocator, pt);
 
         const start_tri = self.last_valid_tri;
         const container = self.walk(start_tri, pt);
 
         if (container < 0) {
-            std.debug.print("Walk failed for point {d}, {d} with code {d}\n", .{ pt.x, pt.y, container });
             return error.WalkFailed;
         }
 
@@ -1075,19 +1097,42 @@ pub const Engine = struct {
         if (!try self.beginTriangleTransactionWithVersions(scratch_allocator, footprint.items, expected_versions.items, &tx)) return error.TransactionConflict;
         errdefer self.endTriangleTransaction(&tx);
 
-        // Tombstone cavity
-        for (cavity.items) |t_idx| {
-            self.mesh.markDead(t_idx);
-            try arena.tombstone(self.allocator, t_idx);
+        var new_tri_indices: std.ArrayListUnmanaged(i32) = .empty;
+        const reused_cavity_count = @min(edges.items.len, cavity.items.len);
+        const needed_after_cavity = edges.items.len - reused_cavity_count;
+        const reused_freelist_count = @min(needed_after_cavity, arena.freelist.items.len);
+        const appended_triangle_count = needed_after_cavity - reused_freelist_count;
+        const leftover_cavity_count = cavity.items.len - reused_cavity_count;
+
+        try new_tri_indices.ensureTotalCapacity(scratch_allocator, edges.items.len);
+        for (0..reused_cavity_count) |edge_i| {
+            try new_tri_indices.append(scratch_allocator, cavity.items[cavity.items.len - 1 - edge_i]);
+        }
+        for (0..reused_freelist_count) |free_i| {
+            try new_tri_indices.append(scratch_allocator, arena.freelist.items[arena.freelist.items.len - 1 - free_i]);
+        }
+        for (0..appended_triangle_count) |append_i| {
+            try new_tri_indices.append(scratch_allocator, @as(i32, @intCast(self.mesh.triangles.len + append_i)));
         }
 
-        var new_tri_indices: std.ArrayListUnmanaged(i32) = .empty;
+        try self.mesh.vertices.ensureUnusedCapacity(self.allocator, 1);
+        try self.mesh.ensureTriangleCapacity(self.allocator, self.mesh.triangles.len + appended_triangle_count);
+        try arena.freelist.ensureUnusedCapacity(self.allocator, leftover_cavity_count);
 
-        for (edges.items) |_| {
-            const new_idx = arena.getFreeSlot() orelse @as(i32, @intCast(self.mesh.triangles.len));
-            try new_tri_indices.append(scratch_allocator, new_idx);
+        try self.mesh.vertices.append(self.allocator, pt);
 
-            try self.mesh.ensureTriangleSlot(self.allocator, new_idx);
+        // Tombstone cavity slots after all allocations that can fail have succeeded.
+        for (cavity.items, 0..) |t_idx, cavity_i| {
+            self.mesh.markDead(t_idx);
+            if (cavity_i < leftover_cavity_count) {
+                try arena.tombstone(self.allocator, t_idx);
+            }
+        }
+        for (0..reused_freelist_count) |_| {
+            _ = arena.getFreeSlot().?;
+        }
+        for (0..appended_triangle_count) |append_i| {
+            try self.mesh.ensureTriangleSlot(self.allocator, new_tri_indices.items[reused_cavity_count + reused_freelist_count + append_i]);
         }
 
         // Setup the new triangles and link them
@@ -1097,8 +1142,7 @@ pub const Engine = struct {
 
             var a = e.v1;
             var b = e.v2;
-            const c = pt_idx;
-            if (predicates.orient2d(self.getVertex(a), self.getVertex(b), self.getVertex(c)) < 0.0) {
+            if (predicates.orient2d(self.getVertex(a), self.getVertex(b), pt) < 0.0) {
                 const tmp = a;
                 a = b;
                 b = tmp;
@@ -1107,7 +1151,7 @@ pub const Engine = struct {
             self.mesh.setTriangleFresh(t_idx, .{
                 .v0 = a,
                 .v1 = b,
-                .v2 = c,
+                .v2 = pt_idx,
                 .adj0 = -1,
                 .adj1 = -1,
                 .adj2 = -1,
@@ -1147,6 +1191,64 @@ test "cavity building" {
     // Let's also insert another point and verify
     _ = try engine.insertPoint(&arena, mesh.Vertex{ .x = 14.0, .y = 16.0 });
     try engine.validateTopology();
+}
+
+test "insert point walk failure does not append vertex" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    var arena = mesh.ThreadArena{};
+    defer arena.deinit(std.testing.allocator);
+
+    const before_vertices = engine.mesh.vertices.len;
+    try std.testing.expectError(error.WalkFailed, engine.insertPoint(&arena, mesh.Vertex{ .x = 1.0, .y = 1.0 }));
+    try std.testing.expectEqual(before_vertices, engine.mesh.vertices.len);
+}
+
+test "insert point transaction conflict does not append vertex" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    var arena = mesh.ThreadArena{};
+    defer arena.deinit(std.testing.allocator);
+
+    const vertices = [_]mesh.Vertex{
+        .{ .x = 10.0, .y = 10.0 },
+        .{ .x = 20.0, .y = 20.0 },
+    };
+    try engine.initSuperTriangle(&vertices);
+
+    var tx = TriangleTransaction{};
+    defer tx.deinit(std.testing.allocator);
+    const requested = [_]i32{0};
+    try std.testing.expect(try engine.beginTriangleTransaction(std.testing.allocator, &requested, &tx));
+    defer engine.endTriangleTransaction(&tx);
+
+    const before_vertices = engine.mesh.vertices.len;
+    try std.testing.expectError(error.TransactionConflict, engine.insertPoint(&arena, mesh.Vertex{ .x = 15.0, .y = 15.0 }));
+    try std.testing.expectEqual(before_vertices, engine.mesh.vertices.len);
+}
+
+test "duplicate point insertion returns existing vertex" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    var arena = mesh.ThreadArena{};
+    defer arena.deinit(std.testing.allocator);
+
+    const vertices = [_]mesh.Vertex{
+        .{ .x = 10.0, .y = 10.0 },
+        .{ .x = 20.0, .y = 20.0 },
+    };
+    try engine.initSuperTriangle(&vertices);
+
+    const pt = mesh.Vertex{ .x = 15.0, .y = 15.0 };
+    const first = try engine.insertPoint(&arena, pt);
+    const before_vertices = engine.mesh.vertices.len;
+    const second = try engine.insertPoint(&arena, pt);
+
+    try std.testing.expectEqual(first, second);
+    try std.testing.expectEqual(before_vertices, engine.mesh.vertices.len);
 }
 
 test "cavity edge counter keeps only once-used boundary edges" {

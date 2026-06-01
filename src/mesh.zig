@@ -61,6 +61,13 @@ pub const GlobalMesh = struct {
         try self.appendTriangle(allocator, deadTriangle());
     }
 
+    pub fn ensureTriangleCapacity(self: *GlobalMesh, allocator: std.mem.Allocator, capacity: usize) !void {
+        try self.triangles.ensureTotalCapacity(allocator, capacity);
+        try self.edge_flags.ensureTotalCapacity(allocator, capacity);
+        try self.triangle_versions.ensureTotalCapacity(allocator, capacity);
+        try self.triangle_locks.ensureTotalCapacity(allocator, capacity);
+    }
+
     pub fn bumpTriangleVersion(self: *GlobalMesh, triangle_index: i32) void {
         const slot = @as(usize, @intCast(triangle_index));
         const previous = self.triangle_versions.items[slot].fetchAdd(1, .release);

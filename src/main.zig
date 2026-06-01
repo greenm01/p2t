@@ -71,22 +71,7 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
             for (0..vertices.len) |i| {
                 const start_idx = mesh_ids[i];
                 const end_idx = mesh_ids[(i + 1) % vertices.len];
-
-                if (engine.hasLiveEdge(start_idx, end_idx)) {
-                    _ = try engine.setConstrainedEdgeByVertices(start_idx, end_idx, true);
-                    continue;
-                }
-
-                const start_pt = engine.getVertex(start_idx);
-                const end_pt = engine.getVertex(end_idx);
-
-                corridor.pierced_triangles.clearRetainingCapacity();
-
-                const start_tri = engine.walk(engine.last_valid_tri, start_pt);
-                if (start_tri >= 0) {
-                    try corridor.trace(allocator, &engine, start_tri, end_pt, start_pt);
-                    try corridor.clearAndRetriangulate(allocator, &engine, &arena, start_idx, end_idx);
-                }
+                try corridor.recoverConstraint(allocator, &engine, &arena, start_idx, end_idx);
             }
 
             total_triangles += engine.liveTriangleCount();
@@ -135,22 +120,7 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
         for (0..vertices.len) |i| {
             const start_idx = mesh_ids[i];
             const end_idx = mesh_ids[(i + 1) % vertices.len];
-
-            if (engine.hasLiveEdge(start_idx, end_idx)) {
-                _ = engine.setConstrainedEdgeByVertices(start_idx, end_idx, true) catch unreachable;
-                continue;
-            }
-
-            const start_pt = engine.getVertex(start_idx);
-            const end_pt = engine.getVertex(end_idx);
-
-            corridor.pierced_triangles.clearRetainingCapacity();
-
-            const start_tri = engine.walk(engine.last_valid_tri, start_pt);
-            if (start_tri >= 0) {
-                corridor.trace(allocator, &engine, start_tri, end_pt, start_pt) catch unreachable;
-                corridor.clearAndRetriangulate(allocator, &engine, &arena, start_idx, end_idx) catch unreachable;
-            }
+            corridor.recoverConstraint(allocator, &engine, &arena, start_idx, end_idx) catch unreachable;
         }
 
         engine.validateTopology() catch unreachable;

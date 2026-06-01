@@ -543,6 +543,34 @@ pub const Corridor = struct {
         try engine.legalizeFromTrianglesInTransaction(scratch_allocator, emitted.items, &tx);
         engine.endTriangleTransaction(&tx);
     }
+
+    pub fn recoverConstraint(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
+        if (engine.hasLiveEdge(start_pt_idx, end_pt_idx)) {
+            _ = try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true);
+            return;
+        }
+
+        const start_pt = engine.getVertex(start_pt_idx);
+        const end_pt = engine.getVertex(end_pt_idx);
+
+        for (0..triangulate.max_transaction_attempts) |_| {
+            self.pierced_triangles.clearRetainingCapacity();
+
+            const start_tri = engine.walk(engine.last_valid_tri, start_pt);
+            if (start_tri < 0) return error.WalkFailed;
+
+            try self.trace(allocator, engine, start_tri, end_pt, start_pt);
+            self.clearAndRetriangulate(allocator, engine, arena, start_pt_idx, end_pt_idx) catch |err| {
+                switch (err) {
+                    error.TransactionConflict => continue,
+                    else => return err,
+                }
+            };
+            return;
+        }
+
+        return error.TransactionConflict;
+    }
 };
 
 test "corridor trace" {
@@ -614,21 +642,7 @@ fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path:
     for (0..vertices.len) |i| {
         const start_idx = mesh_ids[i];
         const end_idx = mesh_ids[(i + 1) % vertices.len];
-
-        if (engine.hasLiveEdge(start_idx, end_idx)) {
-            _ = try engine.setConstrainedEdgeByVertices(start_idx, end_idx, true);
-            continue;
-        }
-
-        const start_pt = engine.getVertex(start_idx);
-        const end_pt = engine.getVertex(end_idx);
-
-        corridor.pierced_triangles.clearRetainingCapacity();
-
-        const start_tri = engine.walk(engine.last_valid_tri, start_pt);
-        try std.testing.expect(start_tri >= 0);
-        try corridor.trace(allocator, &engine, start_tri, end_pt, start_pt);
-        try corridor.clearAndRetriangulate(allocator, &engine, &arena, start_idx, end_idx);
+        try corridor.recoverConstraint(allocator, &engine, &arena, start_idx, end_idx);
         try engine.validateTopology();
         try engine.validateConstraintFlags();
         try engine.validateCdtLegality();
