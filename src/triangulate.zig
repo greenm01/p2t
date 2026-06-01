@@ -1067,6 +1067,28 @@ pub const Engine = struct {
         }
     }
 
+    fn extractCavityBoundaryTrusted(self: *Engine, allocator: std.mem.Allocator, cavity: []const i32, edges: *std.ArrayListUnmanaged(Edge)) !void {
+        edges.clearRetainingCapacity();
+
+        for (cavity) |t_idx| {
+            const tri = self.mesh.triangles.get(@as(usize, @intCast(t_idx)));
+            if (mesh.isDeadTriangle(tri)) return error.InvalidCavityBoundary;
+
+            const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
+            for (neighbors, 0..) |n_idx, side| {
+                if (n_idx != -1 and cavityContains(cavity, n_idx)) continue;
+
+                const edge = triangleEdge(tri, side);
+                try edges.append(allocator, .{
+                    .adj_tri = n_idx,
+                    .v1 = edge.v1,
+                    .v2 = edge.v2,
+                    .old_tri = t_idx,
+                });
+            }
+        }
+    }
+
     fn pointOnTriangleEdge(self: *Engine, tri: mesh.Triangle, pt: mesh.Vertex) bool {
         inline for (0..3) |side| {
             const edge = triangleEdge(tri, side);
@@ -1216,7 +1238,11 @@ pub const Engine = struct {
         }
 
         while (true) {
-            try self.extractCavityBoundary(temp_allocator, cavity.items, edges);
+            if (use_transaction) {
+                try self.extractCavityBoundary(temp_allocator, cavity.items, edges);
+            } else {
+                try self.extractCavityBoundaryTrusted(temp_allocator, cavity.items, edges);
+            }
 
             if (use_transaction) {
                 if (try self.repairBoundaryNonManifoldEdges(scratch_allocator, cavity, edges.items)) {
