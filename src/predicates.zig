@@ -15,13 +15,15 @@ fn orient2dExact(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
 }
 
 pub fn orient2d(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
-    if (build_options.strict_predicates) return orient2dExact(a, b, c);
+    if (build_options.predicate_policy == .strict) return orient2dExact(a, b, c);
 
     const acx = a.x - c.x;
     const bcx = b.x - c.x;
     const acy = a.y - c.y;
     const bcy = b.y - c.y;
     const det = acx * bcy - acy * bcx;
+    if (build_options.predicate_policy == .fast) return det;
+
     const permanent = @abs(acx * bcy) + @abs(acy * bcx);
     if (@abs(det) > permanent * 1.0e-15) return det;
     return orient2dExact(a, b, c);
@@ -56,7 +58,7 @@ fn incircleExact(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex)
 }
 
 pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) f64 {
-    if (build_options.strict_predicates) return incircleExact(a, b, c, d);
+    if (build_options.predicate_policy == .strict) return incircleExact(a, b, c, d);
 
     const adx = a.x - d.x;
     const ady = a.y - d.y;
@@ -72,6 +74,8 @@ pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) 
     const blift = bdx * bdx + bdy * bdy;
     const clift = cdx * cdx + cdy * cdy;
     const det = alift * abdet + blift * bcdet + clift * cadet;
+    if (build_options.predicate_policy == .fast) return det;
+
     const permanent = @abs(alift * abdet) + @abs(blift * bcdet) + @abs(clift * cadet);
     if (@abs(det) > permanent * 1.0e-12) return det;
     return incircleExact(a, b, c, d);

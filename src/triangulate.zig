@@ -10,6 +10,11 @@ pub const Edge = struct {
     old_tri: i32,
 };
 
+const EdgeVertices = struct {
+    v1: i32,
+    v2: i32,
+};
+
 const LegalizeEdge = struct {
     tri: i32,
     side: usize,
@@ -20,6 +25,8 @@ const SpokeLink = struct {
     tri: i32,
     side: usize,
 };
+
+pub const MutationMode = enum { transactional, trusted };
 
 pub const max_transaction_attempts = 8;
 
@@ -292,31 +299,58 @@ pub const Engine = struct {
 
     pub fn triangleAdj(tri: mesh.Triangle, side: usize) i32 {
         return switch (side) {
+            0 => triangleAdjAt(0, tri),
+            1 => triangleAdjAt(1, tri),
+            else => triangleAdjAt(2, tri),
+        };
+    }
+
+    pub fn triangleAdjAt(comptime side: usize, tri: mesh.Triangle) i32 {
+        return switch (side) {
             0 => tri.adj0,
             1 => tri.adj1,
-            else => tri.adj2,
+            2 => tri.adj2,
+            else => @compileError("invalid triangle side"),
         };
     }
 
     pub fn setTriangleAdj(tri: *mesh.Triangle, side: usize, neighbor: i32) void {
         switch (side) {
-            0 => tri.adj0 = neighbor,
-            1 => tri.adj1 = neighbor,
-            else => tri.adj2 = neighbor,
+            0 => setTriangleAdjAt(0, tri, neighbor),
+            1 => setTriangleAdjAt(1, tri, neighbor),
+            else => setTriangleAdjAt(2, tri, neighbor),
         }
     }
 
-    pub fn triangleEdge(tri: mesh.Triangle, side: usize) struct { v1: i32, v2: i32 } {
+    pub fn setTriangleAdjAt(comptime side: usize, tri: *mesh.Triangle, neighbor: i32) void {
+        switch (side) {
+            0 => tri.adj0 = neighbor,
+            1 => tri.adj1 = neighbor,
+            2 => tri.adj2 = neighbor,
+            else => @compileError("invalid triangle side"),
+        }
+    }
+
+    pub fn triangleEdge(tri: mesh.Triangle, side: usize) EdgeVertices {
+        return switch (side) {
+            0 => triangleEdgeAt(0, tri),
+            1 => triangleEdgeAt(1, tri),
+            else => triangleEdgeAt(2, tri),
+        };
+    }
+
+    pub fn triangleEdgeAt(comptime side: usize, tri: mesh.Triangle) EdgeVertices {
         return switch (side) {
             0 => .{ .v1 = tri.v0, .v2 = tri.v1 },
             1 => .{ .v1 = tri.v1, .v2 = tri.v2 },
-            else => .{ .v1 = tri.v2, .v2 = tri.v0 },
+            2 => .{ .v1 = tri.v2, .v2 = tri.v0 },
+            else => @compileError("invalid triangle side"),
         };
     }
 
     pub fn edgeSide(tri: mesh.Triangle, a: i32, b: i32) ?usize {
         inline for (0..3) |side| {
-            const edge = triangleEdge(tri, side);
+            const edge = triangleEdgeAt(side, tri);
             if ((edge.v1 == a and edge.v2 == b) or (edge.v1 == b and edge.v2 == a)) {
                 return side;
             }
@@ -325,14 +359,36 @@ pub const Engine = struct {
     }
 
     fn edgeFlag(side: usize) u8 {
-        return @as(u8, 1) << @as(u3, @intCast(side));
+        return switch (side) {
+            0 => edgeFlagAt(0),
+            1 => edgeFlagAt(1),
+            else => edgeFlagAt(2),
+        };
+    }
+
+    fn edgeFlagAt(comptime side: usize) u8 {
+        return switch (side) {
+            0 => 1,
+            1 => 2,
+            2 => 4,
+            else => @compileError("invalid triangle side"),
+        };
     }
 
     pub fn oppositeVertex(tri: mesh.Triangle, side: usize) i32 {
         return switch (side) {
+            0 => oppositeVertexAt(0, tri),
+            1 => oppositeVertexAt(1, tri),
+            else => oppositeVertexAt(2, tri),
+        };
+    }
+
+    pub fn oppositeVertexAt(comptime side: usize, tri: mesh.Triangle) i32 {
+        return switch (side) {
             0 => tri.v2,
             1 => tri.v0,
-            else => tri.v1,
+            2 => tri.v1,
+            else => @compileError("invalid triangle side"),
         };
     }
 
@@ -591,18 +647,25 @@ pub const Engine = struct {
         if (tri_idx < 0) return;
         const tri_slot = @as(usize, @intCast(tri_idx));
         if (tri_slot >= self.mesh.triangles.len) return error.InvalidTriangleAdjacency;
-        var tri = self.mesh.triangles.get(tri_slot);
+        const tri = self.mesh.triangles.get(tri_slot);
         if (mesh.isDeadTriangle(tri)) return error.InvalidTriangleAdjacency;
-        setTriangleAdj(&tri, side, neighbor);
-        self.mesh.setTriangleTrusted(tri_idx, tri);
+        self.setTriangleAdjTrustedUnchecked(tri_slot, side, neighbor);
+    }
+
+    fn setTriangleAdjTrustedUnchecked(self: *Engine, tri_slot: usize, side: usize, neighbor: i32) void {
+        switch (side) {
+            0 => self.mesh.triangles.items(.adj0)[tri_slot] = neighbor,
+            1 => self.mesh.triangles.items(.adj1)[tri_slot] = neighbor,
+            else => self.mesh.triangles.items(.adj2)[tri_slot] = neighbor,
+        }
     }
 
     pub fn linkTriangleSidesKnownTrusted(self: *Engine, tri_a_idx: i32, side_a: usize, tri_b_idx: i32, side_b: usize) !void {
-        try self.setTriangleAdjTrusted(tri_a_idx, side_a, tri_b_idx);
-        try self.setTriangleAdjTrusted(tri_b_idx, side_b, tri_a_idx);
+        self.setTriangleAdjTrustedUnchecked(@as(usize, @intCast(tri_a_idx)), side_a, tri_b_idx);
+        self.setTriangleAdjTrustedUnchecked(@as(usize, @intCast(tri_b_idx)), side_b, tri_a_idx);
     }
 
-    fn linkTriangleSidesInternal(self: *Engine, tri_a_idx: i32, side_a: usize, tri_b_idx: i32, side_b: usize, trusted: bool) !void {
+    fn linkTriangleSidesInternal(self: *Engine, tri_a_idx: i32, side_a: usize, tri_b_idx: i32, side_b: usize, comptime trusted: bool) !void {
         if (tri_a_idx < 0 or tri_b_idx < 0) return;
         const tri_a_slot = @as(usize, @intCast(tri_a_idx));
         const tri_b_slot = @as(usize, @intCast(tri_b_idx));
@@ -671,7 +734,7 @@ pub const Engine = struct {
         try self.trusted_spokes.append(allocator, .{ .vertex = vertex, .tri = tri_idx, .side = side });
     }
 
-    fn linkNewTrianglesInternal(self: *Engine, new_tri_indices: []const i32, trusted: bool) !void {
+    fn linkNewTrianglesInternal(self: *Engine, new_tri_indices: []const i32, comptime trusted: bool) !void {
         for (new_tri_indices, 0..) |tri_a_idx, i| {
             const tri_a = self.mesh.triangles.get(@as(usize, @intCast(tri_a_idx)));
             if (mesh.isDeadTriangle(tri_a)) continue;
@@ -681,7 +744,7 @@ pub const Engine = struct {
                 if (mesh.isDeadTriangle(tri_b)) continue;
 
                 inline for (0..3) |side_a| {
-                    const edge = triangleEdge(tri_a, side_a);
+                    const edge = triangleEdgeAt(side_a, tri_a);
                     if (edgeSide(tri_b, edge.v1, edge.v2)) |side_b| {
                         try self.linkTriangleSidesInternal(tri_a_idx, side_a, tri_b_idx, side_b, trusted);
                     }
@@ -800,7 +863,7 @@ pub const Engine = struct {
             const tri = self.mesh.triangles.get(i);
             if (mesh.isDeadTriangle(tri)) continue;
             for (0..3) |side| {
-                const edge = triangleEdge(tri, side);
+                const edge = triangleEdgeAt(side, tri);
                 const key = EdgeKey{
                     .a = @min(edge.v1, edge.v2),
                     .b = @max(edge.v1, edge.v2),
@@ -1102,7 +1165,7 @@ pub const Engine = struct {
 
     fn pointOnTriangleEdge(self: *Engine, tri: mesh.Triangle, pt: mesh.Vertex) bool {
         inline for (0..3) |side| {
-            const edge = triangleEdge(tri, side);
+            const edge = triangleEdgeAt(side, tri);
             if (predicates.pointOnSegment(
                 self.getVertex(edge.v1),
                 self.getVertex(edge.v2),
@@ -1191,7 +1254,7 @@ pub const Engine = struct {
 
     pub fn insertPoint(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
         for (0..max_transaction_attempts) |_| {
-            return self.insertPointAttempt(arena, pt, true, true) catch |err| {
+            return self.insertPointAttempt(arena, pt, true, .transactional) catch |err| {
                 if (isRetryableTransactionError(err)) continue;
                 return err;
             };
@@ -1201,7 +1264,7 @@ pub const Engine = struct {
 
     pub fn insertUniquePoint(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
         for (0..max_transaction_attempts) |_| {
-            return self.insertPointAttempt(arena, pt, false, true) catch |err| {
+            return self.insertPointAttempt(arena, pt, false, .transactional) catch |err| {
                 if (isRetryableTransactionError(err)) continue;
                 return err;
             };
@@ -1211,11 +1274,12 @@ pub const Engine = struct {
 
     /// Single-thread fast path for already-deduplicated input. Not safe for concurrent mesh mutation.
     pub fn insertUniquePointTrusted(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
-        return self.insertPointAttempt(arena, pt, false, false);
+        return self.insertPointAttempt(arena, pt, false, .trusted);
     }
 
     // Simplified Bowyer-Watson insertion for testing
-    fn insertPointAttempt(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex, check_duplicate: bool, use_transaction: bool) !i32 {
+    fn insertPointAttempt(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex, comptime check_duplicate: bool, comptime mode: MutationMode) !i32 {
+        const use_transaction = mode == .transactional;
         // Prevent duplicate or extremely close points
         if (check_duplicate) {
             var v_idx: usize = 0;

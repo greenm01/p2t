@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const PredicatePolicy = enum { adaptive, strict, fast };
+
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
 // executed by an external runner. The functions in `std.Build` implement a DSL
@@ -21,8 +23,18 @@ pub fn build(b: *std.Build) void {
     // target and optimize options) will be listed when running `zig build --help`
     // in this directory.
     const strict_predicates = b.option(bool, "strict-predicates", "Always use f128 geometric predicates") orelse false;
+    const predicate_policy_name = b.option([]const u8, "predicate-policy", "Geometric predicate policy: adaptive, strict, or fast") orelse if (strict_predicates) "strict" else "adaptive";
+    const predicate_policy: PredicatePolicy = if (std.mem.eql(u8, predicate_policy_name, "adaptive"))
+        .adaptive
+    else if (std.mem.eql(u8, predicate_policy_name, "strict"))
+        .strict
+    else if (std.mem.eql(u8, predicate_policy_name, "fast"))
+        .fast
+    else
+        @panic("invalid -Dpredicate-policy; expected adaptive, strict, or fast");
     const build_options = b.addOptions();
     build_options.addOption(bool, "strict_predicates", strict_predicates);
+    build_options.addOption(PredicatePolicy, "predicate_policy", predicate_policy);
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.

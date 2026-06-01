@@ -487,7 +487,7 @@ pub const Corridor = struct {
         arena: *mesh.ThreadArena,
         local_tris: []const cavity.LocalTriangle,
         emitted: *std.ArrayListUnmanaged(i32),
-        trusted: bool,
+        comptime trusted: bool,
     ) !void {
         const base = emitted.items.len;
         const map = try allocator.alloc(i32, local_tris.len);
@@ -517,7 +517,7 @@ pub const Corridor = struct {
         }
     }
 
-    fn linkCentralConstraint(engine: *triangulate.Engine, emitted: []const i32, start_pt_idx: i32, end_pt_idx: i32, trusted: bool) !void {
+    fn linkCentralConstraint(engine: *triangulate.Engine, emitted: []const i32, start_pt_idx: i32, end_pt_idx: i32, comptime trusted: bool) !void {
         var first: i32 = -1;
         var second: i32 = -1;
         for (emitted) |tri_idx| {
@@ -539,7 +539,7 @@ pub const Corridor = struct {
         }
     }
 
-    fn markConstraintInEmitted(engine: *triangulate.Engine, emitted: []const i32, start_pt_idx: i32, end_pt_idx: i32, trusted: bool) !bool {
+    fn markConstraintInEmitted(engine: *triangulate.Engine, emitted: []const i32, start_pt_idx: i32, end_pt_idx: i32, comptime trusted: bool) !bool {
         for (emitted) |tri_idx| {
             const tri = engine.mesh.triangles.get(@as(usize, @intCast(tri_idx)));
             const side = triangulate.Engine.edgeSide(tri, start_pt_idx, end_pt_idx) orelse continue;
@@ -561,9 +561,9 @@ pub const Corridor = struct {
         start_pt_idx: i32,
         end_pt_idx: i32,
         wall: []const i32,
-        is_left: bool,
+        comptime is_left: bool,
         emitted: *std.ArrayListUnmanaged(i32),
-        trusted: bool,
+        comptime trusted: bool,
     ) !void {
         _ = self;
         if (wall.len == 0) return;
@@ -666,7 +666,8 @@ pub const Corridor = struct {
         }
     }
 
-    fn clearAndRetriangulateInternal(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32, use_transaction: bool) !void {
+    fn clearAndRetriangulateInternal(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32, comptime mode: triangulate.MutationMode) !void {
+        const use_transaction = mode == .transactional;
         const scratch_allocator = arena.resetScratch(allocator);
 
         var edge_counts = std.AutoHashMap(EdgeKey, usize).init(scratch_allocator);
@@ -846,17 +847,17 @@ pub const Corridor = struct {
     }
 
     pub fn clearAndRetriangulate(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
-        try self.clearAndRetriangulateInternal(allocator, engine, arena, start_pt_idx, end_pt_idx, true);
+        try self.clearAndRetriangulateInternal(allocator, engine, arena, start_pt_idx, end_pt_idx, .transactional);
     }
 
     /// Single-thread fast path. Not safe for concurrent mesh mutation.
     pub fn clearAndRetriangulateTrusted(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
-        try self.clearAndRetriangulateInternal(allocator, engine, arena, start_pt_idx, end_pt_idx, false);
+        try self.clearAndRetriangulateInternal(allocator, engine, arena, start_pt_idx, end_pt_idx, .trusted);
     }
 
     pub fn recoverConstraint(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
-        if (engine.hasLiveEdge(start_pt_idx, end_pt_idx)) {
-            _ = try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true);
+        if (engine.findLiveEdge(start_pt_idx, end_pt_idx)) |found| {
+            try engine.setConstrainedTriangleEdge(found.tri, found.side, true);
             return;
         }
 
@@ -881,8 +882,8 @@ pub const Corridor = struct {
 
     /// Single-thread fast path. Not safe for concurrent mesh mutation.
     pub fn recoverConstraintTrusted(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
-        if (engine.hasLiveEdge(start_pt_idx, end_pt_idx)) {
-            _ = try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true);
+        if (engine.findLiveEdge(start_pt_idx, end_pt_idx)) |found| {
+            try engine.setConstrainedTriangleEdgeTrusted(found.tri, found.side, true);
             return;
         }
 
