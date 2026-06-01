@@ -15,6 +15,12 @@ const LegalizeEdge = struct {
     side: usize,
 };
 
+const SpokeLink = struct {
+    vertex: i32,
+    tri: i32,
+    side: usize,
+};
+
 pub const max_transaction_attempts = 8;
 
 pub fn isRetryableTransactionError(err: anyerror) bool {
@@ -151,6 +157,7 @@ pub const Engine = struct {
     trusted_cavity: std.ArrayListUnmanaged(i32),
     trusted_edges: std.ArrayListUnmanaged(Edge),
     trusted_new_tri_indices: std.ArrayListUnmanaged(i32),
+    trusted_spokes: std.ArrayListUnmanaged(SpokeLink),
 
     pub fn init(allocator: std.mem.Allocator) Engine {
         return .{
@@ -161,10 +168,12 @@ pub const Engine = struct {
             .trusted_cavity = .empty,
             .trusted_edges = .empty,
             .trusted_new_tri_indices = .empty,
+            .trusted_spokes = .empty,
         };
     }
 
     pub fn deinit(self: *Engine) void {
+        self.trusted_spokes.deinit(self.allocator);
         self.trusted_new_tri_indices.deinit(self.allocator);
         self.trusted_edges.deinit(self.allocator);
         self.trusted_cavity.deinit(self.allocator);
@@ -177,6 +186,7 @@ pub const Engine = struct {
         self.trusted_cavity.clearRetainingCapacity();
         self.trusted_edges.clearRetainingCapacity();
         self.trusted_new_tri_indices.clearRetainingCapacity();
+        self.trusted_spokes.clearRetainingCapacity();
         self.last_valid_tri = 0;
     }
 
@@ -566,6 +576,21 @@ pub const Engine = struct {
         try self.linkTriangleSidesInternal(tri_a_idx, side_a, tri_b_idx, side_b, true);
     }
 
+    pub fn setTriangleAdjTrusted(self: *Engine, tri_idx: i32, side: usize, neighbor: i32) !void {
+        if (tri_idx < 0) return;
+        const tri_slot = @as(usize, @intCast(tri_idx));
+        if (tri_slot >= self.mesh.triangles.len) return error.InvalidTriangleAdjacency;
+        var tri = self.mesh.triangles.get(tri_slot);
+        if (mesh.isDeadTriangle(tri)) return error.InvalidTriangleAdjacency;
+        setTriangleAdj(&tri, side, neighbor);
+        self.mesh.setTriangleTrusted(tri_idx, tri);
+    }
+
+    pub fn linkTriangleSidesKnownTrusted(self: *Engine, tri_a_idx: i32, side_a: usize, tri_b_idx: i32, side_b: usize) !void {
+        try self.setTriangleAdjTrusted(tri_a_idx, side_a, tri_b_idx);
+        try self.setTriangleAdjTrusted(tri_b_idx, side_b, tri_a_idx);
+    }
+
     fn linkTriangleSidesInternal(self: *Engine, tri_a_idx: i32, side_a: usize, tri_b_idx: i32, side_b: usize, trusted: bool) !void {
         if (tri_a_idx < 0 or tri_b_idx < 0) return;
         const tri_a_slot = @as(usize, @intCast(tri_a_idx));
@@ -610,12 +635,29 @@ pub const Engine = struct {
         try self.linkTriangleSidesTrusted(tri_a_idx, side_a, tri_b_idx, side_b);
     }
 
+    pub fn linkBoundaryNeighborTrusted(self: *Engine, new_tri_idx: i32, boundary_side: usize, neighbor_idx: i32, edge_v1: i32, edge_v2: i32) !void {
+        if (neighbor_idx < 0) return;
+        const neighbor = self.mesh.triangles.get(@as(usize, @intCast(neighbor_idx)));
+        const neighbor_side = edgeSide(neighbor, edge_v1, edge_v2) orelse return error.InvalidTriangleAdjacency;
+        try self.linkTriangleSidesKnownTrusted(new_tri_idx, boundary_side, neighbor_idx, neighbor_side);
+    }
+
     pub fn linkNewTriangles(self: *Engine, new_tri_indices: []const i32) !void {
         try self.linkNewTrianglesInternal(new_tri_indices, false);
     }
 
     pub fn linkNewTrianglesTrusted(self: *Engine, new_tri_indices: []const i32) !void {
         try self.linkNewTrianglesInternal(new_tri_indices, true);
+    }
+
+    fn addTrustedSpoke(self: *Engine, allocator: std.mem.Allocator, vertex: i32, tri_idx: i32, side: usize) !void {
+        for (self.trusted_spokes.items) |spoke| {
+            if (spoke.vertex == vertex) {
+                try self.linkTriangleSidesKnownTrusted(spoke.tri, spoke.side, tri_idx, side);
+                return;
+            }
+        }
+        try self.trusted_spokes.append(allocator, .{ .vertex = vertex, .tri = tri_idx, .side = side });
     }
 
     fn linkNewTrianglesInternal(self: *Engine, new_tri_indices: []const i32, trusted: bool) !void {
@@ -1147,6 +1189,7 @@ pub const Engine = struct {
         cavity.clearRetainingCapacity();
         edges.clearRetainingCapacity();
         new_tri_indices.clearRetainingCapacity();
+        if (!use_transaction) self.trusted_spokes.clearRetainingCapacity();
 
         try cavity.append(temp_allocator, container);
 
@@ -1301,14 +1344,16 @@ pub const Engine = struct {
                 if (use_transaction) {
                     try self.linkTrianglesByEdge(t_idx, e.adj_tri, e.v1, e.v2);
                 } else {
-                    try self.linkTrianglesByEdgeTrusted(t_idx, e.adj_tri, e.v1, e.v2);
+                    try self.linkBoundaryNeighborTrusted(t_idx, 0, e.adj_tri, e.v1, e.v2);
                 }
+            }
+            if (!use_transaction) {
+                try self.addTrustedSpoke(temp_allocator, a, t_idx, 2);
+                try self.addTrustedSpoke(temp_allocator, b, t_idx, 1);
             }
         }
         if (use_transaction) {
             try self.linkNewTriangles(new_tri_indices.items);
-        } else {
-            try self.linkNewTrianglesTrusted(new_tri_indices.items);
         }
         if (tx_started) {
             self.endTriangleTransaction(&tx);
@@ -1400,6 +1445,35 @@ test "duplicate point insertion returns existing vertex" {
 
     try std.testing.expectEqual(first, second);
     try std.testing.expectEqual(before_vertices, engine.mesh.vertices.len);
+}
+
+test "trusted point insertion wires reciprocal adjacency" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    var arena = mesh.ThreadArena{};
+    defer arena.deinit(std.testing.allocator);
+
+    const vertices = [_]mesh.Vertex{
+        .{ .x = 10.0, .y = 10.0 },
+        .{ .x = 20.0, .y = 20.0 },
+        .{ .x = 14.0, .y = 16.0 },
+    };
+    try engine.reserveForPointCount(vertices.len);
+    try engine.initSuperTriangle(&vertices);
+
+    _ = try engine.insertUniquePointTrusted(&arena, vertices[0]);
+    _ = try engine.insertUniquePointTrusted(&arena, vertices[1]);
+    _ = try engine.insertUniquePointTrusted(&arena, vertices[2]);
+
+    try engine.validateTopology();
+    try engine.validateCdtLegality();
+
+    var scanned_live_count: usize = 0;
+    for (0..engine.mesh.triangles.len) |tri_idx| {
+        if (!mesh.isDeadTriangle(engine.mesh.triangles.get(tri_idx))) scanned_live_count += 1;
+    }
+    try std.testing.expectEqual(scanned_live_count, engine.liveTriangleCount());
 }
 
 test "cavity edge counter keeps only once-used boundary edges" {
