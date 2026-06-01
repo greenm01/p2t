@@ -152,6 +152,19 @@ With `-Ddecomposition-cone-visible=true`:
 
 This is a small cleanup, not a strategic shift. The remaining large cost is still local piece BW wall time plus seam legalization.
 
+## Latest Piece-Size Sweep
+
+`-Ddecomposition-max-piece-vertices=N` now controls the partition cutoff for trapezoid/partitioned prototypes. The prototype default moved from `256` to `768` after a cone-visible + 4-worker sweep.
+
+Current cone-visible 4-worker results:
+
+- Cutoff `128`: monkey about `510.1 us/run`, heron about `428.3 us/run`; more pieces caused much more seam legalization, and the splitter still left oversized failed pieces.
+- Cutoff `512`: monkey about `286.0 us/run`, heron about `214.7 us/run`; fewer seams were much better.
+- Cutoff `768`: monkey about `272.9 us/run`, heron about `208.9 us/run`; best tested balance, usually one split/two pieces on the large fixtures.
+- Cutoff `1024`: monkey about `291.0 us/run`, heron about `208.3 us/run`; monkey regressed from larger piece BW wall time.
+
+This changes the current best prototype shape: partition sparingly, avoid seam work, and use parallelism only where one cheap split gives useful independent piece jobs.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.

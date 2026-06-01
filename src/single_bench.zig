@@ -27,6 +27,10 @@ const Order = struct {
     indices: []const usize,
 };
 
+fn decompositionMaxPieceVertices() usize {
+    return @max(@as(usize, 3), build_options.decomposition_max_piece_vertices);
+}
+
 const RoundTiming = struct {
     total_us: u64 = 0,
     insertion_us: u64 = 0,
@@ -408,7 +412,7 @@ fn runRound(
 
         if (partitionedBwMode()) {
             decomposition_start = timer.now(io);
-            try trapezoid_dd.decomposeSimple(allocator, case.vertices, 256, &decomposition);
+            try trapezoid_dd.decomposeSimple(allocator, case.vertices, decompositionMaxPieceVertices(), &decomposition);
             decomposition_end = timer.now(io);
 
             seed_indices.clearRetainingCapacity();
@@ -457,7 +461,7 @@ fn runRound(
             local_legalization_end = assembly_end;
         } else if (build_options.trapezoid_dd_mode) {
             decomposition_start = timer.now(io);
-            try trapezoid_dd.decomposeSimple(allocator, case.vertices, 256, &decomposition);
+            try trapezoid_dd.decomposeSimple(allocator, case.vertices, decompositionMaxPieceVertices(), &decomposition);
             decomposition_end = timer.now(io);
 
             seed_indices.clearRetainingCapacity();
@@ -689,8 +693,9 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
             },
         );
         std.debug.print(
-            "  decomposition/run: pieces {d:>.1}, diagonals {d:>.1}, max piece {d}, mean piece vertices {d:>.1}, workers {d}; measured critical path {d:>.3} us/run ({d:>.3} us without decomp)\n",
+            "  decomposition/run: target max {d}, pieces {d:>.1}, diagonals {d:>.1}, max piece {d}, mean piece vertices {d:>.1}, workers {d}; measured critical path {d:>.3} us/run ({d:>.3} us without decomp)\n",
             .{
+                decompositionMaxPieceVertices(),
                 avg_pieces,
                 avg_diagonals,
                 best.dd_max_piece_vertices,
@@ -727,8 +732,9 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
             },
         );
         std.debug.print(
-            "  decomposition/run: pieces {d:>.1}, diagonals {d:>.1}, max piece {d}, mean piece vertices {d:>.1}; est 4-core critical path {d:>.3} us/run\n",
+            "  decomposition/run: target max {d}, pieces {d:>.1}, diagonals {d:>.1}, max piece {d}, mean piece vertices {d:>.1}; est 4-core critical path {d:>.3} us/run\n",
             .{
+                decompositionMaxPieceVertices(),
                 avg_pieces,
                 avg_diagonals,
                 best.dd_max_piece_vertices,
