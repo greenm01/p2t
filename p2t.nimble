@@ -49,6 +49,12 @@ proc runTimed(path: string) =
   else:
     sh quoteShell(path)
 
+proc quoteArgs(args: openArray[string]): string =
+  for arg in args:
+    if result.len > 0:
+      result.add " "
+    result.add quoteShell(arg)
+
 proc findLibtess2Dir(): string =
   let envDir = getEnv("LIBTESS2_DIR")
   if envDir.len > 0 and fileExists(envDir / "Include" / "tesselator.h"):
@@ -205,6 +211,63 @@ task benchArenaFloat32Cdt, "run p2t benchmark with arena-backed float32 CDT":
   sh "strip " & quoteShell("/tmp/p2t_bench_arena_float32_cdt")
   echo "p2t arena float32 CDT"
   sh quoteShell("/tmp/p2t_bench_arena_float32_cdt")
+
+task benchCompareAll, "compare best Nim, front hash, fast-poly2tri, and libtess2":
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt",
+    outPath = "/tmp/p2t_bench_best",
+    nimcache = "/tmp/p2t_bench_best_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_best")
+
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tFrontHash",
+    outPath = "/tmp/p2t_bench_arena_front_hash_cdt",
+    nimcache = "/tmp/p2t_bench_arena_front_hash_cdt_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_arena_front_hash_cdt")
+
+  var reportArgs = @[
+    "nim-best=/tmp/p2t_bench_best",
+    "nim-front-hash=/tmp/p2t_bench_arena_front_hash_cdt",
+  ]
+
+  let fastDir = findFastPoly2TriDir()
+  if fastDir.len > 0:
+    let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir /
+      "MPE_fastpoly2tri.h" & "\\\""
+    sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
+      " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
+    sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
+      " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
+    reportArgs.add "fast-float=/tmp/p2t_fastpoly2tri_float"
+    reportArgs.add "fast-double=/tmp/p2t_fastpoly2tri_double"
+  else:
+    echo "skipping fast-poly2tri; set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri"
+
+  let libtess2Dir = findLibtess2Dir()
+  if libtess2Dir.len > 0:
+    nimCompile(
+      "bench/bench_libtess2_fixtures",
+      flags = "--mm:arc -d:release --opt:speed -d:libtess2Dir=" &
+        quoteShell(libtess2Dir),
+      outPath = "/tmp/p2t_bench_libtess2_fixtures",
+      nimcache = "/tmp/p2t_bench_libtess2_fixtures_d",
+    )
+    sh "strip " & quoteShell("/tmp/p2t_bench_libtess2_fixtures")
+    reportArgs.add "libtess2=/tmp/p2t_bench_libtess2_fixtures"
+  else:
+    echo "skipping libtess2; set LIBTESS2_DIR=/path/to/libtess2"
+
+  nimCompile(
+    "bench/bench_compare_all",
+    flags = "--mm:arc -d:release --opt:speed",
+    outPath = "/tmp/p2t_bench_compare_all",
+    nimcache = "/tmp/p2t_bench_compare_all_d",
+  )
+  sh quoteShell("/tmp/p2t_bench_compare_all") & " " & quoteArgs(reportArgs)
 
 task sizes, "report core p2t CDT struct sizes":
   nimRun(
@@ -394,4 +457,4 @@ task benchParallel, "benchmark tessellateBatch scaling across threads":
   sh quoteShell("/tmp/p2t_bench_parallel")
 
 task tidy, "format p2t sources":
-  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
+  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
