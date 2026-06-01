@@ -33,7 +33,7 @@ pub const GlobalMesh = struct {
     vertices: std.MultiArrayList(Vertex) = .empty,
     triangles: std.MultiArrayList(Triangle) = .empty,
     edge_flags: std.ArrayListUnmanaged(u8) = .empty,
-    triangle_versions: std.ArrayListUnmanaged(u32) = .empty,
+    triangle_versions: std.ArrayListUnmanaged(std.atomic.Value(u32)) = .empty,
     triangle_locks: std.ArrayListUnmanaged(std.atomic.Value(u8)) = .empty,
 
     pub fn deinit(self: *GlobalMesh, allocator: std.mem.Allocator) void {
@@ -49,7 +49,7 @@ pub const GlobalMesh = struct {
         errdefer _ = self.triangles.pop();
         try self.edge_flags.append(allocator, 0);
         errdefer _ = self.edge_flags.pop();
-        try self.triangle_versions.append(allocator, 1);
+        try self.triangle_versions.append(allocator, std.atomic.Value(u32).init(1));
         errdefer _ = self.triangle_versions.pop();
         try self.triangle_locks.append(allocator, std.atomic.Value(u8).init(0));
     }
@@ -63,9 +63,9 @@ pub const GlobalMesh = struct {
 
     pub fn bumpTriangleVersion(self: *GlobalMesh, triangle_index: i32) void {
         const slot = @as(usize, @intCast(triangle_index));
-        self.triangle_versions.items[slot] +%= 1;
-        if (self.triangle_versions.items[slot] == 0) {
-            self.triangle_versions.items[slot] = 1;
+        const previous = self.triangle_versions.items[slot].fetchAdd(1, .release);
+        if (previous == std.math.maxInt(u32)) {
+            self.triangle_versions.items[slot].store(1, .release);
         }
     }
 
@@ -125,9 +125,9 @@ test "GlobalMesh and ThreadArena" {
     try std.testing.expectEqual(mesh.triangles.len, mesh.edge_flags.items.len);
     try std.testing.expectEqual(mesh.triangles.len, mesh.triangle_versions.items.len);
     try std.testing.expectEqual(mesh.triangles.len, mesh.triangle_locks.items.len);
-    const version = mesh.triangle_versions.items[0];
+    const version = mesh.triangle_versions.items[0].load(.acquire);
     mesh.setTriangleFresh(0, .{ .v0 = 0, .v1 = 0, .v2 = 0, .adj0 = -1, .adj1 = -1, .adj2 = -1 });
-    try std.testing.expect(mesh.triangle_versions.items[0] != version);
+    try std.testing.expect(mesh.triangle_versions.items[0].load(.acquire) != version);
 
     var arena = ThreadArena{};
     defer arena.deinit(allocator);

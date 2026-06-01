@@ -299,7 +299,7 @@ pub const Engine = struct {
     }
 
     pub fn triangleVersion(self: *const Engine, tri_idx: i32) u32 {
-        return self.mesh.triangle_versions.items[@as(usize, @intCast(tri_idx))];
+        return self.mesh.triangle_versions.items[@as(usize, @intCast(tri_idx))].load(.acquire);
     }
 
     pub fn snapshotTriangleVersion(self: *const Engine, tri_idx: i32) TriangleVersionSnapshot {
@@ -311,7 +311,7 @@ pub const Engine = struct {
             if (snapshot.tri < 0) return false;
             const slot = @as(usize, @intCast(snapshot.tri));
             if (slot >= self.mesh.triangle_versions.items.len) return false;
-            if (self.mesh.triangle_versions.items[slot] != snapshot.version) return false;
+            if (self.mesh.triangle_versions.items[slot].load(.acquire) != snapshot.version) return false;
         }
         return true;
     }
