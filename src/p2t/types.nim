@@ -57,6 +57,13 @@ type
     edgeEvent*: CdtEdgeEvent
 
 when defined(p2tArenaCdt):
+  when defined(p2tCdtStats):
+    type ArenaCdtStats* = object
+      pointEvents*, fills*, fillBasins*, legalizeCalls*, rotations*: uint64
+      edgeEvents*, edgeWalkSteps*, flipEvents*, flipScans*: uint64
+      indexCalls*, edgeIndexCalls*, mapTriangleToNodesCalls*: uint64
+      incircleCalls*, inScanAreaCalls*, meshCleanVisits*: uint64
+
   when defined(p2tFloat32Cdt):
     type ArenaReal* = float32
   else:

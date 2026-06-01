@@ -38,6 +38,31 @@ type
     vertices*: ptr seq[Vec2]
     arena*: ptr ArenaWorkspace
 
+when defined(p2tCdtStats):
+  var arenaCdtStats*: ArenaCdtStats
+
+  proc arenaCdtStatsSnapshot*(): ArenaCdtStats =
+    arenaCdtStats
+
+  template statIncGlobal(field: untyped) =
+    inc arenaCdtStats.field
+
+  template statInc(ws: var ArenaWorkspace, field: untyped) =
+    inc arenaCdtStats.field
+
+  template statInc(t: ptr ArenaTriangle, field: untyped) =
+    inc arenaCdtStats.field
+
+else:
+  template statIncGlobal(field: untyped) =
+    discard
+
+  template statInc(ws: var ArenaWorkspace, field: untyped) =
+    discard
+
+  template statInc(t: ptr ArenaTriangle, field: untyped) =
+    discard
+
 proc resetCdt(ws: var ArenaWorkspace) =
   ws.pointCount = 0
   ws.edgeCount = 0
@@ -56,6 +81,8 @@ proc resetCdt(ws: var ArenaWorkspace) =
   ws.afTail = nil
   ws.basin = ArenaBasin()
   ws.edgeEvent = ArenaEdgeEvent()
+  when defined(p2tCdtStats):
+    arenaCdtStats = ArenaCdtStats()
 
 proc ensureCapacity[T](s: var seq[T], n: int) =
   if s.len < n:
@@ -127,6 +154,7 @@ proc orient2d(pa, pb, pc: ptr ArenaPoint): Orientation {.inline.} =
     cw
 
 proc inScanArea(pa, pb, pc, pd: ptr ArenaPoint): bool {.inline.} =
+  statIncGlobal(inScanAreaCalls)
   let oadb = (pa.x - pb.x) * (pd.y - pb.y) - (pd.x - pb.x) * (pa.y - pb.y)
   if oadb >= -Epsilon:
     return false
@@ -311,6 +339,7 @@ proc legalize(t: ptr ArenaTriangle, opoint, npoint: ptr ArenaPoint) =
     t.points[1] = npoint
 
 proc index(t: ptr ArenaTriangle, p: ptr ArenaPoint): int {.inline.} =
+  t.statInc(indexCalls)
   if p == t.points[0]:
     0
   elif p == t.points[1]:
@@ -321,6 +350,7 @@ proc index(t: ptr ArenaTriangle, p: ptr ArenaPoint): int {.inline.} =
     -1
 
 proc edgeIndex(t: ptr ArenaTriangle, p1, p2: ptr ArenaPoint): int {.inline.} =
+  t.statInc(edgeIndexCalls)
   if t.points[0] == p1:
     if t.points[1] == p2:
       return 2
@@ -506,7 +536,8 @@ proc createAdvancingFront(ws: var ArenaWorkspace) =
   ws.afMiddle.prev = ws.afHead
   ws.afTail.prev = ws.afMiddle
 
-proc mapTriangleToNodes(ws: var ArenaWorkspace, t: ptr ArenaTriangle) =
+proc mapTriangleToNodes(ws: var ArenaWorkspace, t: ptr ArenaTriangle) {.inline.} =
+  ws.statInc(mapTriangleToNodesCalls)
   for i in 0 .. 2:
     if t.neighbors[i].isNil:
       let n = t.points[PrevEdgeIndex[i]].node
@@ -531,6 +562,7 @@ proc meshClean(ws: var ArenaWorkspace, t: ptr ArenaTriangle) =
     dec stackCount
     let item = ws.meshStack[stackCount]
     if not item.isNil and not item.hasFlag(InteriorFlag):
+      ws.statInc(meshCleanVisits)
       item.setFlag(InteriorFlag, true)
       if item.validRawTriangle:
         ws.interiorTriangles[ws.rawInteriorCount] = item
@@ -546,6 +578,7 @@ proc meshClean(ws: var ArenaWorkspace, t: ptr ArenaTriangle) =
   ws.interiorTriangles.setLen(ws.rawInteriorCount)
 
 proc incircle(pa, pb, pc, pd: ptr ArenaPoint): bool {.inline.} =
+  statIncGlobal(incircleCalls)
   let
     adx = pa.x - pd.x
     ady = pa.y - pd.y
@@ -587,6 +620,7 @@ proc rotateTrianglePair(
     ot: ptr ArenaTriangle,
     op: ptr ArenaPoint,
 ) {.inline.} =
+  ws.statInc(rotations)
   let
     pIdx = t.index(p)
     opIdx = ot.index(op)
@@ -631,6 +665,7 @@ proc rotateTrianglePair(
   ot.setConstrainedEdgeCW(op, ce4)
 
 proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
+  ws.statInc(legalizeCalls)
   for i in 0 .. 2:
     if t.hasFlag(delaunayFlag(i)):
       continue
@@ -669,6 +704,7 @@ proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
   false
 
 proc fill(ws: var ArenaWorkspace, n: ptr ArenaNode) {.inline.} =
+  ws.statInc(fills)
   let t = ws.newTriangle(n.prev.point, n.point, n.next.point)
   t.neighbors[2] = n.prev.triangle
   if not n.prev.triangle.isNil:
@@ -738,7 +774,7 @@ proc shouldFillBasin(n: ptr ArenaNode): bool {.inline.} =
     ay = n.point.y - n.next.next.point.y
   ax >= 0 or ay < -ax
 
-proc isShallow(ws: var ArenaWorkspace, n: ptr ArenaNode): bool =
+proc isShallow(ws: var ArenaWorkspace, n: ptr ArenaNode): bool {.inline.} =
   let height =
     if ws.basin.leftHighest:
       ws.basin.leftNode.point.y - n.point.y
@@ -749,6 +785,7 @@ proc isShallow(ws: var ArenaWorkspace, n: ptr ArenaNode): bool =
 proc fillBasinReq(ws: var ArenaWorkspace, n: ptr ArenaNode)
 
 proc fillBasin(ws: var ArenaWorkspace, n: ptr ArenaNode) =
+  ws.statInc(fillBasins)
   if orient2d(n.point, n.next.point, n.next.next.point) == ccw:
     ws.basin.leftNode = n.next.next
   else:
@@ -773,25 +810,26 @@ proc fillBasin(ws: var ArenaWorkspace, n: ptr ArenaNode) =
   ws.fillBasinReq(ws.basin.bottomNode)
 
 proc fillBasinReq(ws: var ArenaWorkspace, n: ptr ArenaNode) =
-  if ws.isShallow(n):
-    return
+  var n = n
+  while true:
+    if ws.isShallow(n):
+      return
 
-  ws.fill(n)
-  if n.prev == ws.basin.leftNode and n.next == ws.basin.rightNode:
-    return
-  elif n.prev == ws.basin.leftNode:
-    if orient2d(n.point, n.next.point, n.next.next.point) == cw:
+    ws.fill(n)
+    if n.prev == ws.basin.leftNode and n.next == ws.basin.rightNode:
       return
-    ws.fillBasinReq(n.next)
-  elif n.next == ws.basin.rightNode:
-    if orient2d(n.point, n.prev.point, n.prev.prev.point) == ccw:
-      return
-    ws.fillBasinReq(n.prev)
-  else:
-    if n.prev.point.y < n.next.point.y:
-      ws.fillBasinReq(n.prev)
+    elif n.prev == ws.basin.leftNode:
+      if orient2d(n.point, n.next.point, n.next.next.point) == cw:
+        return
+      n = n.next
+    elif n.next == ws.basin.rightNode:
+      if orient2d(n.point, n.prev.point, n.prev.prev.point) == ccw:
+        return
+      n = n.prev
+    elif n.prev.point.y < n.next.point.y:
+      n = n.prev
     else:
-      ws.fillBasinReq(n.next)
+      n = n.next
 
 proc fillAdvancingFront(ws: var ArenaWorkspace, n: ptr ArenaNode) =
   var nextNode = n.next
@@ -842,6 +880,7 @@ proc newFrontTriangle(
   result.triangle = t
 
 proc pointEvent(ws: var ArenaWorkspace, p: ptr ArenaPoint): ptr ArenaNode {.inline.} =
+  ws.statInc(pointEvents)
   let n = ws.locateNode(p.x)
   if n.isNil:
     raise newException(ValueError, "failed to locate advancing-front node")
@@ -1009,6 +1048,7 @@ proc flipScanEdgeEvent(
     p: ptr ArenaPoint,
     pIdx: int,
 ) =
+  ws.statInc(flipScans)
   let ot = t.neighbors[pIdx]
   if ot.isNil:
     raise newException(ValueError, "flip scan failed due to missing triangle")
@@ -1038,6 +1078,7 @@ proc flipEdgeEvent(
     p: ptr ArenaPoint,
     pIdx: int,
 ) =
+  ws.statInc(flipEvents)
   let ot = t.neighbors[pIdx]
   if ot.isNil:
     raise newException(ValueError, "flip failed due to missing triangle")
@@ -1075,9 +1116,11 @@ proc edgeEvent(
     p: ptr ArenaPoint,
     pIdx: int,
 ) =
+  ws.statInc(edgeEvents)
   var t = t
   var pIdx = pIdx
   while true:
+    ws.statInc(edgeWalkSteps)
     if t.isEdgeSideOfTriangle(ep, eq):
       return
 
