@@ -176,6 +176,18 @@ Current cone-visible 4-worker results:
 
 This changes the current best prototype shape: partition sparingly, avoid seam work, and use parallelism only where one cheap split gives useful independent piece jobs.
 
+## Latest PCDT Worker-Executor Prototype
+
+`bench-single -Dpredicate-policy=fast -Dinstrument-mesh-stats=true -Dspatial-hints=true -Dpartitioned-cdt-parallel-mode=true -Dpartitioned-cdt-threads=4 -Ddecomposition-cone-visible=true -Dpartitioned-cdt-max-piece-vertices=768` now keeps PCDT workers alive for each benchmark case instead of spawning threads for every timed iteration. Results are still merged deterministically by piece index, and one-piece decompositions fall back to the serial piece path.
+
+Current macOS results:
+
+- `dude/pcdt-parallel`: about `25.1 us/run`; one piece, no parallel dispatch.
+- `nazca-monkey/pcdt-parallel`: about `276.7 us/run`; decomposition `55.0 us/run`, piece CDT wall `164.3 us/run`, dispatch/wait `16.1 us/run`, assembly `32.2 us/run`, seam `21.0 us/run`.
+- `nazca-heron/pcdt-parallel`: about `186.2 us/run`; decomposition `13.0 us/run`, piece CDT wall `139.9 us/run`, dispatch/wait `14.0 us/run`, assembly `28.1 us/run`, seam `1.0 us/run`.
+
+This makes PCDT competitive with BRIO on heron in this run (`186.2 us/run` versus BRIO `161.8 us/run`) but still slower on monkey (`276.7 us/run` versus BRIO `175.3 us/run`). The remaining useful targets are local piece CDT wall time and assembly; thread spawn is no longer part of the timed inner loop, and seam cost is fixture-dependent.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.

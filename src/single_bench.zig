@@ -41,6 +41,7 @@ const RoundTiming = struct {
     piece_bw_us: u64 = 0,
     piece_bw_serial_us: u64 = 0,
     piece_bw_max_us: u64 = 0,
+    piece_dispatch_us: u64 = 0,
     piece_merge_us: u64 = 0,
     assembly_us: u64 = 0,
     local_legalization_us: u64 = 0,
@@ -92,18 +93,14 @@ const PieceBuildStats = struct {
     wall_us: u64 = 0,
     serial_us: u64 = 0,
     max_us: u64 = 0,
+    dispatch_us: u64 = 0,
     merge_us: u64 = 0,
     threads: usize = 1,
 };
 
-const PieceWorkerContext = struct {
-    io: Io,
-    vertices: []const mesh.Vertex,
-    rings: []const i32,
-    pieces: []const trapezoid_dd.Piece,
-    stride: usize,
-    offset: usize,
-    results: []PieceBuildResult,
+const PcdtWorkerContext = struct {
+    executor: *PcdtExecutor,
+    index: usize,
 };
 
 fn appendLiveLocalTrianglesAsGlobal(
@@ -221,21 +218,161 @@ fn buildPieceBowyerWatsonResult(io: Io, vertices: []const mesh.Vertex, ring: []c
     };
 }
 
-fn pcdtPieceWorker(context: *PieceWorkerContext) void {
-    var piece_idx = context.offset;
-    while (piece_idx < context.pieces.len) : (piece_idx += context.stride) {
-        const piece = context.pieces[piece_idx];
-        const ring = context.rings[piece.start .. piece.start + piece.len];
-        context.results[piece_idx] = buildPieceBowyerWatsonResult(context.io, context.vertices, ring);
-    }
-}
-
-fn pcdtWorkerCount(piece_count: usize) !usize {
-    if (piece_count == 0) return 1;
+fn pcdtConfiguredWorkerCount() !usize {
     const requested = build_options.partitioned_cdt_threads;
     const detected = if (requested == 0) try std.Thread.getCpuCount() else requested;
-    return @max(@as(usize, 1), @min(detected, piece_count));
+    return @max(@as(usize, 1), detected);
 }
+
+fn pcdtExecutorWorkerMain(context: *PcdtWorkerContext) void {
+    context.executor.workerLoop(context.index);
+}
+
+const PcdtExecutor = struct {
+    io: Io = undefined,
+    allocator: std.mem.Allocator = undefined,
+    thread_count: usize = 0,
+    threads: []std.Thread = &.{},
+    contexts: []PcdtWorkerContext = &.{},
+    mutex: Io.Mutex = .init,
+    ready: Io.Condition = .init,
+    done: Io.Condition = .init,
+    shutdown: bool = false,
+    generation: usize = 0,
+    active_workers: usize = 0,
+    pending_workers: usize = 0,
+    next_piece: usize = 0,
+    vertices: []const mesh.Vertex = &.{},
+    rings: []const i32 = &.{},
+    pieces: []const trapezoid_dd.Piece = &.{},
+    results: []PieceBuildResult = &.{},
+
+    fn init(self: *PcdtExecutor, io: Io, allocator: std.mem.Allocator, thread_count: usize) !void {
+        self.* = .{
+            .io = io,
+            .allocator = allocator,
+            .thread_count = thread_count,
+        };
+        self.threads = try allocator.alloc(std.Thread, thread_count);
+        errdefer {
+            allocator.free(self.threads);
+            self.threads = &.{};
+        }
+        self.contexts = try allocator.alloc(PcdtWorkerContext, thread_count);
+        errdefer {
+            allocator.free(self.contexts);
+            self.contexts = &.{};
+        }
+
+        var started_threads: usize = 0;
+        for (0..thread_count) |i| {
+            self.contexts[i] = .{
+                .executor = self,
+                .index = i,
+            };
+            self.threads[i] = std.Thread.spawn(.{}, pcdtExecutorWorkerMain, .{&self.contexts[i]}) catch |err| {
+                self.requestShutdown();
+                for (self.threads[0..started_threads]) |thread| thread.join();
+                return err;
+            };
+            started_threads += 1;
+        }
+    }
+
+    fn deinit(self: *PcdtExecutor) void {
+        if (self.threads.len == 0) return;
+        self.requestShutdown();
+        for (self.threads) |thread| thread.join();
+        self.allocator.free(self.contexts);
+        self.allocator.free(self.threads);
+        self.* = .{};
+    }
+
+    fn requestShutdown(self: *PcdtExecutor) void {
+        self.mutex.lockUncancelable(self.io);
+        self.shutdown = true;
+        self.generation +%= 1;
+        self.ready.broadcast(self.io);
+        self.mutex.unlock(self.io);
+    }
+
+    fn run(
+        self: *PcdtExecutor,
+        vertices: []const mesh.Vertex,
+        rings: []const i32,
+        pieces: []const trapezoid_dd.Piece,
+        results: []PieceBuildResult,
+    ) !PieceBuildStats {
+        const piece_count = pieces.len;
+        const active_workers = @min(self.thread_count, piece_count);
+        if (active_workers <= 1) return error.SerialPcdtRequired;
+
+        const wall_start = timer.now(self.io);
+        self.mutex.lockUncancelable(self.io);
+        self.vertices = vertices;
+        self.rings = rings;
+        self.pieces = pieces;
+        self.results = results;
+        self.next_piece = 0;
+        self.active_workers = active_workers;
+        self.pending_workers = active_workers;
+        self.generation +%= 1;
+        self.ready.broadcast(self.io);
+        while (self.pending_workers != 0) {
+            self.done.waitUncancelable(self.io, &self.mutex);
+        }
+        self.vertices = &.{};
+        self.rings = &.{};
+        self.pieces = &.{};
+        self.results = &.{};
+        self.mutex.unlock(self.io);
+
+        return .{
+            .wall_us = timer.elapsedMicros(wall_start, timer.now(self.io)),
+            .threads = active_workers,
+        };
+    }
+
+    fn workerLoop(self: *PcdtExecutor, worker_index: usize) void {
+        var seen_generation: usize = 0;
+        while (true) {
+            self.mutex.lockUncancelable(self.io);
+            while (!self.shutdown and self.generation == seen_generation) {
+                self.ready.waitUncancelable(self.io, &self.mutex);
+            }
+            if (self.shutdown) {
+                self.mutex.unlock(self.io);
+                return;
+            }
+            seen_generation = self.generation;
+            if (worker_index >= self.active_workers) {
+                self.mutex.unlock(self.io);
+                continue;
+            }
+
+            while (true) {
+                if (self.next_piece >= self.pieces.len) {
+                    self.pending_workers -= 1;
+                    if (self.pending_workers == 0) self.done.signal(self.io);
+                    self.mutex.unlock(self.io);
+                    break;
+                }
+
+                const piece_idx = self.next_piece;
+                self.next_piece += 1;
+                const piece = self.pieces[piece_idx];
+                const ring = self.rings[piece.start .. piece.start + piece.len];
+                const vertices = self.vertices;
+                const results = self.results;
+                self.mutex.unlock(self.io);
+
+                results[piece_idx] = buildPieceBowyerWatsonResult(self.io, vertices, ring);
+
+                self.mutex.lockUncancelable(self.io);
+            }
+        }
+    }
+};
 
 fn appendPcdtPiecesSerial(
     io: Io,
@@ -260,16 +397,15 @@ fn appendPcdtPiecesSerial(
 }
 
 fn appendPcdtPiecesParallel(
-    io: Io,
     allocator: std.mem.Allocator,
     vertices: []const mesh.Vertex,
     decomposition: *const trapezoid_dd.Decomposition,
     out_indices: *std.ArrayListUnmanaged(i32),
+    executor: *PcdtExecutor,
 ) !PieceBuildStats {
     const piece_count = decomposition.pieces.items.len;
-    const thread_count = try pcdtWorkerCount(piece_count);
-    if (thread_count == 1) {
-        return appendPcdtPiecesSerial(io, allocator, vertices, decomposition, out_indices);
+    if (piece_count <= 1 or executor.thread_count <= 1) {
+        return appendPcdtPiecesSerial(executor.io, allocator, vertices, decomposition, out_indices);
     }
 
     const results = try allocator.alloc(PieceBuildResult, piece_count);
@@ -277,47 +413,19 @@ fn appendPcdtPiecesParallel(
     for (results) |*result| result.* = .{};
     defer for (results) |*result| result.deinit();
 
-    const contexts = try allocator.alloc(PieceWorkerContext, thread_count);
-    defer allocator.free(contexts);
-    const threads = try allocator.alloc(std.Thread, thread_count);
-    defer allocator.free(threads);
-
-    const wall_start = timer.now(io);
-    var started_threads: usize = 0;
-    for (0..thread_count) |i| {
-        contexts[i] = .{
-            .io = io,
-            .vertices = vertices,
-            .rings = decomposition.rings.items,
-            .pieces = decomposition.pieces.items,
-            .stride = thread_count,
-            .offset = i,
-            .results = results,
-        };
-        threads[i] = std.Thread.spawn(.{}, pcdtPieceWorker, .{&contexts[i]}) catch |err| {
-            for (threads[0..started_threads]) |thread| thread.join();
-            return err;
-        };
-        started_threads += 1;
-    }
-    for (threads[0..started_threads]) |thread| thread.join();
-    const wall_us = timer.elapsedMicros(wall_start, timer.now(io));
-
-    var stats = PieceBuildStats{
-        .wall_us = wall_us,
-        .threads = thread_count,
-    };
+    var stats = try executor.run(vertices, decomposition.rings.items, decomposition.pieces.items, results);
     for (results) |result| {
         if (result.err) |err| return err;
         stats.serial_us += result.elapsed_us;
         stats.max_us = @max(stats.max_us, result.elapsed_us);
     }
+    stats.dispatch_us = if (stats.wall_us > stats.max_us) stats.wall_us - stats.max_us else 0;
 
-    const merge_start = timer.now(io);
+    const merge_start = timer.now(executor.io);
     for (results) |result| {
         try out_indices.appendSlice(allocator, result.indices);
     }
-    stats.merge_us = timer.elapsedMicros(merge_start, timer.now(io));
+    stats.merge_us = timer.elapsedMicros(merge_start, timer.now(executor.io));
     return stats;
 }
 
@@ -371,6 +479,7 @@ fn runRound(
     mesh_ids: []i32,
     case: Case,
     order: Order,
+    pcdt_executor: ?*PcdtExecutor,
 ) !RoundTiming {
     var timing = RoundTiming{};
     var seed_indices: std.ArrayListUnmanaged(i32) = .empty;
@@ -403,6 +512,7 @@ fn runRound(
         var piece_bw_wall_us: u64 = 0;
         var piece_bw_serial_us: u64 = 0;
         var piece_bw_max_us: u64 = 0;
+        var piece_dispatch_us: u64 = 0;
         var piece_merge_us: u64 = 0;
         var piece_bw_threads: usize = 0;
         var assembly_start = insertion_start;
@@ -416,13 +526,14 @@ fn runRound(
             decomposition_end = timer.now(io);
 
             seed_indices.clearRetainingCapacity();
-            const piece_stats = if (pcdtParallelMode())
-                try appendPcdtPiecesParallel(io, allocator, case.vertices, &decomposition, &seed_indices)
+            const piece_stats = if (pcdtParallelMode() and pcdt_executor != null)
+                try appendPcdtPiecesParallel(allocator, case.vertices, &decomposition, &seed_indices, pcdt_executor.?)
             else
                 try appendPcdtPiecesSerial(io, allocator, case.vertices, &decomposition, &seed_indices);
             piece_bw_wall_us = piece_stats.wall_us;
             piece_bw_serial_us = piece_stats.serial_us;
             piece_bw_max_us = piece_stats.max_us;
+            piece_dispatch_us = piece_stats.dispatch_us;
             piece_merge_us = piece_stats.merge_us;
             piece_bw_threads = piece_stats.threads;
 
@@ -574,6 +685,7 @@ fn runRound(
         timing.piece_bw_us += piece_bw_wall_us;
         timing.piece_bw_serial_us += piece_bw_serial_us;
         timing.piece_bw_max_us += piece_bw_max_us;
+        timing.piece_dispatch_us += piece_dispatch_us;
         timing.piece_merge_us += piece_merge_us;
         timing.piece_bw_threads = @max(timing.piece_bw_threads, piece_bw_threads);
         timing.assembly_us += timer.elapsedMicros(assembly_start, assembly_end);
@@ -679,12 +791,13 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
             perRun(best.assembly_us, case.iterations) +
             perRun(best.seam_legalization_us, case.iterations);
         std.debug.print(
-            "  phase best/run: decomposition {d:>.3} us, piece CDT wall {d:>.3} us, piece CDT serial {d:>.3} us, max piece CDT {d:>.3} us, piece merge {d:>.3} us, assembly {d:>.3} us, seam legalize {d:>.3} us, extraction {d:>.3} us, setup+other {d:>.3} us\n",
+            "  phase best/run: decomposition {d:>.3} us, piece CDT wall {d:>.3} us, piece CDT serial {d:>.3} us, max piece CDT {d:>.3} us, dispatch/wait {d:>.3} us, piece merge {d:>.3} us, assembly {d:>.3} us, seam legalize {d:>.3} us, extraction {d:>.3} us, setup+other {d:>.3} us\n",
             .{
                 perRun(best.decomposition_us, case.iterations),
                 perRun(best.piece_bw_us, case.iterations),
                 perRun(best.piece_bw_serial_us, case.iterations),
                 perRun(best.piece_bw_max_us, case.iterations),
+                perRun(best.piece_dispatch_us, case.iterations),
                 perRun(best.piece_merge_us, case.iterations),
                 perRun(best.assembly_us, case.iterations),
                 perRun(best.seam_legalization_us, case.iterations),
@@ -881,8 +994,16 @@ fn benchCase(io: Io, allocator: std.mem.Allocator, case: Case, order: Order) !vo
     var corridor = corridor_module.Corridor{};
     defer corridor.deinit(allocator);
 
+    var pcdt_executor = PcdtExecutor{};
+    defer pcdt_executor.deinit();
+    var pcdt_executor_ptr: ?*PcdtExecutor = null;
+    if (pcdtParallelMode()) {
+        try pcdt_executor.init(io, allocator, try pcdtConfiguredWorkerCount());
+        pcdt_executor_ptr = &pcdt_executor;
+    }
+
     for (0..rounds) |round| {
-        timings[round] = try runRound(io, allocator, &engine, &arena, &corridor, mesh_ids, case, order);
+        timings[round] = try runRound(io, allocator, &engine, &arena, &corridor, mesh_ids, case, order, pcdt_executor_ptr);
     }
 
     std.mem.sortUnstable(RoundTiming, &timings, {}, lessTotal);
