@@ -34,48 +34,50 @@ pub fn statsSnapshot() PredicateStats {
     return .{};
 }
 
-fn orient2dExact(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
-    const ax: f128 = @floatCast(a.x);
-    const ay: f128 = @floatCast(a.y);
-    const bx: f128 = @floatCast(b.x);
-    const by: f128 = @floatCast(b.y);
-    const cx: f128 = @floatCast(c.x);
-    const cy: f128 = @floatCast(c.y);
-
+fn orient2dExactCoords(ax_f64: f64, ay_f64: f64, bx_f64: f64, by_f64: f64, cx_f64: f64, cy_f64: f64) f64 {
+    const ax: f128 = @floatCast(ax_f64);
+    const ay: f128 = @floatCast(ay_f64);
+    const bx: f128 = @floatCast(bx_f64);
+    const by: f128 = @floatCast(by_f64);
+    const cx: f128 = @floatCast(cx_f64);
+    const cy: f128 = @floatCast(cy_f64);
     const res = (ax - cx) * (by - cy) - (ay - cy) * (bx - cx);
     return @floatCast(res);
 }
 
-pub fn orient2d(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
+pub fn orient2dCoords(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) f64 {
     statInc("orient_calls");
     if (build_options.predicate_policy == .strict) {
         statInc("orient_exact");
-        return orient2dExact(a, b, c);
+        return orient2dExactCoords(ax, ay, bx, by, cx, cy);
     }
 
-    const acx = a.x - c.x;
-    const bcx = b.x - c.x;
-    const acy = a.y - c.y;
-    const bcy = b.y - c.y;
+    const acx = ax - cx;
+    const bcx = bx - cx;
+    const acy = ay - cy;
+    const bcy = by - cy;
     const det = acx * bcy - acy * bcx;
     if (build_options.predicate_policy == .fast) return det;
 
     const permanent = @abs(acx * bcy) + @abs(acy * bcx);
     if (@abs(det) > permanent * 1.0e-15) return det;
     statInc("orient_exact");
-    return orient2dExact(a, b, c);
+    return orient2dExactCoords(ax, ay, bx, by, cx, cy);
 }
 
-fn incircleExact(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) f64 {
-    const ax: f128 = @floatCast(a.x);
-    const ay: f128 = @floatCast(a.y);
-    const bx: f128 = @floatCast(b.x);
-    const by: f128 = @floatCast(b.y);
-    const cx: f128 = @floatCast(c.x);
-    const cy: f128 = @floatCast(c.y);
-    const dx: f128 = @floatCast(d.x);
-    const dy: f128 = @floatCast(d.y);
+pub fn orient2d(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
+    return orient2dCoords(a.x, a.y, b.x, b.y, c.x, c.y);
+}
 
+fn incircleExactCoords(ax_f64: f64, ay_f64: f64, bx_f64: f64, by_f64: f64, cx_f64: f64, cy_f64: f64, dx_f64: f64, dy_f64: f64) f64 {
+    const ax: f128 = @floatCast(ax_f64);
+    const ay: f128 = @floatCast(ay_f64);
+    const bx: f128 = @floatCast(bx_f64);
+    const by: f128 = @floatCast(by_f64);
+    const cx: f128 = @floatCast(cx_f64);
+    const cy: f128 = @floatCast(cy_f64);
+    const dx: f128 = @floatCast(dx_f64);
+    const dy: f128 = @floatCast(dy_f64);
     const adx = ax - dx;
     const ady = ay - dy;
     const bdx = bx - dx;
@@ -94,19 +96,19 @@ fn incircleExact(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex)
     return @floatCast(res);
 }
 
-pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) f64 {
+pub fn incircleCoords(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64, dx: f64, dy: f64) f64 {
     statInc("incircle_calls");
     if (build_options.predicate_policy == .strict) {
         statInc("incircle_exact");
-        return incircleExact(a, b, c, d);
+        return incircleExactCoords(ax, ay, bx, by, cx, cy, dx, dy);
     }
 
-    const adx = a.x - d.x;
-    const ady = a.y - d.y;
-    const bdx = b.x - d.x;
-    const bdy = b.y - d.y;
-    const cdx = c.x - d.x;
-    const cdy = c.y - d.y;
+    const adx = ax - dx;
+    const ady = ay - dy;
+    const bdx = bx - dx;
+    const bdy = by - dy;
+    const cdx = cx - dx;
+    const cdy = cy - dy;
 
     const abdet = bdx * cdy - cdx * bdy;
     const bcdet = cdx * ady - adx * cdy;
@@ -120,7 +122,11 @@ pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) 
     const permanent = @abs(alift * abdet) + @abs(blift * bcdet) + @abs(clift * cadet);
     if (@abs(det) > permanent * 1.0e-12) return det;
     statInc("incircle_exact");
-    return incircleExact(a, b, c, d);
+    return incircleExactCoords(ax, ay, bx, by, cx, cy, dx, dy);
+}
+
+pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) f64 {
+    return incircleCoords(a.x, a.y, b.x, b.y, c.x, c.y, d.x, d.y);
 }
 
 pub fn intersect(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) bool {
@@ -134,10 +140,14 @@ pub fn intersect(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex)
 }
 
 pub fn pointOnSegment(a: mesh.Vertex, b: mesh.Vertex, p: mesh.Vertex) bool {
+    return pointOnSegmentCoords(a.x, a.y, b.x, b.y, p.x, p.y);
+}
+
+pub fn pointOnSegmentCoords(ax: f64, ay: f64, bx: f64, by: f64, px: f64, py: f64) bool {
     const eps = 1e-9;
-    if (p.x < @min(a.x, b.x) - eps or p.x > @max(a.x, b.x) + eps) return false;
-    if (p.y < @min(a.y, b.y) - eps or p.y > @max(a.y, b.y) + eps) return false;
-    return @abs(orient2d(a, b, p)) <= eps;
+    if (px < @min(ax, bx) - eps or px > @max(ax, bx) + eps) return false;
+    if (py < @min(ay, by) - eps or py > @max(ay, by) + eps) return false;
+    return @abs(orient2dCoords(ax, ay, bx, by, px, py)) <= eps;
 }
 
 test "predicates" {

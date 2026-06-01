@@ -188,6 +188,15 @@ fn printCase(case: Case, best: RoundTiming, median: RoundTiming) void {
                 @as(f64, @floatFromInt(best.engine_stats.corridor_triangles)) / traces_f64,
             },
         );
+        std.debug.print(
+            "  edge lookup/run: global calls {d:>.1}, scanned tris {d:>.1}; fast calls {d:>.1}, fallbacks {d:>.1}\n",
+            .{
+                @as(f64, @floatFromInt(best.engine_stats.find_live_edge_calls)) / iterations_f64,
+                @as(f64, @floatFromInt(best.engine_stats.find_live_edge_scan_tris)) / iterations_f64,
+                @as(f64, @floatFromInt(best.engine_stats.find_live_edge_fast_calls)) / iterations_f64,
+                @as(f64, @floatFromInt(best.engine_stats.find_live_edge_fast_fallbacks)) / iterations_f64,
+            },
+        );
     }
 }
 

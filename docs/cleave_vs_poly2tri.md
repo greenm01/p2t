@@ -159,6 +159,18 @@ diagnostic run to roughly:
 - `nazca-monkey`: about `633 us/run`, with insertion around `454 us/run`.
 - `nazca-heron`: about `660 us/run`, with insertion around `482 us/run`.
 
+The next robust single-thread pass added raw-coordinate predicate entry points and
+routed the insertion hot path through coordinate slices instead of repeatedly
+materializing `Vertex` structs. It also added edge-lookup scan counters. The current
+larger-fixture results are roughly:
+
+- `nazca-monkey`: about `627 us/run`, with insertion around `447 us/run`.
+- `nazca-heron`: about `629 us/run`, with insertion around `457 us/run`.
+
+The edge-lookup counters show only a few global fallback scans per run, but those
+fallbacks can scan thousands of triangles. A trial routing of trusted constraint
+marking through the fast lookup did not reduce those scans and was rejected.
+
 1. Add a batch-throughput benchmark.
    Measure many independent triangulations across `1, 2, 4, 8, ...` workers. Reuse
    per-thread engines and arenas. Compare wall time, jobs/sec, and scaling efficiency.

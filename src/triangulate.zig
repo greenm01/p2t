@@ -68,9 +68,13 @@ pub const EngineStats = struct {
     edge_flips: u64 = 0,
     corridor_traces: u64 = 0,
     corridor_triangles: u64 = 0,
+    find_live_edge_calls: u64 = 0,
+    find_live_edge_scan_tris: u64 = 0,
+    find_live_edge_fast_calls: u64 = 0,
+    find_live_edge_fast_fallbacks: u64 = 0,
 
     pub fn any(self: EngineStats) bool {
-        return self.walk_calls != 0 or self.inserted_points != 0 or self.corridor_traces != 0;
+        return self.walk_calls != 0 or self.inserted_points != 0 or self.corridor_traces != 0 or self.find_live_edge_calls != 0;
     }
 };
 
@@ -330,6 +334,8 @@ pub const Engine = struct {
 
     pub fn walk(self: *Engine, start_tri: i32, target: mesh.Vertex) i32 {
         self.statInc("walk_calls");
+        const xs = self.mesh.vertices.items(.x);
+        const ys = self.mesh.vertices.items(.y);
         var curr = start_tri;
         var limit: usize = 10000;
         var steps: u64 = 0;
@@ -342,19 +348,19 @@ pub const Engine = struct {
             const tri = self.mesh.triangles.get(curr_slot);
             if (mesh.isDeadTriangle(tri)) break;
 
-            const v0 = self.mesh.vertices.get(@as(usize, @intCast(tri.v0)));
-            const v1 = self.mesh.vertices.get(@as(usize, @intCast(tri.v1)));
-            const v2 = self.mesh.vertices.get(@as(usize, @intCast(tri.v2)));
+            const v0: usize = @intCast(tri.v0);
+            const v1: usize = @intCast(tri.v1);
+            const v2: usize = @intCast(tri.v2);
 
-            if (predicates.orient2d(v0, v1, target) < 0.0) {
+            if (predicates.orient2dCoords(xs[v0], ys[v0], xs[v1], ys[v1], target.x, target.y) < 0.0) {
                 curr = tri.adj0;
                 continue;
             }
-            if (predicates.orient2d(v1, v2, target) < 0.0) {
+            if (predicates.orient2dCoords(xs[v1], ys[v1], xs[v2], ys[v2], target.x, target.y) < 0.0) {
                 curr = tri.adj1;
                 continue;
             }
-            if (predicates.orient2d(v2, v0, target) < 0.0) {
+            if (predicates.orient2dCoords(xs[v2], ys[v2], xs[v0], ys[v0], target.x, target.y) < 0.0) {
                 curr = tri.adj2;
                 continue;
             }
@@ -373,13 +379,13 @@ pub const Engine = struct {
             scanned += 1;
             const tri = self.mesh.triangles.get(i);
             if (mesh.isDeadTriangle(tri)) continue;
-            const v0 = self.mesh.vertices.get(@as(usize, @intCast(tri.v0)));
-            const v1 = self.mesh.vertices.get(@as(usize, @intCast(tri.v1)));
-            const v2 = self.mesh.vertices.get(@as(usize, @intCast(tri.v2)));
+            const v0: usize = @intCast(tri.v0);
+            const v1: usize = @intCast(tri.v1);
+            const v2: usize = @intCast(tri.v2);
 
-            if (predicates.orient2d(v0, v1, target) >= 0.0 and
-                predicates.orient2d(v1, v2, target) >= 0.0 and
-                predicates.orient2d(v2, v0, target) >= 0.0)
+            if (predicates.orient2dCoords(xs[v0], ys[v0], xs[v1], ys[v1], target.x, target.y) >= 0.0 and
+                predicates.orient2dCoords(xs[v1], ys[v1], xs[v2], ys[v2], target.x, target.y) >= 0.0 and
+                predicates.orient2dCoords(xs[v2], ys[v2], xs[v0], ys[v0], target.x, target.y) >= 0.0)
             {
                 self.statAdd("walk_fallback_scan_tris", scanned);
                 return @as(i32, @intCast(i));
@@ -737,20 +743,26 @@ pub const Engine = struct {
     }
 
     pub fn findLiveEdge(self: *Engine, a: i32, b: i32) ?LiveEdge {
+        self.statInc("find_live_edge_calls");
+        var scanned: u64 = 0;
         for (0..self.mesh.triangles.len) |i| {
+            scanned += 1;
             const tri = self.mesh.triangles.get(i);
             if (mesh.isDeadTriangle(tri)) continue;
             if (edgeSide(tri, a, b)) |side| {
+                self.statAdd("find_live_edge_scan_tris", scanned);
                 const tri_idx = @as(i32, @intCast(i));
                 const found = self.liveEdgeFromTriangle(tri_idx, a, b) orelse LiveEdge{ .tri = tri_idx, .side = side };
                 self.noteLiveTriangleHint(tri_idx, tri);
                 return found;
             }
         }
+        self.statAdd("find_live_edge_scan_tris", scanned);
         return null;
     }
 
     pub fn findLiveEdgeFast(self: *Engine, a: i32, b: i32) ?LiveEdge {
+        self.statInc("find_live_edge_fast_calls");
         if (a < 0 or @as(usize, @intCast(a)) >= self.vertex_hint_tri.items.len) return self.findLiveEdge(a, b);
 
         var stack: [64]i32 = undefined;
@@ -804,6 +816,7 @@ pub const Engine = struct {
             }
         }
 
+        self.statInc("find_live_edge_fast_fallbacks");
         return self.findLiveEdge(a, b);
     }
 
@@ -1109,13 +1122,17 @@ pub const Engine = struct {
     }
 
     pub fn isInsideCircumcircle(self: *Engine, tri_idx: i32, pt: mesh.Vertex) bool {
+        return self.isInsideCircumcircleWithCoords(self.mesh.vertices.items(.x), self.mesh.vertices.items(.y), tri_idx, pt);
+    }
+
+    fn isInsideCircumcircleWithCoords(self: *Engine, xs: []const f64, ys: []const f64, tri_idx: i32, pt: mesh.Vertex) bool {
         if (tri_idx == -1) return false;
         const tri = self.mesh.triangles.get(@as(usize, @intCast(tri_idx)));
         if (mesh.isDeadTriangle(tri)) return false;
-        const v0 = self.getVertex(tri.v0);
-        const v1 = self.getVertex(tri.v1);
-        const v2 = self.getVertex(tri.v2);
-        return predicates.incircle(v0, v1, v2, pt) > 0.0;
+        const v0: usize = @intCast(tri.v0);
+        const v1: usize = @intCast(tri.v1);
+        const v2: usize = @intCast(tri.v2);
+        return predicates.incircleCoords(xs[v0], ys[v0], xs[v1], ys[v1], xs[v2], ys[v2], pt.x, pt.y) > 0.0;
     }
 
     fn triangleHasSuperVertex(tri: mesh.Triangle) bool {
@@ -1387,13 +1404,13 @@ pub const Engine = struct {
     }
 
     fn pointOnTriangleEdge(self: *Engine, tri: mesh.Triangle, pt: mesh.Vertex) bool {
+        const xs = self.mesh.vertices.items(.x);
+        const ys = self.mesh.vertices.items(.y);
         inline for (0..3) |side| {
             const edge = triangleEdgeAt(side, tri);
-            if (predicates.pointOnSegment(
-                self.getVertex(edge.v1),
-                self.getVertex(edge.v2),
-                pt,
-            )) return true;
+            const v1: usize = @intCast(edge.v1);
+            const v2: usize = @intCast(edge.v2);
+            if (predicates.pointOnSegmentCoords(xs[v1], ys[v1], xs[v2], ys[v2], pt.x, pt.y)) return true;
         }
         return false;
     }
@@ -1583,6 +1600,8 @@ pub const Engine = struct {
 
         try self.appendCavityTriangle(temp_allocator, cavity, container);
 
+        const cavity_xs = self.mesh.vertices.items(.x);
+        const cavity_ys = self.mesh.vertices.items(.y);
         var i: usize = 0;
         while (i < cavity.items.len) : (i += 1) {
             const t_idx = cavity.items[i];
@@ -1593,12 +1612,10 @@ pub const Engine = struct {
                 if (self.isCavityMarked(n_idx)) continue;
 
                 const edge = triangleEdge(tri, side);
-                const inside_circumcircle = self.isInsideCircumcircle(n_idx, pt);
-                const point_on_edge = !inside_circumcircle and n_idx != -1 and predicates.pointOnSegment(
-                    self.getVertex(edge.v1),
-                    self.getVertex(edge.v2),
-                    pt,
-                );
+                const inside_circumcircle = self.isInsideCircumcircleWithCoords(cavity_xs, cavity_ys, n_idx, pt);
+                const v1: usize = @intCast(edge.v1);
+                const v2: usize = @intCast(edge.v2);
+                const point_on_edge = !inside_circumcircle and n_idx != -1 and predicates.pointOnSegmentCoords(cavity_xs[v1], cavity_ys[v1], cavity_xs[v2], cavity_ys[v2], pt.x, pt.y);
 
                 if (inside_circumcircle or point_on_edge) {
                     try self.appendCavityTriangle(temp_allocator, cavity, n_idx);
@@ -1721,13 +1738,15 @@ pub const Engine = struct {
         }
 
         // Setup the new triangles and link them
+        const emit_xs = self.mesh.vertices.items(.x);
+        const emit_ys = self.mesh.vertices.items(.y);
         for (edges.items, 0..) |e, edge_i| {
             const t_idx = new_tri_indices.items[edge_i];
             self.last_valid_tri = t_idx;
 
             var a = e.v1;
             var b = e.v2;
-            if (predicates.orient2d(self.getVertex(a), self.getVertex(b), pt) < 0.0) {
+            if (predicates.orient2dCoords(emit_xs[@as(usize, @intCast(a))], emit_ys[@as(usize, @intCast(a))], emit_xs[@as(usize, @intCast(b))], emit_ys[@as(usize, @intCast(b))], pt.x, pt.y) < 0.0) {
                 const tmp = a;
                 a = b;
                 b = tmp;
