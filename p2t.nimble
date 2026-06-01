@@ -18,6 +18,16 @@ import std/strutils
 const CommonFlags =
   "--mm:orc --deepcopy:on -d:nimPreviewFloatRoundtrip --path:src --hint:Name:off"
 
+# Tier 1 release codegen tuning. Measured (Apple M4 Pro, best-of-3, raw path):
+# 1.32x-1.57x faster than the untuned best config, no output change.
+#   --panics:on          : drops exception unwinding, frees the C optimizer
+#   -flto                : cross-module inlining of predicates/allocator
+#   -mcpu=native         : host-tuned codegen
+# Deliberately excluded: -ffp-contract=fast (FMA gave no win; predicates are
+# already non-robust float) and -d:useMalloc (no win vs ARC TLS allocator).
+const TunedFlags =
+  "--panics:on --passC:-flto --passL:-flto --passC:-mcpu=native --passL:-mcpu=native"
+
 proc sh(cmd: string) =
   exec cmd
 
@@ -525,6 +535,47 @@ task benchBestFastPoly2Tri, "compare best raw trusted p2t against local fast-pol
   sh "strip " & quoteShell("/tmp/p2t_bench_best")
   echo "p2t best raw trusted CDT"
   sh quoteShell("/tmp/p2t_bench_best")
+
+  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
+  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
+  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
+    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
+  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
+  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+
+task benchBestTuned, "run best raw trusted p2t with Tier 1 tuned codegen flags":
+  nimCompile(
+    "bench/bench_p2t",
+    flags =
+      "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt " &
+      TunedFlags,
+    outPath = "/tmp/p2t_bench_best_tuned",
+    nimcache = "/tmp/p2t_bench_best_tuned_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_best_tuned")
+  echo "p2t best raw trusted CDT (Tier 1 tuned)"
+  sh quoteShell("/tmp/p2t_bench_best_tuned")
+
+task benchBestTunedFastPoly2Tri, "compare Tier 1 tuned p2t against local fast-poly2tri":
+  let fastDir = findFastPoly2TriDir()
+  if fastDir.len == 0:
+    quit(
+      "fast-poly2tri not found; set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
+      QuitFailure,
+    )
+
+  nimCompile(
+    "bench/bench_p2t",
+    flags =
+      "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt " &
+      TunedFlags,
+    outPath = "/tmp/p2t_bench_best_tuned",
+    nimcache = "/tmp/p2t_bench_best_tuned_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_best_tuned")
+  echo "p2t best raw trusted CDT (Tier 1 tuned)"
+  sh quoteShell("/tmp/p2t_bench_best_tuned")
 
   let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
   sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
