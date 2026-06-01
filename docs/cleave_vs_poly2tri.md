@@ -1,13 +1,20 @@
-# Cleave vs. Poly2tri: Architecture and Soundness
+# Cleave vs. Poly2tri (Zalik CDT): Architecture and Soundness
 
-This document analyzes the fundamental architectural differences between the **Cleave** triangulation algorithm (detailed in `cleave.md`) and the widely used **Poly2tri** (sweep-line) algorithm. It outlines why Cleave is mathematically more sound and details the roadmap for exceeding Poly2tri's performance.
+This document analyzes the fundamental architectural differences between the **Cleave** triangulation algorithm (detailed in `cleave.md`) and the **Poly2tri / Zalik CDT** (sweep-line) algorithm. It outlines why the Cleave hybrid approach is mathematically more sound and details the roadmap for exceeding Poly2tri's performance.
 
-## 1. Robustness: Exact Predicates vs. Heuristics
+## 1. The Hybrid Approach: Best of Both Worlds
 
-**Poly2tri (Sweep-line):**
+The Cleave architecture is intentionally designed as a hybrid. It synthesizes the strengths of Zalik's sweep-line approach with the mathematical guarantees of Bowyer-Watson:
+- **From Zalik CDT (Sweep-line):** We take the concept of **spatial predictability**. By sorting points along a space-filling curve (Morton/Z-order), we achieve the cache-locality and ordered insertion benefits that make Zalik's sweep-line so incredibly fast.
+- **From Bowyer-Watson:** We replace the fragile "advancing front" of the sweep-line with **topological localization**. Instead of maintaining a complex, global front, we insert points sequentially into a mathematically guaranteed Delaunay base mesh via local cavities.
+- **Corridor Clearing:** We enforce constraints not by flipping edges iteratively, but by locking an isolated corridor and triangulating it in linear time.
+
+## 2. Robustness: Exact Predicates vs. Advancing Fronts
+
+**Poly2tri / Zalik CDT (Sweep-line):**
 Sweep-line algorithms are inherently fragile when dealing with floating-point precision and degenerate geometries (e.g., nearly collinear points, co-circular points). They rely on maintaining a complex "advancing front" data structure. If floating-point roundoff errors corrupt the logic of this front, the algorithm can easily crash, hang, or produce invalid, overlapping geometry.
 
-**Cleave (Bowyer-Watson + Corridor Clearing):**
+**Cleave (Hybrid Bowyer-Watson):**
 Cleave is built purely on exact geometric predicates (such as robust `orient2d` and `incircle` checks). The Bowyer-Watson insertion method guarantees a mathematically perfect Delaunay mesh at every step. Because point insertion only evaluates and mutates its immediate local cavity, the algorithm is virtually immune to the cascading, systemic failures that plague sweep-line approaches.
 
 ## 2. The Concurrency Ceiling
