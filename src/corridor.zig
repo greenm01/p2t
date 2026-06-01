@@ -514,6 +514,7 @@ pub const Corridor = struct {
             } else {
                 engine.mesh.setTriangleFresh(emitted.items[base + i], tri);
             }
+            engine.noteLiveTriangleHint(emitted.items[base + i], tri);
         }
     }
 
@@ -619,6 +620,7 @@ pub const Corridor = struct {
                     } else {
                         engine.mesh.setTriangleFresh(new_tri_idx, tri);
                     }
+                    engine.noteLiveTriangleHint(new_tri_idx, tri);
 
                     _ = stack.pop();
                 } else {
@@ -661,6 +663,7 @@ pub const Corridor = struct {
             } else {
                 engine.mesh.setTriangleFresh(new_tri_idx, tri);
             }
+            engine.noteLiveTriangleHint(new_tri_idx, tri);
 
             _ = stack.pop();
         }
@@ -882,8 +885,8 @@ pub const Corridor = struct {
 
     /// Single-thread fast path. Not safe for concurrent mesh mutation.
     pub fn recoverConstraintTrusted(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
-        if (engine.findLiveEdge(start_pt_idx, end_pt_idx)) |found| {
-            try engine.setConstrainedTriangleEdgeTrusted(found.tri, found.side, true);
+        if (engine.findLiveEdgeFast(start_pt_idx, end_pt_idx)) |found| {
+            engine.setConstrainedFoundEdgeTrusted(found, true);
             return;
         }
 

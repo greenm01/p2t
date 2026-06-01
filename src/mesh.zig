@@ -77,6 +77,17 @@ pub const GlobalMesh = struct {
         try self.appendTriangle(allocator, deadTriangle());
     }
 
+    pub fn appendDeadTriangleSlotsTrusted(self: *GlobalMesh, allocator: std.mem.Allocator, count: usize) !void {
+        if (count == 0) return;
+        try self.ensureTriangleCapacity(allocator, self.triangles.len + count);
+        for (0..count) |_| {
+            self.triangles.appendAssumeCapacity(deadTriangle());
+            self.edge_flags.appendAssumeCapacity(0);
+            self.triangle_versions.appendAssumeCapacity(std.atomic.Value(u32).init(1));
+            self.triangle_locks.appendAssumeCapacity(std.atomic.Value(u8).init(0));
+        }
+    }
+
     pub fn ensureTriangleCapacity(self: *GlobalMesh, allocator: std.mem.Allocator, capacity: usize) !void {
         try self.triangles.ensureTotalCapacity(allocator, capacity);
         try self.edge_flags.ensureTotalCapacity(allocator, capacity);

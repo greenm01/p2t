@@ -20,13 +20,14 @@ const LegalizeEdge = struct {
     side: usize,
 };
 
-const SpokeLink = struct {
-    vertex: i32,
+pub const MutationMode = enum { transactional, trusted };
+
+pub const LiveEdge = struct {
     tri: i32,
     side: usize,
+    neighbor: i32 = -1,
+    neighbor_side: usize = 0,
 };
-
-pub const MutationMode = enum { transactional, trusted };
 
 pub const max_transaction_attempts = 8;
 
@@ -164,10 +165,14 @@ pub const Engine = struct {
     trusted_cavity: std.ArrayListUnmanaged(i32),
     trusted_edges: std.ArrayListUnmanaged(Edge),
     trusted_new_tri_indices: std.ArrayListUnmanaged(i32),
-    trusted_spokes: std.ArrayListUnmanaged(SpokeLink),
     boundary_vertex_marks: std.ArrayListUnmanaged(u32),
     boundary_vertex_counts: std.ArrayListUnmanaged(u8),
     boundary_vertex_generation: u32,
+    trusted_spoke_marks: std.ArrayListUnmanaged(u32),
+    trusted_spoke_tris: std.ArrayListUnmanaged(i32),
+    trusted_spoke_sides: std.ArrayListUnmanaged(u8),
+    trusted_spoke_generation: u32,
+    vertex_hint_tri: std.ArrayListUnmanaged(i32),
 
     pub fn init(allocator: std.mem.Allocator) Engine {
         return .{
@@ -178,17 +183,24 @@ pub const Engine = struct {
             .trusted_cavity = .empty,
             .trusted_edges = .empty,
             .trusted_new_tri_indices = .empty,
-            .trusted_spokes = .empty,
             .boundary_vertex_marks = .empty,
             .boundary_vertex_counts = .empty,
             .boundary_vertex_generation = 1,
+            .trusted_spoke_marks = .empty,
+            .trusted_spoke_tris = .empty,
+            .trusted_spoke_sides = .empty,
+            .trusted_spoke_generation = 1,
+            .vertex_hint_tri = .empty,
         };
     }
 
     pub fn deinit(self: *Engine) void {
+        self.vertex_hint_tri.deinit(self.allocator);
+        self.trusted_spoke_sides.deinit(self.allocator);
+        self.trusted_spoke_tris.deinit(self.allocator);
+        self.trusted_spoke_marks.deinit(self.allocator);
         self.boundary_vertex_counts.deinit(self.allocator);
         self.boundary_vertex_marks.deinit(self.allocator);
-        self.trusted_spokes.deinit(self.allocator);
         self.trusted_new_tri_indices.deinit(self.allocator);
         self.trusted_edges.deinit(self.allocator);
         self.trusted_cavity.deinit(self.allocator);
@@ -201,15 +213,35 @@ pub const Engine = struct {
         self.trusted_cavity.clearRetainingCapacity();
         self.trusted_edges.clearRetainingCapacity();
         self.trusted_new_tri_indices.clearRetainingCapacity();
-        self.trusted_spokes.clearRetainingCapacity();
-        self.boundary_vertex_generation = 1;
-        @memset(self.boundary_vertex_marks.items, 0);
-        @memset(self.boundary_vertex_counts.items, 0);
         self.last_valid_tri = 0;
     }
 
     pub fn reserveForPointCount(self: *Engine, point_count: usize) !void {
         try self.mesh.reserve(self.allocator, point_count + 3, point_count * 3 + 8);
+        try self.ensureVertexMetadataCapacity(point_count + 3);
+    }
+
+    fn ensureVertexMetadataCapacity(self: *Engine, vertex_count: usize) !void {
+        try self.ensureBoundaryVertexCounters(vertex_count);
+        try self.ensureTrustedSpokeCapacity(vertex_count);
+        if (self.vertex_hint_tri.items.len >= vertex_count) return;
+
+        try self.vertex_hint_tri.ensureTotalCapacity(self.allocator, vertex_count);
+        while (self.vertex_hint_tri.items.len < vertex_count) {
+            try self.vertex_hint_tri.append(self.allocator, -1);
+        }
+    }
+
+    pub fn noteLiveTriangleHint(self: *Engine, tri_idx: i32, tri: mesh.Triangle) void {
+        if (mesh.isDeadTriangle(tri)) return;
+        const vertices = [_]i32{ tri.v0, tri.v1, tri.v2 };
+        for (vertices) |vertex| {
+            if (vertex < 0) continue;
+            const slot: usize = @intCast(vertex);
+            if (slot < self.vertex_hint_tri.items.len) {
+                self.vertex_hint_tri.items[slot] = tri_idx;
+            }
+        }
     }
 
     pub fn initSuperTriangle(self: *Engine, vertices: []const mesh.Vertex) !void {
@@ -227,18 +259,21 @@ pub const Engine = struct {
         const v1 = mesh.Vertex{ .x = midx, .y = midy + 20.0 * dmax };
         const v2 = mesh.Vertex{ .x = midx + 20.0 * dmax, .y = midy - 10.0 * dmax };
 
+        try self.ensureVertexMetadataCapacity(3);
         try self.mesh.vertices.append(self.allocator, v0);
         try self.mesh.vertices.append(self.allocator, v1);
         try self.mesh.vertices.append(self.allocator, v2);
 
-        try self.mesh.appendTriangle(self.allocator, .{
+        const super_tri = mesh.Triangle{
             .v0 = 0,
             .v1 = 2,
             .v2 = 1,
             .adj0 = -1,
             .adj1 = -1,
             .adj2 = -1,
-        });
+        };
+        try self.mesh.appendTriangle(self.allocator, super_tri);
+        self.noteLiveTriangleHint(0, super_tri);
         self.last_valid_tri = 0;
     }
 
@@ -612,15 +647,102 @@ pub const Engine = struct {
         self.setConstrainedSideTrusted(neighbor_idx, neighbor_side, value);
     }
 
-    pub fn findLiveEdge(self: *Engine, a: i32, b: i32) ?struct { tri: i32, side: usize } {
+    pub fn setConstrainedFoundEdgeTrusted(self: *Engine, found: LiveEdge, value: bool) void {
+        self.setConstrainedSideTrusted(found.tri, found.side, value);
+        if (found.neighbor != -1) {
+            self.setConstrainedSideTrusted(found.neighbor, found.neighbor_side, value);
+        }
+    }
+
+    fn liveEdgeFromTriangle(self: *Engine, tri_idx: i32, a: i32, b: i32) ?LiveEdge {
+        if (tri_idx < 0) return null;
+        const slot: usize = @intCast(tri_idx);
+        if (slot >= self.mesh.triangles.len) return null;
+        const tri = self.mesh.triangles.get(slot);
+        if (mesh.isDeadTriangle(tri)) return null;
+        const side = edgeSide(tri, a, b) orelse return null;
+        const neighbor_idx = triangleAdj(tri, side);
+        var neighbor_side: usize = 0;
+        if (neighbor_idx != -1) {
+            const neighbor = self.mesh.triangles.get(@as(usize, @intCast(neighbor_idx)));
+            neighbor_side = edgeSide(neighbor, a, b) orelse return .{ .tri = tri_idx, .side = side };
+        }
+        return .{ .tri = tri_idx, .side = side, .neighbor = neighbor_idx, .neighbor_side = neighbor_side };
+    }
+
+    fn triangleHasVertex(tri: mesh.Triangle, vertex: i32) bool {
+        return tri.v0 == vertex or tri.v1 == vertex or tri.v2 == vertex;
+    }
+
+    pub fn findLiveEdge(self: *Engine, a: i32, b: i32) ?LiveEdge {
         for (0..self.mesh.triangles.len) |i| {
             const tri = self.mesh.triangles.get(i);
             if (mesh.isDeadTriangle(tri)) continue;
             if (edgeSide(tri, a, b)) |side| {
-                return .{ .tri = @as(i32, @intCast(i)), .side = side };
+                const tri_idx = @as(i32, @intCast(i));
+                const found = self.liveEdgeFromTriangle(tri_idx, a, b) orelse LiveEdge{ .tri = tri_idx, .side = side };
+                self.noteLiveTriangleHint(tri_idx, tri);
+                return found;
             }
         }
         return null;
+    }
+
+    pub fn findLiveEdgeFast(self: *Engine, a: i32, b: i32) ?LiveEdge {
+        if (a < 0 or @as(usize, @intCast(a)) >= self.vertex_hint_tri.items.len) return self.findLiveEdge(a, b);
+
+        var stack: [64]i32 = undefined;
+        var visited: [64]i32 = undefined;
+        var stack_len: usize = 0;
+        var visited_len: usize = 0;
+
+        const start = self.vertex_hint_tri.items[@as(usize, @intCast(a))];
+        if (start >= 0) {
+            stack[stack_len] = start;
+            stack_len += 1;
+        }
+
+        while (stack_len > 0) {
+            stack_len -= 1;
+            const tri_idx = stack[stack_len];
+            if (tri_idx < 0) continue;
+
+            var already_visited = false;
+            for (visited[0..visited_len]) |seen| {
+                if (seen == tri_idx) {
+                    already_visited = true;
+                    break;
+                }
+            }
+            if (already_visited) continue;
+            if (visited_len == visited.len) break;
+            visited[visited_len] = tri_idx;
+            visited_len += 1;
+
+            const tri_slot: usize = @intCast(tri_idx);
+            if (tri_slot >= self.mesh.triangles.len) continue;
+            const tri = self.mesh.triangles.get(tri_slot);
+            if (mesh.isDeadTriangle(tri) or !triangleHasVertex(tri, a)) continue;
+
+            if (self.liveEdgeFromTriangle(tri_idx, a, b)) |found| {
+                self.noteLiveTriangleHint(tri_idx, tri);
+                return found;
+            }
+
+            const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
+            for (neighbors) |neighbor_idx| {
+                if (neighbor_idx < 0) continue;
+                const neighbor_slot: usize = @intCast(neighbor_idx);
+                if (neighbor_slot >= self.mesh.triangles.len) continue;
+                const neighbor = self.mesh.triangles.get(neighbor_slot);
+                if (mesh.isDeadTriangle(neighbor) or !triangleHasVertex(neighbor, a)) continue;
+                if (stack_len == stack.len) break;
+                stack[stack_len] = neighbor_idx;
+                stack_len += 1;
+            }
+        }
+
+        return self.findLiveEdge(a, b);
     }
 
     pub fn setConstrainedEdgeByVertices(self: *Engine, a: i32, b: i32, value: bool) !bool {
@@ -724,14 +846,43 @@ pub const Engine = struct {
         try self.linkNewTrianglesInternal(new_tri_indices, true);
     }
 
-    fn addTrustedSpoke(self: *Engine, allocator: std.mem.Allocator, vertex: i32, tri_idx: i32, side: usize) !void {
-        for (self.trusted_spokes.items) |spoke| {
-            if (spoke.vertex == vertex) {
-                try self.linkTriangleSidesKnownTrusted(spoke.tri, spoke.side, tri_idx, side);
-                return;
-            }
+    fn ensureTrustedSpokeCapacity(self: *Engine, vertex_count: usize) !void {
+        if (self.trusted_spoke_marks.items.len >= vertex_count) return;
+
+        try self.trusted_spoke_marks.ensureTotalCapacity(self.allocator, vertex_count);
+        try self.trusted_spoke_tris.ensureTotalCapacity(self.allocator, vertex_count);
+        try self.trusted_spoke_sides.ensureTotalCapacity(self.allocator, vertex_count);
+        while (self.trusted_spoke_marks.items.len < vertex_count) {
+            try self.trusted_spoke_marks.append(self.allocator, 0);
+            try self.trusted_spoke_tris.append(self.allocator, -1);
+            try self.trusted_spoke_sides.append(self.allocator, 0);
         }
-        try self.trusted_spokes.append(allocator, .{ .vertex = vertex, .tri = tri_idx, .side = side });
+    }
+
+    fn beginTrustedSpokes(self: *Engine, vertex_count: usize) !void {
+        try self.ensureTrustedSpokeCapacity(vertex_count);
+        self.trusted_spoke_generation +%= 1;
+        if (self.trusted_spoke_generation == 0) {
+            @memset(self.trusted_spoke_marks.items, 0);
+            self.trusted_spoke_generation = 1;
+        }
+    }
+
+    fn addTrustedSpoke(self: *Engine, vertex: i32, tri_idx: i32, side: usize) !void {
+        const slot: usize = @intCast(vertex);
+        if (self.trusted_spoke_marks.items[slot] == self.trusted_spoke_generation) {
+            try self.linkTriangleSidesKnownTrusted(
+                self.trusted_spoke_tris.items[slot],
+                @intCast(self.trusted_spoke_sides.items[slot]),
+                tri_idx,
+                side,
+            );
+            return;
+        }
+
+        self.trusted_spoke_marks.items[slot] = self.trusted_spoke_generation;
+        self.trusted_spoke_tris.items[slot] = tri_idx;
+        self.trusted_spoke_sides.items[slot] = @intCast(side);
     }
 
     fn linkNewTrianglesInternal(self: *Engine, new_tri_indices: []const i32, comptime trusted: bool) !void {
@@ -1141,8 +1292,12 @@ pub const Engine = struct {
         }
     }
 
-    fn extractCavityBoundaryTrusted(self: *Engine, allocator: std.mem.Allocator, cavity: []const i32, edges: *std.ArrayListUnmanaged(Edge)) !void {
+    fn extractCavityBoundaryTrusted(self: *Engine, allocator: std.mem.Allocator, cavity: []const i32, edges: *std.ArrayListUnmanaged(Edge)) !bool {
         edges.clearRetainingCapacity();
+        try edges.ensureTotalCapacity(allocator, cavity.len * 3);
+        try self.beginBoundaryVertexGeneration(self.mesh.vertices.len);
+
+        var pinched = false;
 
         for (cavity) |t_idx| {
             const tri = self.mesh.triangles.get(@as(usize, @intCast(t_idx)));
@@ -1153,14 +1308,17 @@ pub const Engine = struct {
                 if (n_idx != -1 and cavityContains(cavity, n_idx)) continue;
 
                 const edge = triangleEdge(tri, side);
-                try edges.append(allocator, .{
+                edges.appendAssumeCapacity(.{
                     .adj_tri = n_idx,
                     .v1 = edge.v1,
                     .v2 = edge.v2,
                     .old_tri = t_idx,
                 });
+                pinched = self.markBoundaryVertex(edge.v1) or pinched;
+                pinched = self.markBoundaryVertex(edge.v2) or pinched;
             }
         }
+        return pinched;
     }
 
     fn pointOnTriangleEdge(self: *Engine, tri: mesh.Triangle, pt: mesh.Vertex) bool {
@@ -1186,28 +1344,35 @@ pub const Engine = struct {
         }
     }
 
-    fn boundaryHasPinch(self: *Engine, edges: []const Edge) !bool {
-        try self.ensureBoundaryVertexCounters(self.mesh.vertices.len);
-
+    fn beginBoundaryVertexGeneration(self: *Engine, vertex_count: usize) !void {
+        try self.ensureBoundaryVertexCounters(vertex_count);
         self.boundary_vertex_generation +%= 1;
         if (self.boundary_vertex_generation == 0) {
             @memset(self.boundary_vertex_marks.items, 0);
             self.boundary_vertex_generation = 1;
         }
+    }
+
+    fn markBoundaryVertex(self: *Engine, vertex: i32) bool {
+        const idx: usize = @intCast(vertex);
+        if (self.boundary_vertex_marks.items[idx] != self.boundary_vertex_generation) {
+            self.boundary_vertex_marks.items[idx] = self.boundary_vertex_generation;
+            self.boundary_vertex_counts.items[idx] = 1;
+            return false;
+        }
+
+        if (self.boundary_vertex_counts.items[idx] == std.math.maxInt(u8)) return true;
+        self.boundary_vertex_counts.items[idx] += 1;
+        return self.boundary_vertex_counts.items[idx] > 2;
+    }
+
+    fn boundaryHasPinch(self: *Engine, edges: []const Edge) !bool {
+        try self.beginBoundaryVertexGeneration(self.mesh.vertices.len);
 
         for (edges) |edge| {
             const vertices = [_]i32{ edge.v1, edge.v2 };
             for (vertices) |vertex| {
-                const idx: usize = @intCast(vertex);
-                if (self.boundary_vertex_marks.items[idx] != self.boundary_vertex_generation) {
-                    self.boundary_vertex_marks.items[idx] = self.boundary_vertex_generation;
-                    self.boundary_vertex_counts.items[idx] = 1;
-                    continue;
-                }
-
-                if (self.boundary_vertex_counts.items[idx] == std.math.maxInt(u8)) return true;
-                self.boundary_vertex_counts.items[idx] += 1;
-                if (self.boundary_vertex_counts.items[idx] > 2) return true;
+                if (self.markBoundaryVertex(vertex)) return true;
             }
         }
         return false;
@@ -1311,7 +1476,7 @@ pub const Engine = struct {
         cavity.clearRetainingCapacity();
         edges.clearRetainingCapacity();
         new_tri_indices.clearRetainingCapacity();
-        if (!use_transaction) self.trusted_spokes.clearRetainingCapacity();
+        if (!use_transaction) try self.beginTrustedSpokes(self.mesh.vertices.len + 1);
 
         try cavity.append(temp_allocator, container);
 
@@ -1338,10 +1503,11 @@ pub const Engine = struct {
         }
 
         while (true) {
+            var trusted_boundary_pinched = false;
             if (use_transaction) {
                 try self.extractCavityBoundary(temp_allocator, cavity.items, edges);
             } else {
-                try self.extractCavityBoundaryTrusted(temp_allocator, cavity.items, edges);
+                trusted_boundary_pinched = try self.extractCavityBoundaryTrusted(temp_allocator, cavity.items, edges);
             }
 
             if (use_transaction) {
@@ -1357,7 +1523,7 @@ pub const Engine = struct {
                     }
                     continue;
                 }
-            } else if (try self.boundaryHasPinch(edges.items)) {
+            } else if (trusted_boundary_pinched) {
                 if (try self.repairBoundaryNonManifoldEdges(temp_allocator, cavity, edges.items)) {
                     continue;
                 }
@@ -1394,13 +1560,13 @@ pub const Engine = struct {
 
         try new_tri_indices.ensureTotalCapacity(temp_allocator, edges.items.len);
         for (0..reused_cavity_count) |edge_i| {
-            try new_tri_indices.append(temp_allocator, cavity.items[cavity.items.len - 1 - edge_i]);
+            new_tri_indices.appendAssumeCapacity(cavity.items[cavity.items.len - 1 - edge_i]);
         }
         for (0..reused_freelist_count) |free_i| {
-            try new_tri_indices.append(temp_allocator, arena.freelist.items[arena.freelist.items.len - 1 - free_i]);
+            new_tri_indices.appendAssumeCapacity(arena.freelist.items[arena.freelist.items.len - 1 - free_i]);
         }
         for (0..appended_triangle_count) |append_i| {
-            try new_tri_indices.append(temp_allocator, @as(i32, @intCast(self.mesh.triangles.len + append_i)));
+            new_tri_indices.appendAssumeCapacity(@as(i32, @intCast(self.mesh.triangles.len + append_i)));
         }
 
         if (use_transaction) {
@@ -1419,6 +1585,9 @@ pub const Engine = struct {
             }
         }
 
+        if (self.vertex_hint_tri.items.len < self.mesh.vertices.len + 1) {
+            try self.ensureVertexMetadataCapacity(self.mesh.vertices.len + 1);
+        }
         try self.mesh.vertices.append(self.allocator, pt);
 
         // Tombstone cavity slots after all allocations that can fail have succeeded.
@@ -1435,8 +1604,12 @@ pub const Engine = struct {
         for (0..reused_freelist_count) |_| {
             _ = arena.getFreeSlot().?;
         }
-        for (0..appended_triangle_count) |append_i| {
-            try self.mesh.ensureTriangleSlot(self.allocator, new_tri_indices.items[reused_cavity_count + reused_freelist_count + append_i]);
+        if (use_transaction) {
+            for (0..appended_triangle_count) |append_i| {
+                try self.mesh.ensureTriangleSlot(self.allocator, new_tri_indices.items[reused_cavity_count + reused_freelist_count + append_i]);
+            }
+        } else {
+            try self.mesh.appendDeadTriangleSlotsTrusted(self.allocator, appended_triangle_count);
         }
 
         // Setup the new triangles and link them
@@ -1465,6 +1638,9 @@ pub const Engine = struct {
             } else {
                 self.mesh.setTriangleFreshTrusted(t_idx, new_tri);
             }
+            if (@as(usize, @intCast(pt_idx)) < self.vertex_hint_tri.items.len) {
+                self.vertex_hint_tri.items[@as(usize, @intCast(pt_idx))] = t_idx;
+            }
 
             if (e.adj_tri != -1) {
                 if (use_transaction) {
@@ -1474,8 +1650,8 @@ pub const Engine = struct {
                 }
             }
             if (!use_transaction) {
-                try self.addTrustedSpoke(temp_allocator, a, t_idx, 2);
-                try self.addTrustedSpoke(temp_allocator, b, t_idx, 1);
+                try self.addTrustedSpoke(a, t_idx, 2);
+                try self.addTrustedSpoke(b, t_idx, 1);
             }
         }
         if (use_transaction) {
@@ -1600,6 +1776,60 @@ test "trusted point insertion wires reciprocal adjacency" {
         if (!mesh.isDeadTriangle(engine.mesh.triangles.get(tri_idx))) scanned_live_count += 1;
     }
     try std.testing.expectEqual(scanned_live_count, engine.liveTriangleCount());
+}
+
+test "fast live edge lookup falls back from stale hint" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    var arena = mesh.ThreadArena{};
+    defer arena.deinit(std.testing.allocator);
+
+    const vertices = [_]mesh.Vertex{
+        .{ .x = 10.0, .y = 10.0 },
+        .{ .x = 20.0, .y = 20.0 },
+        .{ .x = 14.0, .y = 16.0 },
+    };
+    try engine.reserveForPointCount(vertices.len);
+    try engine.initSuperTriangle(&vertices);
+
+    const a = try engine.insertUniquePointTrusted(&arena, vertices[0]);
+    const b = try engine.insertUniquePointTrusted(&arena, vertices[1]);
+    _ = try engine.insertUniquePointTrusted(&arena, vertices[2]);
+
+    const expected = engine.findLiveEdge(a, b).?;
+    engine.vertex_hint_tri.items[@as(usize, @intCast(a))] = -1;
+    const found = engine.findLiveEdgeFast(a, b).?;
+
+    try std.testing.expectEqual(expected.tri, found.tri);
+    try std.testing.expectEqual(expected.side, found.side);
+    try std.testing.expect(engine.vertex_hint_tri.items[@as(usize, @intCast(a))] >= 0);
+}
+
+test "trusted found edge marking keeps reciprocal flags" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    var arena = mesh.ThreadArena{};
+    defer arena.deinit(std.testing.allocator);
+
+    const vertices = [_]mesh.Vertex{
+        .{ .x = 10.0, .y = 10.0 },
+        .{ .x = 20.0, .y = 20.0 },
+        .{ .x = 14.0, .y = 16.0 },
+    };
+    try engine.reserveForPointCount(vertices.len);
+    try engine.initSuperTriangle(&vertices);
+
+    const a = try engine.insertUniquePointTrusted(&arena, vertices[0]);
+    const b = try engine.insertUniquePointTrusted(&arena, vertices[1]);
+    _ = try engine.insertUniquePointTrusted(&arena, vertices[2]);
+
+    const found = engine.findLiveEdgeFast(a, b).?;
+    engine.setConstrainedFoundEdgeTrusted(found, true);
+
+    try std.testing.expect(engine.isConstrainedSide(found.tri, found.side));
+    try engine.validateConstraintFlags();
 }
 
 test "cavity edge counter keeps only once-used boundary edges" {
