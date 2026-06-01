@@ -780,7 +780,11 @@ pub const Engine = struct {
         }
     }
 
-    fn flipEdge(self: *Engine, queue: *std.ArrayListUnmanaged(LegalizeEdge), allocator: std.mem.Allocator, tri_idx: i32, side: usize) !bool {
+    fn transactionContainsTriangle(tx: *const TriangleTransaction, tri_idx: i32) bool {
+        return containsTriangle(tx.locked.items, tri_idx);
+    }
+
+    fn flipEdge(self: *Engine, queue: *std.ArrayListUnmanaged(LegalizeEdge), allocator: std.mem.Allocator, tx: ?*const TriangleTransaction, tri_idx: i32, side: usize) !bool {
         const candidate = self.edgeIsFlipCandidate(tri_idx, side) orelse return false;
         if (!self.edgeNeedsFlip(tri_idx, side)) return false;
 
@@ -820,6 +824,16 @@ pub const Engine = struct {
             old_len += 1;
         }
 
+        if (tx) |active_tx| {
+            if (!transactionContainsTriangle(active_tx, tri_idx)) return error.TransactionFootprintExpansionRequired;
+            if (!transactionContainsTriangle(active_tx, neighbor_idx)) return error.TransactionFootprintExpansionRequired;
+            for (old_edges[0..old_len]) |old_edge| {
+                if (old_edge.adj != -1 and !transactionContainsTriangle(active_tx, old_edge.adj)) {
+                    return error.TransactionFootprintExpansionRequired;
+                }
+            }
+        }
+
         self.mesh.setTriangleFresh(tri_idx, self.makeTriangleCcw(candidate.c, candidate.a, candidate.d));
         self.mesh.setTriangleFresh(neighbor_idx, self.makeTriangleCcw(candidate.c, candidate.d, candidate.b));
 
@@ -846,6 +860,10 @@ pub const Engine = struct {
     }
 
     pub fn legalizeFromTriangles(self: *Engine, allocator: std.mem.Allocator, seed_triangles: []const i32) !void {
+        try self.legalizeFromTrianglesInTransaction(allocator, seed_triangles, null);
+    }
+
+    pub fn legalizeFromTrianglesInTransaction(self: *Engine, allocator: std.mem.Allocator, seed_triangles: []const i32, tx: ?*const TriangleTransaction) !void {
         var queue: std.ArrayListUnmanaged(LegalizeEdge) = .empty;
         defer queue.deinit(allocator);
 
@@ -860,7 +878,7 @@ pub const Engine = struct {
             iterations += 1;
 
             const edge = queue.pop().?;
-            _ = try self.flipEdge(&queue, allocator, edge.tri, edge.side);
+            _ = try self.flipEdge(&queue, allocator, tx, edge.tri, edge.side);
         }
     }
 
@@ -1341,6 +1359,23 @@ test "legalizer flips an illegal unconstrained quad edge" {
     try engine.validateCdtLegality();
     try std.testing.expect(!engine.hasLiveEdge(quad.a, quad.b));
     try std.testing.expect(engine.hasLiveEdge(quad.c, quad.d));
+}
+
+test "transactional legalizer rejects unlocked flip footprint" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    _ = try initIllegalQuad(&engine);
+
+    var tx = TriangleTransaction{};
+    defer tx.deinit(std.testing.allocator);
+
+    const requested = [_]i32{0};
+    try std.testing.expect(try engine.beginTriangleTransaction(std.testing.allocator, &requested, &tx));
+    defer engine.endTriangleTransaction(&tx);
+
+    const seeds = [_]i32{0};
+    try std.testing.expectError(error.TransactionFootprintExpansionRequired, engine.legalizeFromTrianglesInTransaction(std.testing.allocator, &seeds, &tx));
 }
 
 test "legalizer skips constrained illegal edges" {

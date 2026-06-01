@@ -538,9 +538,9 @@ pub const Corridor = struct {
         }
 
         if (!try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true)) return error.MissingConstraintEdge;
-        // This is still single-thread scaffolding: legalization can currently
-        // expand past the original corridor footprint as it flips edges.
-        try engine.legalizeFromTriangles(scratch_allocator, emitted.items);
+        // A concurrent worker should abort and retry if legalization needs to
+        // expand beyond the locked corridor footprint.
+        try engine.legalizeFromTrianglesInTransaction(scratch_allocator, emitted.items, &tx);
         engine.endTriangleTransaction(&tx);
     }
 };
