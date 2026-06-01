@@ -1,5 +1,16 @@
 # Cleave TODO
 
+## Naming
+
+The partitioned polygon strategy is now **PCDT**: Partitioned Constrained Delaunay Triangulation. Use `pcdt` for benchmark labels and `partitioned-cdt-*` for new build options. The older `partitioned-bw-*` flags remain accepted as deprecated aliases while experiments settle.
+
+Current canonical PCDT command shape:
+
+- `-Dpartitioned-cdt-mode=true`
+- `-Dpartitioned-cdt-parallel-mode=true`
+- `-Dpartitioned-cdt-threads=N`
+- `-Dpartitioned-cdt-max-piece-vertices=N`
+
 ## Current Finding
 
 Cleave now reports polygon-interior triangles separately from the full live Delaunay mesh. This makes the `bench-single` comparison with fast-poly2tri fair on simple outer-ring fixtures:
