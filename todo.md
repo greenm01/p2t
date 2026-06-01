@@ -123,6 +123,22 @@ Fast-visible plus 4-worker piece construction:
 
 This is a real decomposition improvement but still not competitive with current BRIO. The remaining decomposition cost is mostly candidate count plus midpoint scans; the next decomposition experiment should avoid repeated point-in-ring scans entirely, either by using a cheaper guaranteed-internal candidate construction or replacing this sampled visibility splitter with a proper monotone/trapezoid-style partition builder.
 
+## Latest Cone-Visible Decomposition Prototype
+
+`-Ddecomposition-cone-visible=true` keeps endpoint cone pruning and AABB-pruned edge intersection checks, but skips the midpoint point-in-ring scan. On simple polygons this uses the standard diagonal visibility criterion: locally visible at both endpoints and not crossing polygon edges.
+
+Current serial partitioned BW results:
+
+- `nazca-monkey/partitioned-bw`: about `502.9 us/run`; decomposition down to about `169.2 us/run`; midpoint scans `0`, edge scans `15,826`, AABB rejects `101,522`, cone rejects `1312`.
+- `nazca-heron/partitioned-bw`: about `344.1 us/run`; decomposition down to about `55.8 us/run`; midpoint scans `0`, edge scans `3,441`, AABB rejects `35,800`, cone rejects `878`.
+
+Current 4-worker partitioned BW results:
+
+- `nazca-monkey/partitioned-bw-parallel`: about `417.4 us/run`; decomposition `178.2 us/run`, piece BW wall `162.2 us/run`, assembly `32.9 us/run`, seam `33.4 us/run`.
+- `nazca-heron/partitioned-bw-parallel`: about `266.3 us/run`; decomposition `54.6 us/run`, piece BW wall `141.4 us/run`, assembly `27.1 us/run`, seam `36.1 us/run`.
+
+This validates that the midpoint scan was the main decomposition tax. The remaining gap to BRIO is now mostly piece construction overhead, seam legalization, and thread/assembly overhead. The next experiment should either reuse local worker state to cut piece BW overhead or reduce seam/assembly work; a full replacement partition builder is less urgent for the current fixtures than it was before cone-visible.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.

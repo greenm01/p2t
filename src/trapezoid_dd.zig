@@ -174,7 +174,8 @@ fn visibleDiagonal(vertices: []const mesh.Vertex, ring: []const i32, i: usize, j
     if (i == j or areAdjacent(ring.len, i, j)) return false;
     diagnostics.inc("split_candidates");
 
-    if (build_options.decomposition_fast_visible and (!locallyVisibleFrom(vertices, ring, i, j) or !locallyVisibleFrom(vertices, ring, j, i))) {
+    const use_fast_visible = build_options.decomposition_fast_visible or build_options.decomposition_cone_visible;
+    if (use_fast_visible and (!locallyVisibleFrom(vertices, ring, i, j) or !locallyVisibleFrom(vertices, ring, j, i))) {
         diagnostics.inc("cone_rejects");
         return false;
     }
@@ -183,8 +184,10 @@ fn visibleDiagonal(vertices: []const mesh.Vertex, ring: []const i32, i: usize, j
     const b_idx = ring[j];
     const a = vertices[@as(usize, @intCast(a_idx))];
     const b = vertices[@as(usize, @intCast(b_idx))];
-    const mid = mesh.Vertex{ .x = (a.x + b.x) * 0.5, .y = (a.y + b.y) * 0.5 };
-    if (!pointInRing(vertices, ring, mid, diagnostics)) return false;
+    if (!build_options.decomposition_cone_visible) {
+        const mid = mesh.Vertex{ .x = (a.x + b.x) * 0.5, .y = (a.y + b.y) * 0.5 };
+        if (!pointInRing(vertices, ring, mid, diagnostics)) return false;
+    }
 
     for (0..ring.len) |k| {
         const next = (k + 1) % ring.len;
@@ -193,7 +196,7 @@ fn visibleDiagonal(vertices: []const mesh.Vertex, ring: []const i32, i: usize, j
         if (c_idx == a_idx or c_idx == b_idx or d_idx == a_idx or d_idx == b_idx) continue;
         const c = vertices[@as(usize, @intCast(c_idx))];
         const d = vertices[@as(usize, @intCast(d_idx))];
-        if (build_options.decomposition_fast_visible and bboxDisjoint(a, b, c, d)) {
+        if (use_fast_visible and bboxDisjoint(a, b, c, d)) {
             diagnostics.inc("aabb_rejects");
             continue;
         }

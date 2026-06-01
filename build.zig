@@ -35,6 +35,7 @@ pub fn build(b: *std.Build) void {
     const partitioned_bw_parallel_mode = b.option(bool, "partitioned-bw-parallel-mode", "Run partitioned Bowyer-Watson piece construction in parallel for benchmark diagnostics") orelse false;
     const partitioned_bw_threads = b.option(usize, "partitioned-bw-threads", "Worker count for partitioned Bowyer-Watson parallel mode; 0 uses detected CPU count") orelse 0;
     const decomposition_fast_visible = b.option(bool, "decomposition-fast-visible", "Enable fast visibility pruning for polygon decomposition prototypes") orelse false;
+    const decomposition_cone_visible = b.option(bool, "decomposition-cone-visible", "Use endpoint cone plus edge-intersection visibility without midpoint containment scan") orelse false;
     const predicate_policy: PredicatePolicy = if (std.mem.eql(u8, predicate_policy_name, "adaptive"))
         .adaptive
     else if (std.mem.eql(u8, predicate_policy_name, "strict"))
@@ -57,6 +58,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "partitioned_bw_parallel_mode", partitioned_bw_parallel_mode);
     build_options.addOption(usize, "partitioned_bw_threads", partitioned_bw_threads);
     build_options.addOption(bool, "decomposition_fast_visible", decomposition_fast_visible);
+    build_options.addOption(bool, "decomposition_cone_visible", decomposition_cone_visible);
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
