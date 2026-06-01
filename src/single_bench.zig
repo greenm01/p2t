@@ -39,6 +39,10 @@ fn brioParallelMode() bool {
     return build_options.brio_parallel_mode;
 }
 
+fn brioPlanWindow() usize {
+    return build_options.brio_plan_window;
+}
+
 fn lfqtDiagnosticMode() bool {
     return build_options.lfqt_diagnostic_mode;
 }
@@ -88,6 +92,7 @@ const RoundTiming = struct {
     seam_edge_flips: u64 = 0,
     brio_parallel_threads: usize = 0,
     brio_parallel_buckets: usize = 0,
+    brio_parallel_windows: usize = 0,
     brio_parallel_inserted: usize = 0,
     brio_parallel_lock_wait_us: u64 = 0,
     brio_parallel_lock_hold_us: u64 = 0,
@@ -121,6 +126,7 @@ fn pcdtPieceOrderName() []const u8 {
 const BrioParallelStats = struct {
     threads: usize = 1,
     buckets: usize = 0,
+    windows: usize = 0,
     inserted: usize = 0,
     lock_wait_us: u64 = 0,
     lock_hold_us: u64 = 0,
@@ -238,9 +244,47 @@ const BrioParallelExecutor = struct {
     ) !BrioParallelStats {
         const item_count = end_order_pos - start_order_pos;
         if (item_count == 0) return .{};
+
+        const configured_window = brioPlanWindow();
+        const window_size = if (configured_window == 0) item_count else @max(@as(usize, 1), configured_window);
+
+        var stats = BrioParallelStats{ .buckets = 1 };
+        var window_start = start_order_pos;
+        while (window_start < end_order_pos) {
+            const window_end = @min(end_order_pos, window_start + window_size);
+            const window_stats = try self.runWindow(engine, arena, vertices, order, mesh_ids, window_start, window_end);
+            stats.threads = @max(stats.threads, window_stats.threads);
+            stats.windows += window_stats.windows;
+            stats.inserted += window_stats.inserted;
+            stats.lock_wait_us += window_stats.lock_wait_us;
+            stats.lock_hold_us += window_stats.lock_hold_us;
+            stats.dispatch_us += window_stats.dispatch_us;
+            stats.plan_us += window_stats.plan_us;
+            stats.commit_us += window_stats.commit_us;
+            stats.planned += window_stats.planned;
+            stats.committed += window_stats.committed;
+            stats.invalidated += window_stats.invalidated;
+            stats.serial_fallbacks += window_stats.serial_fallbacks;
+            window_start = window_end;
+        }
+        return stats;
+    }
+
+    fn runWindow(
+        self: *BrioParallelExecutor,
+        engine: *triangulate.Engine,
+        arena: *mesh.ThreadArena,
+        vertices: []const mesh.Vertex,
+        order: []const usize,
+        mesh_ids: []i32,
+        start_order_pos: usize,
+        end_order_pos: usize,
+    ) !BrioParallelStats {
+        const item_count = end_order_pos - start_order_pos;
+        if (item_count == 0) return .{};
         const active_workers = @min(self.thread_count, item_count);
         if (active_workers <= 1) {
-            var stats = BrioParallelStats{ .threads = 1, .buckets = 1 };
+            var stats = BrioParallelStats{ .threads = 1, .windows = 1 };
             for (order[start_order_pos..end_order_pos]) |vertex_idx| {
                 mesh_ids[vertex_idx] = try engine.insertUniquePointTrusted(arena, vertices[vertex_idx]);
                 stats.inserted += 1;
@@ -277,7 +321,7 @@ const BrioParallelExecutor = struct {
 
         var stats = BrioParallelStats{
             .threads = active_workers,
-            .buckets = 1,
+            .windows = 1,
             .dispatch_us = plan_us,
             .plan_us = plan_us,
         };
@@ -919,6 +963,7 @@ fn runBrioParallelInsertion(
         const bucket_stats = try executor.runBucket(engine, arena, vertices, order, mesh_ids, start, end);
         stats.threads = @max(stats.threads, bucket_stats.threads);
         stats.buckets += bucket_stats.buckets;
+        stats.windows += bucket_stats.windows;
         stats.inserted += bucket_stats.inserted;
         stats.lock_wait_us += bucket_stats.lock_wait_us;
         stats.lock_hold_us += bucket_stats.lock_hold_us;
@@ -1189,6 +1234,7 @@ fn runRound(
                 const parallel_stats = try runBrioParallelInsertion(brio_executor.?, engine, arena, case.vertices, order.indices, mesh_ids);
                 timing.brio_parallel_threads = @max(timing.brio_parallel_threads, parallel_stats.threads);
                 timing.brio_parallel_buckets += parallel_stats.buckets;
+                timing.brio_parallel_windows += parallel_stats.windows;
                 timing.brio_parallel_inserted += parallel_stats.inserted;
                 timing.brio_parallel_lock_wait_us += parallel_stats.lock_wait_us;
                 timing.brio_parallel_lock_hold_us += parallel_stats.lock_hold_us;
@@ -1401,15 +1447,17 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
             },
         );
         std.debug.print(
-            "  brio parallel/run: workers {d}, buckets {d:>.1}, inserted {d:>.1}, planned {d:>.1}, committed {d:>.1}, invalidated {d:>.1}, serial fallback {d:>.1}\n",
+            "  brio parallel/run: workers {d}, buckets {d:>.1}, windows {d:>.1}, inserted {d:>.1}, planned {d:>.1}, committed {d:>.1}, invalidated {d:>.1}, serial fallback {d:>.1}, commit rate {d:>.1}%\n",
             .{
                 best.brio_parallel_threads,
                 @as(f64, @floatFromInt(best.brio_parallel_buckets)) / iterations_f64,
+                @as(f64, @floatFromInt(best.brio_parallel_windows)) / iterations_f64,
                 @as(f64, @floatFromInt(best.brio_parallel_inserted)) / iterations_f64,
                 @as(f64, @floatFromInt(best.brio_parallel_planned)) / iterations_f64,
                 @as(f64, @floatFromInt(best.brio_parallel_committed)) / iterations_f64,
                 @as(f64, @floatFromInt(best.brio_parallel_invalidated)) / iterations_f64,
                 @as(f64, @floatFromInt(best.brio_parallel_serial_fallbacks)) / iterations_f64,
+                if (best.brio_parallel_planned == 0) 0.0 else @as(f64, @floatFromInt(best.brio_parallel_committed)) * 100.0 / @as(f64, @floatFromInt(best.brio_parallel_planned)),
             },
         );
         std.debug.print(

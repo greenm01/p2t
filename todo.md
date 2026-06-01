@@ -258,6 +258,19 @@ Current macOS results:
 
 The diagnostic supports the paper's broad direction but rejects an immediate LFQT pivot for the current small polygon fixtures. The split builder is cheap, but the current comparison sort plus 128-bit code construction dominates, and the estimated critical path is slower than the current BRIO baseline. LFQT is only worth revisiting with a radix sort and a real bottom-up merge prototype, or on substantially larger unconstrained point sets.
 
+## Latest BRIO Plan-Window Sweep
+
+`-Dbrio-plan-window=N` now caps the number of staged BRIO insertion plans built before serial commit. `0` preserves the previous whole-BRIO-round behavior. The goal was to see whether replanning within a BRIO bucket could reduce stale-plan invalidation enough to make speculative planning useful.
+
+Current 4-worker macOS results with fast predicates and spatial hints:
+
+- Whole round (`0`): monkey about `407.5 us/run`, `10` windows/run, `9/1203` committed plans; heron about `383.6 us/run`, `9` windows/run, `9/1036` committed plans.
+- Window `16`: monkey about `1275.9 us/run`, `80` windows/run, `100/1203` committed plans; heron about `1143.3 us/run`, `70` windows/run, `90/1036` committed plans.
+- Window `32`: monkey about `873.6 us/run`, `44` windows/run, `52/1203` committed plans; heron about `773.9 us/run`, `38` windows/run, `49/1036` committed plans.
+- Window `64`: monkey about `639.7 us/run`, `26` windows/run, `30/1203` committed plans; heron about `582.1 us/run`, `22` windows/run, `26/1036` committed plans.
+
+This rejects micro-batched speculative planning. Smaller windows do raise the commit rate, but repeated worker dispatch and planning dominate, and the total remains much slower than both whole-round staged planning and the serial BRIO baseline. The next BRIO parallel attempt needs true concurrent disjoint-cavity commits or a different independent-work structure; more serial replan/commit windows are not promising.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.
