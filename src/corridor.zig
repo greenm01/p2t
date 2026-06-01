@@ -1095,6 +1095,88 @@ test "corridor cavity vertex ordering" {
     try std.testing.expectEqualSlices(i32, &[_]i32{ 1, 10, 11, 12, 2 }, right.items);
 }
 
+fn buildTrustedRing(allocator: std.mem.Allocator, vertices: []const mesh.Vertex, engine: *triangulate.Engine, arena: *mesh.ThreadArena) ![]i32 {
+    try engine.reserveForPointCount(vertices.len);
+    try engine.initSuperTriangle(vertices);
+
+    const sorted_indices = try spatial.sortVerticesByMorton(allocator, vertices);
+    defer allocator.free(sorted_indices);
+
+    const mesh_ids = try allocator.alloc(i32, vertices.len);
+    errdefer allocator.free(mesh_ids);
+
+    for (sorted_indices) |idx| {
+        mesh_ids[idx] = try engine.insertUniquePointTrusted(arena, vertices[idx]);
+    }
+
+    var corridor = Corridor{};
+    defer corridor.deinit(allocator);
+
+    for (0..vertices.len) |i| {
+        try corridor.recoverConstraintTrusted(allocator, engine, arena, mesh_ids[i], mesh_ids[(i + 1) % vertices.len]);
+    }
+
+    try engine.validateTopology();
+    try engine.validateConstraintRing(mesh_ids);
+    try engine.validateConstraintRingFlags(mesh_ids);
+    return mesh_ids;
+}
+
+test "interior triangle count matches convex polygon output" {
+    const allocator = std.testing.allocator;
+    var engine = triangulate.Engine.init(allocator);
+    defer engine.deinit();
+
+    var arena = mesh.ThreadArena{};
+    defer arena.deinit(allocator);
+
+    const vertices = [_]mesh.Vertex{
+        .{ .x = 0.0, .y = 0.0 },
+        .{ .x = 4.0, .y = 0.0 },
+        .{ .x = 5.0, .y = 2.0 },
+        .{ .x = 2.0, .y = 4.0 },
+        .{ .x = -1.0, .y = 2.0 },
+    };
+
+    const mesh_ids = try buildTrustedRing(allocator, &vertices, &engine, &arena);
+    defer allocator.free(mesh_ids);
+
+    try std.testing.expectEqual(vertices.len - 2, try engine.countInteriorTriangles());
+}
+
+test "interior triangle count excludes exterior concave mesh" {
+    const allocator = std.testing.allocator;
+    var engine = triangulate.Engine.init(allocator);
+    defer engine.deinit();
+
+    var arena = mesh.ThreadArena{};
+    defer arena.deinit(allocator);
+
+    const vertices = [_]mesh.Vertex{
+        .{ .x = 0.0, .y = 0.0 },
+        .{ .x = 4.0, .y = 0.0 },
+        .{ .x = 4.0, .y = 3.0 },
+        .{ .x = 2.0, .y = 1.0 },
+        .{ .x = 0.0, .y = 3.0 },
+    };
+
+    const mesh_ids = try buildTrustedRing(allocator, &vertices, &engine, &arena);
+    defer allocator.free(mesh_ids);
+
+    var interior: std.ArrayListUnmanaged(bool) = .empty;
+    defer interior.deinit(allocator);
+
+    const interior_count = try engine.markInteriorTriangles(allocator, &interior);
+    try std.testing.expectEqual(vertices.len - 2, interior_count);
+    try std.testing.expect(interior_count < engine.liveTriangleCount());
+
+    for (0..engine.mesh.triangles.len) |tri_idx| {
+        if (!interior.items[tri_idx]) continue;
+        const tri = engine.mesh.triangles.get(tri_idx);
+        try std.testing.expect(tri.v0 >= 3 and tri.v1 >= 3 and tri.v2 >= 3);
+    }
+}
+
 fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path: []const u8, trusted: bool) !void {
     const fixture = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, fixture_path, allocator, .limited(1024 * 1024));
     defer allocator.free(fixture);

@@ -212,6 +212,9 @@ pub const Engine = struct {
     trusted_spoke_generation: u32,
     cavity_triangle_marks: std.ArrayListUnmanaged(u32),
     cavity_triangle_generation: u32,
+    interior_triangle_marks: std.ArrayListUnmanaged(u32),
+    interior_triangle_queue: std.ArrayListUnmanaged(i32),
+    interior_triangle_generation: u32,
     vertex_hint_tri: std.ArrayListUnmanaged(i32),
     hint_grid: std.ArrayListUnmanaged(i32),
     hint_grid_side: usize,
@@ -239,6 +242,9 @@ pub const Engine = struct {
             .trusted_spoke_generation = 1,
             .cavity_triangle_marks = .empty,
             .cavity_triangle_generation = 1,
+            .interior_triangle_marks = .empty,
+            .interior_triangle_queue = .empty,
+            .interior_triangle_generation = 1,
             .vertex_hint_tri = .empty,
             .hint_grid = .empty,
             .hint_grid_side = 0,
@@ -253,6 +259,8 @@ pub const Engine = struct {
     pub fn deinit(self: *Engine) void {
         self.hint_grid.deinit(self.allocator);
         self.vertex_hint_tri.deinit(self.allocator);
+        self.interior_triangle_queue.deinit(self.allocator);
+        self.interior_triangle_marks.deinit(self.allocator);
         self.cavity_triangle_marks.deinit(self.allocator);
         self.trusted_spoke_sides.deinit(self.allocator);
         self.trusted_spoke_tris.deinit(self.allocator);
@@ -1133,6 +1141,99 @@ pub const Engine = struct {
 
     pub fn liveTriangleCount(self: *Engine) usize {
         return self.mesh.live_triangle_count;
+    }
+
+    fn ensureInteriorMarkCapacity(self: *Engine, triangle_count: usize) !void {
+        if (self.interior_triangle_marks.items.len >= triangle_count) return;
+
+        try self.interior_triangle_marks.ensureTotalCapacity(self.allocator, triangle_count);
+        while (self.interior_triangle_marks.items.len < triangle_count) {
+            try self.interior_triangle_marks.append(self.allocator, 0);
+        }
+    }
+
+    fn beginInteriorGeneration(self: *Engine, triangle_count: usize) !void {
+        try self.ensureInteriorMarkCapacity(triangle_count);
+        self.interior_triangle_generation +%= 1;
+        if (self.interior_triangle_generation == 0) {
+            @memset(self.interior_triangle_marks.items, 0);
+            self.interior_triangle_generation = 1;
+        }
+    }
+
+    fn markExteriorTriangle(self: *Engine, tri_idx: i32) void {
+        const slot: usize = @intCast(tri_idx);
+        self.interior_triangle_marks.items[slot] = self.interior_triangle_generation;
+    }
+
+    fn isExteriorTriangleMarked(self: *const Engine, tri_idx: i32) bool {
+        const slot: usize = @intCast(tri_idx);
+        return slot < self.interior_triangle_marks.items.len and
+            self.interior_triangle_marks.items[slot] == self.interior_triangle_generation;
+    }
+
+    fn markExteriorTriangles(self: *Engine) !void {
+        try self.beginInteriorGeneration(self.mesh.triangles.len);
+        self.interior_triangle_queue.clearRetainingCapacity();
+
+        for (0..self.mesh.triangles.len) |tri_idx| {
+            const tri = self.mesh.triangles.get(tri_idx);
+            if (mesh.isDeadTriangle(tri) or !triangleHasSuperVertex(tri)) continue;
+            self.markExteriorTriangle(@intCast(tri_idx));
+            try self.interior_triangle_queue.append(self.allocator, @intCast(tri_idx));
+        }
+
+        while (self.interior_triangle_queue.items.len > 0) {
+            const tri_idx = self.interior_triangle_queue.pop().?;
+            const tri_slot: usize = @intCast(tri_idx);
+            const tri = self.mesh.triangles.get(tri_slot);
+            for (0..3) |side| {
+                if (self.isConstrainedSide(tri_idx, side)) continue;
+
+                const neighbor_idx = triangleAdj(tri, side);
+                if (neighbor_idx < 0) continue;
+                const neighbor_slot: usize = @intCast(neighbor_idx);
+                if (neighbor_slot >= self.mesh.triangles.len or self.isExteriorTriangleMarked(neighbor_idx)) continue;
+
+                const neighbor = self.mesh.triangles.get(neighbor_slot);
+                if (mesh.isDeadTriangle(neighbor)) continue;
+
+                self.markExteriorTriangle(neighbor_idx);
+                try self.interior_triangle_queue.append(self.allocator, neighbor_idx);
+            }
+        }
+    }
+
+    pub fn markInteriorTriangles(self: *Engine, allocator: std.mem.Allocator, interior: *std.ArrayListUnmanaged(bool)) !usize {
+        interior.clearRetainingCapacity();
+        try interior.ensureTotalCapacity(allocator, self.mesh.triangles.len);
+        for (0..self.mesh.triangles.len) |_| {
+            interior.appendAssumeCapacity(false);
+        }
+
+        try self.markExteriorTriangles();
+
+        var count: usize = 0;
+        for (0..self.mesh.triangles.len) |tri_idx| {
+            const tri = self.mesh.triangles.get(tri_idx);
+            const is_interior = !mesh.isDeadTriangle(tri) and !triangleHasSuperVertex(tri) and !self.isExteriorTriangleMarked(@intCast(tri_idx));
+            interior.items[tri_idx] = is_interior;
+            if (is_interior) count += 1;
+        }
+        return count;
+    }
+
+    pub fn countInteriorTriangles(self: *Engine) !usize {
+        try self.markExteriorTriangles();
+
+        var count: usize = 0;
+        for (0..self.mesh.triangles.len) |tri_idx| {
+            const tri = self.mesh.triangles.get(tri_idx);
+            if (!mesh.isDeadTriangle(tri) and !triangleHasSuperVertex(tri) and !self.isExteriorTriangleMarked(@intCast(tri_idx))) {
+                count += 1;
+            }
+        }
+        return count;
     }
 
     pub fn hasLiveEdge(self: *Engine, a: i32, b: i32) bool {

@@ -27,7 +27,9 @@ const RoundTiming = struct {
     total_us: u64 = 0,
     insertion_us: u64 = 0,
     constraint_us: u64 = 0,
+    extraction_us: u64 = 0,
     triangles: usize = 0,
+    live_triangles: usize = 0,
     predicate_stats: predicates.PredicateStats = .{},
     engine_stats: triangulate.EngineStats = .{},
 };
@@ -118,9 +120,15 @@ fn runRound(
         }
         const constraint_end = now();
 
+        const extraction_start = now();
+        const interior_triangles = try engine.countInteriorTriangles();
+        const extraction_end = now();
+
         timing.insertion_us += elapsedMicros(insertion_start, insertion_end);
         timing.constraint_us += elapsedMicros(insertion_end, constraint_end);
-        timing.triangles += engine.liveTriangleCount();
+        timing.extraction_us += elapsedMicros(extraction_start, extraction_end);
+        timing.triangles += interior_triangles;
+        timing.live_triangles += engine.liveTriangleCount();
     }
 
     timing.total_us = elapsedMicros(total_start, now());
@@ -138,30 +146,34 @@ fn perRun(value: u64, iterations: usize) f64 {
 }
 
 fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) void {
-    const other_us = if (best.total_us > best.insertion_us + best.constraint_us)
-        best.total_us - best.insertion_us - best.constraint_us
+    const phase_us = best.insertion_us + best.constraint_us + best.extraction_us;
+    const other_us = if (best.total_us > phase_us)
+        best.total_us - phase_us
     else
         0;
     const triangles_per_run = best.triangles / case.iterations;
+    const live_triangles_per_run = best.live_triangles / case.iterations;
 
     std.debug.print(
-        "{s}/{s}: {d} vertices, {d} runs, {d} triangles/run, best {d} us ({d:>.3} us/run), median {d} us\n",
+        "{s}/{s}: {d} vertices, {d} runs, {d} interior triangles/run ({d} live mesh), best {d} us ({d:>.3} us/run), median {d} us\n",
         .{
             case.name,
             order.name,
             case.vertices.len,
             case.iterations,
             triangles_per_run,
+            live_triangles_per_run,
             best.total_us,
             perRun(best.total_us, case.iterations),
             median.total_us,
         },
     );
     std.debug.print(
-        "  phase best/run: insertion {d:>.3} us, constraints {d:>.3} us, setup+other {d:>.3} us\n",
+        "  phase best/run: insertion {d:>.3} us, constraints {d:>.3} us, extraction {d:>.3} us, setup+other {d:>.3} us\n",
         .{
             perRun(best.insertion_us, case.iterations),
             perRun(best.constraint_us, case.iterations),
+            perRun(best.extraction_us, case.iterations),
             perRun(other_us, case.iterations),
         },
     );
@@ -260,11 +272,14 @@ fn benchCase(allocator: std.mem.Allocator, case: Case, order: Order) !void {
     std.mem.sortUnstable(RoundTiming, &timings, {}, lessTotal);
     printCase(case, order, timings[0], timings[rounds / 2]);
 
+    var interior: std.ArrayListUnmanaged(bool) = .empty;
+    defer interior.deinit(allocator);
+    _ = try engine.markInteriorTriangles(allocator, &interior);
+
     var stats = quality.QualityStats{};
     for (0..engine.mesh.triangles.len) |i| {
+        if (i >= interior.items.len or !interior.items[i]) continue;
         const tri = engine.mesh.triangles.get(i);
-        if (mesh.isDeadTriangle(tri)) continue;
-        if (tri.v0 < 3 or tri.v1 < 3 or tri.v2 < 3) continue;
 
         stats.accumulate(
             engine.getVertex(tri.v0),
