@@ -158,6 +158,9 @@ pub const Engine = struct {
     trusted_edges: std.ArrayListUnmanaged(Edge),
     trusted_new_tri_indices: std.ArrayListUnmanaged(i32),
     trusted_spokes: std.ArrayListUnmanaged(SpokeLink),
+    boundary_vertex_marks: std.ArrayListUnmanaged(u32),
+    boundary_vertex_counts: std.ArrayListUnmanaged(u8),
+    boundary_vertex_generation: u32,
 
     pub fn init(allocator: std.mem.Allocator) Engine {
         return .{
@@ -169,10 +172,15 @@ pub const Engine = struct {
             .trusted_edges = .empty,
             .trusted_new_tri_indices = .empty,
             .trusted_spokes = .empty,
+            .boundary_vertex_marks = .empty,
+            .boundary_vertex_counts = .empty,
+            .boundary_vertex_generation = 1,
         };
     }
 
     pub fn deinit(self: *Engine) void {
+        self.boundary_vertex_counts.deinit(self.allocator);
+        self.boundary_vertex_marks.deinit(self.allocator);
         self.trusted_spokes.deinit(self.allocator);
         self.trusted_new_tri_indices.deinit(self.allocator);
         self.trusted_edges.deinit(self.allocator);
@@ -187,6 +195,9 @@ pub const Engine = struct {
         self.trusted_edges.clearRetainingCapacity();
         self.trusted_new_tri_indices.clearRetainingCapacity();
         self.trusted_spokes.clearRetainingCapacity();
+        self.boundary_vertex_generation = 1;
+        @memset(self.boundary_vertex_marks.items, 0);
+        @memset(self.boundary_vertex_counts.items, 0);
         self.last_valid_tri = 0;
     }
 
@@ -1101,15 +1112,40 @@ pub const Engine = struct {
         return false;
     }
 
-    fn boundaryHasPinch(edges: []const Edge) bool {
+    fn ensureBoundaryVertexCounters(self: *Engine, vertex_count: usize) !void {
+        if (self.boundary_vertex_marks.items.len >= vertex_count) return;
+
+        try self.boundary_vertex_marks.ensureTotalCapacity(self.allocator, vertex_count);
+        try self.boundary_vertex_counts.ensureTotalCapacity(self.allocator, vertex_count);
+        while (self.boundary_vertex_marks.items.len < vertex_count) {
+            try self.boundary_vertex_marks.append(self.allocator, 0);
+            try self.boundary_vertex_counts.append(self.allocator, 0);
+        }
+    }
+
+    fn boundaryHasPinch(self: *Engine, edges: []const Edge) !bool {
+        try self.ensureBoundaryVertexCounters(self.mesh.vertices.len);
+
+        self.boundary_vertex_generation +%= 1;
+        if (self.boundary_vertex_generation == 0) {
+            @memset(self.boundary_vertex_marks.items, 0);
+            self.boundary_vertex_generation = 1;
+        }
+
         for (edges) |edge| {
-            var v1_count: usize = 0;
-            var v2_count: usize = 0;
-            for (edges) |other| {
-                if (other.v1 == edge.v1 or other.v2 == edge.v1) v1_count += 1;
-                if (other.v1 == edge.v2 or other.v2 == edge.v2) v2_count += 1;
+            const vertices = [_]i32{ edge.v1, edge.v2 };
+            for (vertices) |vertex| {
+                const idx: usize = @intCast(vertex);
+                if (self.boundary_vertex_marks.items[idx] != self.boundary_vertex_generation) {
+                    self.boundary_vertex_marks.items[idx] = self.boundary_vertex_generation;
+                    self.boundary_vertex_counts.items[idx] = 1;
+                    continue;
+                }
+
+                if (self.boundary_vertex_counts.items[idx] == std.math.maxInt(u8)) return true;
+                self.boundary_vertex_counts.items[idx] += 1;
+                if (self.boundary_vertex_counts.items[idx] > 2) return true;
             }
-            if (v1_count > 2 or v2_count > 2) return true;
         }
         return false;
     }
@@ -1249,7 +1285,7 @@ pub const Engine = struct {
                     continue;
                 }
 
-                if (boundaryHasPinch(edges.items)) {
+                if (try self.boundaryHasPinch(edges.items)) {
                     const repaired = try self.completeCavityByGlobalScan(scratch_allocator, cavity, pt);
                     if (!repaired) {
                         std.debug.print("InvalidCavityBoundary: pinched boundary could not be repaired for point {d},{d}\n", .{ pt.x, pt.y });
@@ -1257,7 +1293,7 @@ pub const Engine = struct {
                     }
                     continue;
                 }
-            } else if (boundaryHasPinch(edges.items)) {
+            } else if (try self.boundaryHasPinch(edges.items)) {
                 if (try self.repairBoundaryNonManifoldEdges(temp_allocator, cavity, edges.items)) {
                     continue;
                 }
