@@ -7,6 +7,8 @@ const spatial = @import("spatial.zig");
 
 pub const Corridor = struct {
     pierced_triangles: std.ArrayListUnmanaged(i32) = .empty,
+    left_vertices: std.ArrayListUnmanaged(i32) = .empty,
+    right_vertices: std.ArrayListUnmanaged(i32) = .empty,
 
     const EdgeKey = struct { v1: i32, v2: i32 };
     const EdgeRecord = struct { v1: i32, v2: i32 };
@@ -29,14 +31,12 @@ pub const Corridor = struct {
         side: i32,
         score: f64,
         vertices: std.ArrayListUnmanaged(i32) = .empty,
-
-        fn deinit(self: *ChainCandidate, allocator: std.mem.Allocator) void {
-            self.vertices.deinit(allocator);
-        }
     };
 
     pub fn deinit(self: *Corridor, allocator: std.mem.Allocator) void {
         self.pierced_triangles.deinit(allocator);
+        self.left_vertices.deinit(allocator);
+        self.right_vertices.deinit(allocator);
     }
 
     fn containsPierced(self: *const Corridor, tri_idx: i32) bool {
@@ -73,6 +73,37 @@ pub const Corridor = struct {
 
     fn samePoint(a: mesh.Vertex, b: mesh.Vertex) bool {
         return a.x == b.x and a.y == b.y;
+    }
+
+    fn appendUniqueVertex(list: *std.ArrayListUnmanaged(i32), allocator: std.mem.Allocator, vertex_idx: i32) !void {
+        if (list.items.len > 0 and list.items[list.items.len - 1] == vertex_idx) return;
+        try list.append(allocator, vertex_idx);
+    }
+
+    fn appendTraceVertex(
+        self: *Corridor,
+        allocator: std.mem.Allocator,
+        engine: *triangulate.Engine,
+        start_pt_idx: i32,
+        end_pt_idx: i32,
+        vertex_idx: i32,
+    ) !void {
+        if (vertex_idx == start_pt_idx or vertex_idx == end_pt_idx) return;
+
+        const start_pt = engine.getVertex(start_pt_idx);
+        const end_pt = engine.getVertex(end_pt_idx);
+        const side = predicates.orient2d(start_pt, end_pt, engine.getVertex(vertex_idx));
+        if (side > 0.0) {
+            try appendUniqueVertex(&self.left_vertices, allocator, vertex_idx);
+        } else if (side < 0.0) {
+            try appendUniqueVertex(&self.right_vertices, allocator, vertex_idx);
+        }
+    }
+
+    fn segmentHitsEdge(start_pt: mesh.Vertex, end_pt: mesh.Vertex, a: mesh.Vertex, b: mesh.Vertex) bool {
+        return predicates.intersect(start_pt, end_pt, a, b) or
+            predicates.pointOnSegment(start_pt, end_pt, a) or
+            predicates.pointOnSegment(start_pt, end_pt, b);
     }
 
     fn segmentIntersectsTriangle(engine: *triangulate.Engine, tri: mesh.Triangle, start_pt: mesh.Vertex, end_pt: mesh.Vertex) bool {
@@ -115,7 +146,13 @@ pub const Corridor = struct {
         }
     }
 
-    pub fn trace(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, start_tri: i32, end_pt: mesh.Vertex, start_pt: mesh.Vertex) !void {
+    pub fn trace(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, start_tri: i32, end_pt_idx: i32, start_pt_idx: i32) !void {
+        self.pierced_triangles.clearRetainingCapacity();
+        self.left_vertices.clearRetainingCapacity();
+        self.right_vertices.clearRetainingCapacity();
+
+        const start_pt = engine.getVertex(start_pt_idx);
+        const end_pt = engine.getVertex(end_pt_idx);
         var curr = start_tri;
 
         // Safety limit
@@ -131,10 +168,7 @@ pub const Corridor = struct {
 
             // Have we reached a triangle that contains the end_pt?
             // If end_pt is a vertex of this triangle, we are done.
-            if ((v0.x == end_pt.x and v0.y == end_pt.y) or
-                (v1.x == end_pt.x and v1.y == end_pt.y) or
-                (v2.x == end_pt.x and v2.y == end_pt.y))
-            {
+            if (tri.v0 == end_pt_idx or tri.v1 == end_pt_idx or tri.v2 == end_pt_idx) {
                 break;
             }
 
@@ -146,23 +180,27 @@ pub const Corridor = struct {
             // strict intersection works.
 
             var next_tri: i32 = -1;
+            var crossed_side: ?usize = null;
 
-            if (predicates.intersect(start_pt, end_pt, v0, v1)) {
+            if (tri.v0 != start_pt_idx and tri.v1 != start_pt_idx and tri.v0 != end_pt_idx and tri.v1 != end_pt_idx and segmentHitsEdge(start_pt, end_pt, v0, v1)) {
                 // To avoid stepping backwards, we should verify it's moving closer to end_pt
                 // Actually, if it intersects and is not the triangle we came from, we can go there.
                 // But since we just append, let's just check if we already visited it.
                 if (self.pierced_triangles.items.len < 2 or self.pierced_triangles.items[self.pierced_triangles.items.len - 2] != tri.adj0) {
                     next_tri = tri.adj0;
+                    crossed_side = 0;
                 }
             }
-            if (next_tri == -1 and predicates.intersect(start_pt, end_pt, v1, v2)) {
+            if (next_tri == -1 and tri.v1 != start_pt_idx and tri.v2 != start_pt_idx and tri.v1 != end_pt_idx and tri.v2 != end_pt_idx and segmentHitsEdge(start_pt, end_pt, v1, v2)) {
                 if (self.pierced_triangles.items.len < 2 or self.pierced_triangles.items[self.pierced_triangles.items.len - 2] != tri.adj1) {
                     next_tri = tri.adj1;
+                    crossed_side = 1;
                 }
             }
-            if (next_tri == -1 and predicates.intersect(start_pt, end_pt, v2, v0)) {
+            if (next_tri == -1 and tri.v2 != start_pt_idx and tri.v0 != start_pt_idx and tri.v2 != end_pt_idx and tri.v0 != end_pt_idx and segmentHitsEdge(start_pt, end_pt, v2, v0)) {
                 if (self.pierced_triangles.items.len < 2 or self.pierced_triangles.items[self.pierced_triangles.items.len - 2] != tri.adj2) {
                     next_tri = tri.adj2;
+                    crossed_side = 2;
                 }
             }
 
@@ -171,6 +209,10 @@ pub const Corridor = struct {
                 // For this proof of concept, we just break.
                 break;
             }
+
+            const crossed = triangulate.Engine.triangleEdge(tri, crossed_side.?);
+            try self.appendTraceVertex(allocator, engine, start_pt_idx, end_pt_idx, crossed.v1);
+            try self.appendTraceVertex(allocator, engine, start_pt_idx, end_pt_idx, crossed.v2);
 
             curr = next_tri;
         }
@@ -192,11 +234,10 @@ pub const Corridor = struct {
         try entry.value_ptr.addNeighbor(b);
     }
 
-    fn buildBoundaryGraph(
+    fn countPiercedEdges(
         self: *Corridor,
         engine: *triangulate.Engine,
         edge_counts: *std.AutoHashMap(EdgeKey, usize),
-        nodes: *std.AutoHashMap(i32, BoundaryNode),
     ) !void {
         for (self.pierced_triangles.items) |t_idx| {
             const tri = engine.mesh.triangles.get(@as(usize, @intCast(t_idx)));
@@ -212,7 +253,13 @@ pub const Corridor = struct {
                 try edge_counts.put(key, count + 1);
             }
         }
+    }
 
+    fn buildBoundaryNodesFromEdgeCounts(
+        engine: *triangulate.Engine,
+        edge_counts: *std.AutoHashMap(EdgeKey, usize),
+        nodes: *std.AutoHashMap(i32, BoundaryNode),
+    ) !void {
         var it = edge_counts.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.* != 1) continue;
@@ -421,61 +468,57 @@ pub const Corridor = struct {
 
     pub fn clearAndRetriangulate(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
         const scratch_allocator = arena.resetScratch(allocator);
-        try self.augmentPiercedBySegmentScan(allocator, engine, start_pt_idx, end_pt_idx);
 
         var edge_counts = std.AutoHashMap(EdgeKey, usize).init(scratch_allocator);
         defer edge_counts.deinit();
 
-        var boundary_nodes = std.AutoHashMap(i32, BoundaryNode).init(scratch_allocator);
-        defer boundary_nodes.deinit();
-
-        try self.buildBoundaryGraph(engine, &edge_counts, &boundary_nodes);
-        try validateBoundaryDegrees(&boundary_nodes, start_pt_idx, end_pt_idx);
+        try self.countPiercedEdges(engine, &edge_counts);
 
         var outer_edges: std.ArrayListUnmanaged(BoundaryEdge) = .empty;
         try self.collectOuterBoundaryEdges(scratch_allocator, engine, &edge_counts, &outer_edges);
 
-        const start_node = boundary_nodes.get(start_pt_idx) orelse {
-            std.debug.print("InvalidCorridorBoundary: missing start vertex {d} in boundary\n", .{start_pt_idx});
-            return error.InvalidCorridorBoundary;
-        };
-        const end_node = boundary_nodes.get(end_pt_idx) orelse {
-            std.debug.print("InvalidCorridorBoundary: missing end vertex {d} in boundary\n", .{end_pt_idx});
-            return error.InvalidCorridorBoundary;
-        };
-        if (start_node.degree < 2 or end_node.degree < 2) {
-            std.debug.print("InvalidCorridorBoundary: endpoint degrees start {d}:{d}, end {d}:{d}\n", .{ start_pt_idx, start_node.degree, end_pt_idx, end_node.degree });
-            return error.InvalidCorridorBoundary;
-        }
+        var left_wall = self.left_vertices.items;
+        var right_wall = self.right_vertices.items;
+        if (self.left_vertices.items.len == 0 or self.right_vertices.items.len == 0) {
+            try self.augmentPiercedBySegmentScan(allocator, engine, start_pt_idx, end_pt_idx);
+            edge_counts.clearRetainingCapacity();
+            try self.countPiercedEdges(engine, &edge_counts);
+            try self.collectOuterBoundaryEdges(scratch_allocator, engine, &edge_counts, &outer_edges);
 
-        var candidates: std.ArrayListUnmanaged(ChainCandidate) = .empty;
+            var boundary_nodes = std.AutoHashMap(i32, BoundaryNode).init(scratch_allocator);
+            defer boundary_nodes.deinit();
+            try buildBoundaryNodesFromEdgeCounts(engine, &edge_counts, &boundary_nodes);
+            try validateBoundaryDegrees(&boundary_nodes, start_pt_idx, end_pt_idx);
 
-        for (start_node.neighbors[0..start_node.degree]) |neighbor| {
-            var chain: std.ArrayListUnmanaged(i32) = .empty;
-            traceBoundaryChain(&boundary_nodes, scratch_allocator, start_pt_idx, end_pt_idx, neighbor, &chain) catch {
-                continue;
-            };
-            const side_score = chainSideScore(engine, start_pt_idx, end_pt_idx, chain.items);
-            try candidates.append(scratch_allocator, .{
-                .side = side_score.side,
-                .score = side_score.score,
-                .vertices = chain,
-            });
-        }
+            const start_node = boundary_nodes.get(start_pt_idx) orelse return error.InvalidCorridorBoundary;
+            const end_node = boundary_nodes.get(end_pt_idx) orelse return error.InvalidCorridorBoundary;
+            if (start_node.degree < 2 or end_node.degree < 2) return error.InvalidCorridorBoundary;
 
-        var left_chain: ?usize = null;
-        var right_chain: ?usize = null;
-        for (candidates.items, 0..) |candidate, idx| {
-            if (candidate.side > 0) {
-                if (left_chain == null or candidate.score < candidates.items[left_chain.?].score) left_chain = idx;
-            } else if (candidate.side < 0) {
-                if (right_chain == null or candidate.score < candidates.items[right_chain.?].score) right_chain = idx;
+            var candidates: std.ArrayListUnmanaged(ChainCandidate) = .empty;
+            for (start_node.neighbors[0..start_node.degree]) |neighbor| {
+                var chain: std.ArrayListUnmanaged(i32) = .empty;
+                traceBoundaryChain(&boundary_nodes, scratch_allocator, start_pt_idx, end_pt_idx, neighbor, &chain) catch continue;
+                const side_score = chainSideScore(engine, start_pt_idx, end_pt_idx, chain.items);
+                try candidates.append(scratch_allocator, .{
+                    .side = side_score.side,
+                    .score = side_score.score,
+                    .vertices = chain,
+                });
             }
-        }
 
-        if (left_chain == null or right_chain == null) {
-            std.debug.print("InvalidCorridorBoundary: could not split {d} chains into opposite sides\n", .{candidates.items.len});
-            return error.InvalidCorridorBoundary;
+            var left_chain: ?usize = null;
+            var right_chain: ?usize = null;
+            for (candidates.items, 0..) |candidate, idx| {
+                if (candidate.side > 0) {
+                    if (left_chain == null or candidate.score < candidates.items[left_chain.?].score) left_chain = idx;
+                } else if (candidate.side < 0) {
+                    if (right_chain == null or candidate.score < candidates.items[right_chain.?].score) right_chain = idx;
+                }
+            }
+
+            if (left_chain == null or right_chain == null) return error.InvalidCorridorBoundary;
+            left_wall = candidates.items[left_chain.?].vertices.items;
+            right_wall = candidates.items[right_chain.?].vertices.items;
         }
 
         var footprint: std.ArrayListUnmanaged(i32) = .empty;
@@ -523,8 +566,8 @@ pub const Corridor = struct {
 
         var emitted: std.ArrayListUnmanaged(i32) = .empty;
 
-        try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[left_chain.?].vertices.items, true, &emitted);
-        try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[right_chain.?].vertices.items, false, &emitted);
+        try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, left_wall, true, &emitted);
+        try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, right_wall, false, &emitted);
 
         try engine.linkNewTriangles(emitted.items);
         for (outer_edges.items) |edge| {
@@ -551,15 +594,12 @@ pub const Corridor = struct {
         }
 
         const start_pt = engine.getVertex(start_pt_idx);
-        const end_pt = engine.getVertex(end_pt_idx);
 
         for (0..triangulate.max_transaction_attempts) |_| {
-            self.pierced_triangles.clearRetainingCapacity();
-
             const start_tri = engine.walk(engine.last_valid_tri, start_pt);
             if (start_tri < 0) return error.WalkFailed;
 
-            try self.trace(allocator, engine, start_tri, end_pt, start_pt);
+            try self.trace(allocator, engine, start_tri, end_pt_idx, start_pt_idx);
             self.clearAndRetriangulate(allocator, engine, arena, start_pt_idx, end_pt_idx) catch |err| {
                 switch (err) {
                     error.TransactionConflict => continue,
@@ -594,14 +634,22 @@ test "corridor trace" {
     var corridor = Corridor{};
     defer corridor.deinit(std.testing.allocator);
 
-    const start_pt = engine.getVertex(3); // The first inserted point
-    const end_pt = engine.getVertex(4); // The second inserted point
+    const start_idx: i32 = 3;
+    const end_idx: i32 = 4;
+    const start_pt = engine.getVertex(start_idx); // The first inserted point
 
     const start_tri = engine.walk(0, start_pt); // Find triangle containing start_pt
 
-    try corridor.trace(std.testing.allocator, &engine, start_tri, end_pt, start_pt);
+    try corridor.trace(std.testing.allocator, &engine, start_tri, end_idx, start_idx);
 
     try std.testing.expect(corridor.pierced_triangles.items.len > 0);
+    const end_pt = engine.getVertex(end_idx);
+    for (corridor.left_vertices.items) |vertex_idx| {
+        try std.testing.expect(predicates.orient2d(start_pt, end_pt, engine.getVertex(vertex_idx)) > 0.0);
+    }
+    for (corridor.right_vertices.items) |vertex_idx| {
+        try std.testing.expect(predicates.orient2d(start_pt, end_pt, engine.getVertex(vertex_idx)) < 0.0);
+    }
 }
 
 fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path: []const u8) !void {
