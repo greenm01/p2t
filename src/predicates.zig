@@ -2,24 +2,43 @@ const std = @import("std");
 const mesh = @import("mesh.zig");
 
 pub fn orient2d(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
-    return (a.x - c.x) * (b.y - c.y) - (a.y - c.y) * (b.x - c.x);
+    const ax: f128 = @floatCast(a.x);
+    const ay: f128 = @floatCast(a.y);
+    const bx: f128 = @floatCast(b.x);
+    const by: f128 = @floatCast(b.y);
+    const cx: f128 = @floatCast(c.x);
+    const cy: f128 = @floatCast(c.y);
+
+    const res = (ax - cx) * (by - cy) - (ay - cy) * (bx - cx);
+    return @floatCast(res);
 }
 
 pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) f64 {
-    const adx = a.x - d.x;
-    const ady = a.y - d.y;
-    const bdx = b.x - d.x;
-    const bdy = b.y - d.y;
-    const cdx = c.x - d.x;
-    const cdy = c.y - d.y;
+    const ax: f128 = @floatCast(a.x);
+    const ay: f128 = @floatCast(a.y);
+    const bx: f128 = @floatCast(b.x);
+    const by: f128 = @floatCast(b.y);
+    const cx: f128 = @floatCast(c.x);
+    const cy: f128 = @floatCast(c.y);
+    const dx: f128 = @floatCast(d.x);
+    const dy: f128 = @floatCast(d.y);
+
+    const adx = ax - dx;
+    const ady = ay - dy;
+    const bdx = bx - dx;
+    const bdy = by - dy;
+    const cdx = cx - dx;
+    const cdy = cy - dy;
 
     const alift = adx * adx + ady * ady;
     const blift = bdx * bdx + bdy * bdy;
     const clift = cdx * cdx + cdy * cdy;
 
-    return alift * (bdx * cdy - cdx * bdy) +
+    const res = alift * (bdx * cdy - cdx * bdy) +
         blift * (cdx * ady - adx * cdy) +
         clift * (adx * bdy - bdx * ady);
+
+    return @floatCast(res);
 }
 
 pub fn intersect(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) bool {
