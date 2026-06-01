@@ -142,6 +142,14 @@ corridors. The next scalar optimization target should therefore be the normal
 insertion path: fewer orientation calls per walk/cavity expansion, less repeated
 triangle/vertex loading, and tighter scratch data layout.
 
+The first follow-up optimization replaced repeated linear cavity-membership scans
+with generation-marked triangle membership during insertion. That keeps the small
+fixtures essentially unchanged and improves the larger fixtures by cutting cavity
+bookkeeping overhead:
+
+- `nazca-monkey`: about `684 us/run`, with insertion around `506 us/run`.
+- `nazca-heron`: about `809 us/run`, with insertion around `613 us/run`.
+
 1. Add a batch-throughput benchmark.
    Measure many independent triangulations across `1, 2, 4, 8, ...` workers. Reuse
    per-thread engines and arenas. Compare wall time, jobs/sec, and scaling efficiency.

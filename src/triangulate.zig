@@ -191,6 +191,8 @@ pub const Engine = struct {
     trusted_spoke_tris: std.ArrayListUnmanaged(i32),
     trusted_spoke_sides: std.ArrayListUnmanaged(u8),
     trusted_spoke_generation: u32,
+    cavity_triangle_marks: std.ArrayListUnmanaged(u32),
+    cavity_triangle_generation: u32,
     vertex_hint_tri: std.ArrayListUnmanaged(i32),
     stats: EngineStats,
 
@@ -210,6 +212,8 @@ pub const Engine = struct {
             .trusted_spoke_tris = .empty,
             .trusted_spoke_sides = .empty,
             .trusted_spoke_generation = 1,
+            .cavity_triangle_marks = .empty,
+            .cavity_triangle_generation = 1,
             .vertex_hint_tri = .empty,
             .stats = .{},
         };
@@ -217,6 +221,7 @@ pub const Engine = struct {
 
     pub fn deinit(self: *Engine) void {
         self.vertex_hint_tri.deinit(self.allocator);
+        self.cavity_triangle_marks.deinit(self.allocator);
         self.trusted_spoke_sides.deinit(self.allocator);
         self.trusted_spoke_tris.deinit(self.allocator);
         self.trusted_spoke_marks.deinit(self.allocator);
@@ -1365,7 +1370,7 @@ pub const Engine = struct {
 
             const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
             for (neighbors, 0..) |n_idx, side| {
-                if (n_idx != -1 and cavityContains(cavity, n_idx)) continue;
+                if (self.isCavityMarked(n_idx)) continue;
 
                 const edge = triangleEdge(tri, side);
                 edges.appendAssumeCapacity(.{
@@ -1438,17 +1443,54 @@ pub const Engine = struct {
         return false;
     }
 
+    fn ensureCavityMarkCapacity(self: *Engine, triangle_count: usize) !void {
+        if (self.cavity_triangle_marks.items.len >= triangle_count) return;
+
+        try self.cavity_triangle_marks.ensureTotalCapacity(self.allocator, triangle_count);
+        while (self.cavity_triangle_marks.items.len < triangle_count) {
+            try self.cavity_triangle_marks.append(self.allocator, 0);
+        }
+    }
+
+    fn beginCavityGeneration(self: *Engine, triangle_count: usize) !void {
+        try self.ensureCavityMarkCapacity(triangle_count);
+        self.cavity_triangle_generation +%= 1;
+        if (self.cavity_triangle_generation == 0) {
+            @memset(self.cavity_triangle_marks.items, 0);
+            self.cavity_triangle_generation = 1;
+        }
+    }
+
+    fn markCavityTriangle(self: *Engine, tri_idx: i32) void {
+        if (tri_idx < 0) return;
+        const slot: usize = @intCast(tri_idx);
+        if (slot >= self.cavity_triangle_marks.items.len) return;
+        self.cavity_triangle_marks.items[slot] = self.cavity_triangle_generation;
+    }
+
+    fn isCavityMarked(self: *const Engine, tri_idx: i32) bool {
+        if (tri_idx < 0) return false;
+        const slot: usize = @intCast(tri_idx);
+        return slot < self.cavity_triangle_marks.items.len and
+            self.cavity_triangle_marks.items[slot] == self.cavity_triangle_generation;
+    }
+
+    fn appendCavityTriangle(self: *Engine, allocator: std.mem.Allocator, cavity: *std.ArrayListUnmanaged(i32), tri_idx: i32) !void {
+        try cavity.append(allocator, tri_idx);
+        self.markCavityTriangle(tri_idx);
+    }
+
     fn completeCavityByGlobalScan(self: *Engine, allocator: std.mem.Allocator, cavity: *std.ArrayListUnmanaged(i32), pt: mesh.Vertex) !bool {
         var added = false;
         for (0..self.mesh.triangles.len) |tri_idx| {
             const tri_i32 = @as(i32, @intCast(tri_idx));
-            if (cavityContains(cavity.items, tri_i32)) continue;
+            if (self.isCavityMarked(tri_i32)) continue;
 
             const tri = self.mesh.triangles.get(tri_idx);
             if (mesh.isDeadTriangle(tri)) continue;
 
             if (self.isInsideCircumcircle(tri_i32, pt) or self.pointOnTriangleEdge(tri, pt)) {
-                try cavity.append(allocator, tri_i32);
+                try self.appendCavityTriangle(allocator, cavity, tri_i32);
                 added = true;
             }
         }
@@ -1461,15 +1503,15 @@ pub const Engine = struct {
             var outside_count: usize = 0;
             for (0..self.mesh.triangles.len) |tri_idx| {
                 const tri_i32 = @as(i32, @intCast(tri_idx));
-                if (cavityContains(cavity.items, tri_i32)) continue;
+                if (self.isCavityMarked(tri_i32)) continue;
 
                 const tri = self.mesh.triangles.get(tri_idx);
                 if (mesh.isDeadTriangle(tri)) continue;
                 if (edgeSide(tri, edge.v1, edge.v2) == null) continue;
 
                 outside_count += 1;
-                if (outside_count > 1 and !cavityContains(cavity.items, tri_i32)) {
-                    try cavity.append(allocator, tri_i32);
+                if (outside_count > 1 and !self.isCavityMarked(tri_i32)) {
+                    try self.appendCavityTriangle(allocator, cavity, tri_i32);
                     added = true;
                 }
             }
@@ -1537,8 +1579,9 @@ pub const Engine = struct {
         edges.clearRetainingCapacity();
         new_tri_indices.clearRetainingCapacity();
         if (!use_transaction) try self.beginTrustedSpokes(self.mesh.vertices.len + 1);
+        try self.beginCavityGeneration(self.mesh.triangles.len);
 
-        try cavity.append(temp_allocator, container);
+        try self.appendCavityTriangle(temp_allocator, cavity, container);
 
         var i: usize = 0;
         while (i < cavity.items.len) : (i += 1) {
@@ -1547,7 +1590,7 @@ pub const Engine = struct {
             const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
 
             for (neighbors, 0..) |n_idx, side| {
-                if (cavityContains(cavity.items, n_idx)) continue;
+                if (self.isCavityMarked(n_idx)) continue;
 
                 const edge = triangleEdge(tri, side);
                 const point_on_edge = n_idx != -1 and predicates.pointOnSegment(
@@ -1557,7 +1600,7 @@ pub const Engine = struct {
                 );
 
                 if (point_on_edge or self.isInsideCircumcircle(n_idx, pt)) {
-                    try cavity.append(temp_allocator, n_idx);
+                    try self.appendCavityTriangle(temp_allocator, cavity, n_idx);
                 }
             }
         }
