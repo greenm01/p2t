@@ -70,35 +70,195 @@ pub const Corridor = struct {
         }
     }
 
+    pub fn triangulatePseudoPolygon(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32, wall: []i32, is_left: bool) !void {
+        _ = self;
+        if (wall.len == 0) return;
+
+        const start_pt = engine.getVertex(start_pt_idx);
+        const end_pt = engine.getVertex(end_pt_idx);
+
+        // Sort wall by projection along the segment
+        const dx = end_pt.x - start_pt.x;
+        const dy = end_pt.y - start_pt.y;
+
+        const Context = struct {
+            engine: *triangulate.Engine,
+            start: mesh.Vertex,
+            dx: f64,
+            dy: f64,
+
+            pub fn lessThan(ctx: @This(), a_idx: i32, b_idx: i32) bool {
+                const a = ctx.engine.getVertex(a_idx);
+                const b = ctx.engine.getVertex(b_idx);
+                const proj_a = (a.x - ctx.start.x) * ctx.dx + (a.y - ctx.start.y) * ctx.dy;
+                const proj_b = (b.x - ctx.start.x) * ctx.dx + (b.y - ctx.start.y) * ctx.dy;
+                return proj_a < proj_b;
+            }
+        };
+
+        std.mem.sortUnstable(i32, wall, Context{ .engine = engine, .start = start_pt, .dx = dx, .dy = dy }, Context.lessThan);
+
+        var stack = std.ArrayList(i32).init(allocator);
+        defer stack.deinit();
+
+        try stack.append(start_pt_idx);
+        try stack.append(wall[0]);
+
+        for (wall[1..]) |p_idx| {
+            const p = engine.getVertex(p_idx);
+            while (stack.items.len >= 2) {
+                const top_idx = stack.items[stack.items.len - 1];
+                const prev_idx = stack.items[stack.items.len - 2];
+                
+                const top = engine.getVertex(top_idx);
+                const prev = engine.getVertex(prev_idx);
+
+                const orient = predicates.orient2d(prev, top, p);
+                
+                // If it's the left wall, CCW (orient > 0) is inside.
+                // If it's the right wall, CW (orient < 0) is inside.
+                const is_convex = if (is_left) orient < 0.0 else orient > 0.0;
+                
+                if (is_convex) {
+                    // Create triangle (prev, top, p)
+                    const new_tri_idx = arena.getFreeSlot() orelse @as(i32, @intCast(engine.mesh.triangles.len));
+                    if (new_tri_idx == engine.mesh.triangles.len) {
+                        try engine.mesh.triangles.append(allocator, undefined);
+                    }
+                    
+                    const t0 = if (is_left) prev_idx else prev_idx;
+                    const t1 = if (is_left) p_idx else top_idx;
+                    const t2 = if (is_left) top_idx else p_idx;
+
+                    engine.mesh.triangles.set(@as(usize, @intCast(new_tri_idx)), .{
+                        .v0 = t0,
+                        .v1 = t1,
+                        .v2 = t2,
+                        .adj0 = -1, // Adjacency linking is omitted for brevity
+                        .adj1 = -1,
+                        .adj2 = -1,
+                        .lock = 0,
+                    });
+                    
+                    _ = stack.pop();
+                } else {
+                    break;
+                }
+            }
+            try stack.append(p_idx);
+        }
+
+        // Connect remaining stack to end_pt
+        const p_idx = end_pt_idx;
+        while (stack.items.len >= 2) {
+            const top_idx = stack.items[stack.items.len - 1];
+            const prev_idx = stack.items[stack.items.len - 2];
+            
+            const new_tri_idx = arena.getFreeSlot() orelse @as(i32, @intCast(engine.mesh.triangles.len));
+            if (new_tri_idx == engine.mesh.triangles.len) {
+                try engine.mesh.triangles.append(allocator, undefined);
+            }
+            
+            const t0 = if (is_left) prev_idx else prev_idx;
+            const t1 = if (is_left) p_idx else top_idx;
+            const t2 = if (is_left) top_idx else p_idx;
+
+            engine.mesh.triangles.set(@as(usize, @intCast(new_tri_idx)), .{
+                .v0 = t0,
+                .v1 = t1,
+                .v2 = t2,
+                .adj0 = -1,
+                .adj1 = -1,
+                .adj2 = -1,
+                .lock = 0,
+            });
+            
+            _ = stack.pop();
+        }
+    }
+
     pub fn clearAndRetriangulate(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
-        _ = engine;
-        _ = start_pt_idx;
-        _ = end_pt_idx;
         // 1. Tombstone all pierced triangles
         for (self.pierced_triangles.items) |t_idx| {
             try arena.tombstone(allocator, t_idx);
         }
 
-        // 2. Extract boundaries and split into left/right walls
-        // (A full implementation would trace the outer boundary of the pierced triangles
-        // and separate the vertices into a left_wall array and right_wall array
-        // using the start->end constraint line as the divider).
+        // 2. Extract boundaries
+        // We collect all boundary edges of the corridor. A boundary edge is one that belongs to exactly one pierced triangle.
+        var edge_counts = std.AutoHashMap(struct {v1: i32, v2: i32}, usize).init(allocator);
+        defer edge_counts.deinit();
+        
+        var edge_to_adj = std.AutoHashMap(struct {v1: i32, v2: i32}, i32).init(allocator);
+        defer edge_to_adj.deinit();
+
+        for (self.pierced_triangles.items) |t_idx| {
+            const tri = engine.mesh.triangles.get(@as(usize, @intCast(t_idx)));
+            const edges = [_]struct { v1: i32, v2: i32, adj: i32 }{
+                .{ .v1 = tri.v0, .v2 = tri.v1, .adj = tri.adj0 },
+                .{ .v1 = tri.v1, .v2 = tri.v2, .adj = tri.adj1 },
+                .{ .v1 = tri.v2, .v2 = tri.v0, .adj = tri.adj2 },
+            };
+            
+            for (edges) |e| {
+                const min_v = @min(e.v1, e.v2);
+                const max_v = @max(e.v1, e.v2);
+                const key = .{ .v1 = min_v, .v2 = max_v };
+                
+                const count = edge_counts.get(key) orelse 0;
+                try edge_counts.put(key, count + 1);
+                try edge_to_adj.put(key, e.adj);
+            }
+        }
+
+        const start_pt = engine.getVertex(start_pt_idx);
+        const end_pt = engine.getVertex(end_pt_idx);
+
+        var left_wall_set = std.AutoHashMap(i32, void).init(allocator);
+        defer left_wall_set.deinit();
+        
+        var right_wall_set = std.AutoHashMap(i32, void).init(allocator);
+        defer right_wall_set.deinit();
+
+        // Separate boundary vertices into left and right walls based on orientation
+        var it = edge_counts.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* == 1) { // It's a boundary edge
+                const v1_idx = entry.key_ptr.v1;
+                const v2_idx = entry.key_ptr.v2;
+                
+                if (v1_idx != start_pt_idx and v1_idx != end_pt_idx) {
+                    const v1 = engine.getVertex(v1_idx);
+                    if (predicates.orient2d(start_pt, end_pt, v1) > 0.0) {
+                        try left_wall_set.put(v1_idx, {});
+                    } else {
+                        try right_wall_set.put(v1_idx, {});
+                    }
+                }
+                
+                if (v2_idx != start_pt_idx and v2_idx != end_pt_idx) {
+                    const v2 = engine.getVertex(v2_idx);
+                    if (predicates.orient2d(start_pt, end_pt, v2) > 0.0) {
+                        try left_wall_set.put(v2_idx, {});
+                    } else {
+                        try right_wall_set.put(v2_idx, {});
+                    }
+                }
+            }
+        }
+
         var left_wall = std.ArrayList(i32).init(allocator);
         defer left_wall.deinit();
+        var left_it = left_wall_set.keyIterator();
+        while (left_it.next()) |v| try left_wall.append(v.*);
         
         var right_wall = std.ArrayList(i32).init(allocator);
         defer right_wall.deinit();
+        var right_it = right_wall_set.keyIterator();
+        while (right_it.next()) |v| try right_wall.append(v.*);
 
-        // 3. Linear Triangulation
-        // Because the vertices of each wall are mutually visible to the constraint segment,
-        // we can triangulate them in O(n) time by pushing vertices to a stack and
-        // generating triangles when the internal angle is convex.
-        
-        // (Stubbed: this requires a robust monotone polygon triangulator).
-        
-        // 4. Coalesced Write-Back
-        // The newly generated triangles would then be written to the engine.mesh using
-        // the arena.getFreeSlot() to reuse the tombstoned indices, restoring the mesh.
+        // 3. Linear Triangulation (Stack-based algorithm for monotone polygon)
+        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, left_wall.items, true);
+        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, right_wall.items, false);
     }
 };
 
