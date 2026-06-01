@@ -6,8 +6,8 @@ pub const Point = struct {
 };
 
 pub fn parseDatString(allocator: std.mem.Allocator, content: []const u8) ![]Point {
-    var buffer: [1024]Point = undefined;
-    var len: usize = 0;
+    var points: std.ArrayListUnmanaged(Point) = .empty;
+    defer points.deinit(allocator);
 
     var tokenizer = std.mem.tokenizeAny(u8, content, " \t\r\n");
     while (tokenizer.next()) |x_str| {
@@ -16,14 +16,10 @@ pub fn parseDatString(allocator: std.mem.Allocator, content: []const u8) ![]Poin
         const x = try std.fmt.parseFloat(f64, x_str);
         const y = try std.fmt.parseFloat(f64, y_str);
 
-        if (len >= buffer.len) return error.TooManyPoints;
-        buffer[len] = .{ .x = x, .y = y };
-        len += 1;
+        try points.append(allocator, .{ .x = x, .y = y });
     }
 
-    const result = try allocator.alloc(Point, len);
-    @memcpy(result, buffer[0..len]);
-    return result;
+    return try points.toOwnedSlice(allocator);
 }
 
 test "parse test.dat" {
