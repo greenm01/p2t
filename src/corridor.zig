@@ -69,6 +69,37 @@ pub const Corridor = struct {
             curr = next_tri;
         }
     }
+
+    pub fn clearAndRetriangulate(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
+        _ = engine;
+        _ = start_pt_idx;
+        _ = end_pt_idx;
+        // 1. Tombstone all pierced triangles
+        for (self.pierced_triangles.items) |t_idx| {
+            try arena.tombstone(allocator, t_idx);
+        }
+
+        // 2. Extract boundaries and split into left/right walls
+        // (A full implementation would trace the outer boundary of the pierced triangles
+        // and separate the vertices into a left_wall array and right_wall array
+        // using the start->end constraint line as the divider).
+        var left_wall = std.ArrayList(i32).init(allocator);
+        defer left_wall.deinit();
+        
+        var right_wall = std.ArrayList(i32).init(allocator);
+        defer right_wall.deinit();
+
+        // 3. Linear Triangulation
+        // Because the vertices of each wall are mutually visible to the constraint segment,
+        // we can triangulate them in O(n) time by pushing vertices to a stack and
+        // generating triangles when the internal angle is convex.
+        
+        // (Stubbed: this requires a robust monotone polygon triangulator).
+        
+        // 4. Coalesced Write-Back
+        // The newly generated triangles would then be written to the engine.mesh using
+        // the arena.getFreeSlot() to reuse the tombstoned indices, restoring the mesh.
+    }
 };
 
 test "corridor trace" {
