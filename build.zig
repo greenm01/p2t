@@ -151,6 +151,23 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run cleave benchmarks in ReleaseFast");
     bench_step.dependOn(&bench_cmd.step);
 
+    const batch_bench_module = b.createModule(.{
+        .root_source_file = b.path("src/batch_bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "p2t", .module = mod },
+        },
+    });
+    batch_bench_module.addOptions("build_options", build_options);
+    const batch_bench_exe = b.addExecutable(.{
+        .name = "p2t-batch-bench",
+        .root_module = batch_bench_module,
+    });
+    const batch_bench_cmd = b.addRunArtifact(batch_bench_exe);
+    const batch_bench_step = b.step("bench-batch", "Run Cleave independent-job throughput benchmarks in ReleaseFast");
+    batch_bench_step.dependOn(&batch_bench_cmd.step);
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.
