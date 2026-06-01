@@ -487,6 +487,7 @@ pub const Corridor = struct {
         arena: *mesh.ThreadArena,
         local_tris: []const cavity.LocalTriangle,
         emitted: *std.ArrayListUnmanaged(i32),
+        trusted: bool,
     ) !void {
         const base = emitted.items.len;
         const map = try allocator.alloc(i32, local_tris.len);
@@ -508,11 +509,15 @@ pub const Corridor = struct {
                 .adj2 = if (local_tri.adj2 >= 0) map[@as(usize, @intCast(local_tri.adj2))] else -1,
             };
             if (predicates.orient2d(engine.getVertex(tri.v0), engine.getVertex(tri.v1), engine.getVertex(tri.v2)) < 0.0) return error.InvalidCavity;
-            engine.mesh.setTriangleFresh(emitted.items[base + i], tri);
+            if (trusted) {
+                engine.mesh.setTriangleFreshTrusted(emitted.items[base + i], tri);
+            } else {
+                engine.mesh.setTriangleFresh(emitted.items[base + i], tri);
+            }
         }
     }
 
-    fn linkCentralConstraint(engine: *triangulate.Engine, emitted: []const i32, start_pt_idx: i32, end_pt_idx: i32) !void {
+    fn linkCentralConstraint(engine: *triangulate.Engine, emitted: []const i32, start_pt_idx: i32, end_pt_idx: i32, trusted: bool) !void {
         var first: i32 = -1;
         var second: i32 = -1;
         for (emitted) |tri_idx| {
@@ -526,8 +531,26 @@ pub const Corridor = struct {
             }
         }
         if (first != -1 and second != -1) {
-            try engine.linkTrianglesByEdge(first, second, start_pt_idx, end_pt_idx);
+            if (trusted) {
+                try engine.linkTrianglesByEdgeTrusted(first, second, start_pt_idx, end_pt_idx);
+            } else {
+                try engine.linkTrianglesByEdge(first, second, start_pt_idx, end_pt_idx);
+            }
         }
+    }
+
+    fn markConstraintInEmitted(engine: *triangulate.Engine, emitted: []const i32, start_pt_idx: i32, end_pt_idx: i32, trusted: bool) !bool {
+        for (emitted) |tri_idx| {
+            const tri = engine.mesh.triangles.get(@as(usize, @intCast(tri_idx)));
+            const side = triangulate.Engine.edgeSide(tri, start_pt_idx, end_pt_idx) orelse continue;
+            if (trusted) {
+                try engine.setConstrainedTriangleEdgeTrusted(tri_idx, side, true);
+            } else {
+                try engine.setConstrainedTriangleEdge(tri_idx, side, true);
+            }
+            return true;
+        }
+        return false;
     }
 
     pub fn triangulatePseudoPolygon(
@@ -540,6 +563,7 @@ pub const Corridor = struct {
         wall: []const i32,
         is_left: bool,
         emitted: *std.ArrayListUnmanaged(i32),
+        trusted: bool,
     ) !void {
         _ = self;
         if (wall.len == 0) return;
@@ -582,14 +606,19 @@ pub const Corridor = struct {
                         t2 = tmp;
                     }
 
-                    engine.mesh.setTriangleFresh(new_tri_idx, .{
+                    const tri = mesh.Triangle{
                         .v0 = t0,
                         .v1 = t1,
                         .v2 = t2,
                         .adj0 = -1, // Adjacency linking is omitted for brevity
                         .adj1 = -1,
                         .adj2 = -1,
-                    });
+                    };
+                    if (trusted) {
+                        engine.mesh.setTriangleFreshTrusted(new_tri_idx, tri);
+                    } else {
+                        engine.mesh.setTriangleFresh(new_tri_idx, tri);
+                    }
 
                     _ = stack.pop();
                 } else {
@@ -619,14 +648,19 @@ pub const Corridor = struct {
                 t2 = tmp;
             }
 
-            engine.mesh.setTriangleFresh(new_tri_idx, .{
+            const tri = mesh.Triangle{
                 .v0 = t0,
                 .v1 = t1,
                 .v2 = t2,
                 .adj0 = -1,
                 .adj1 = -1,
                 .adj2 = -1,
-            });
+            };
+            if (trusted) {
+                engine.mesh.setTriangleFreshTrusted(new_tri_idx, tri);
+            } else {
+                engine.mesh.setTriangleFresh(new_tri_idx, tri);
+            }
 
             _ = stack.pop();
         }
@@ -737,39 +771,65 @@ pub const Corridor = struct {
                 if (neighbor.adj0 == t_idx) neighbor.adj0 = -1;
                 if (neighbor.adj1 == t_idx) neighbor.adj1 = -1;
                 if (neighbor.adj2 == t_idx) neighbor.adj2 = -1;
-                engine.mesh.setTriangle(neighbor_idx, neighbor);
+                if (use_transaction) {
+                    engine.mesh.setTriangle(neighbor_idx, neighbor);
+                } else {
+                    engine.mesh.setTriangleTrusted(neighbor_idx, neighbor);
+                }
             }
         }
 
         // 3. Tombstone all pierced triangles after their boundary data has been read.
         for (self.pierced_triangles.items) |t_idx| {
-            engine.mesh.markDead(t_idx);
+            if (use_transaction) {
+                engine.mesh.markDead(t_idx);
+            } else {
+                engine.mesh.markDeadTrusted(t_idx);
+            }
             try arena.tombstone(allocator, t_idx);
         }
 
         var emitted: std.ArrayListUnmanaged(i32) = .empty;
 
         if (use_local_cavity) {
-            try emitLocalTriangles(scratch_allocator, engine, arena, local_cavities.left.items, &emitted);
-            try emitLocalTriangles(scratch_allocator, engine, arena, local_cavities.right.items, &emitted);
-            try linkCentralConstraint(engine, emitted.items, start_pt_idx, end_pt_idx);
+            try emitLocalTriangles(scratch_allocator, engine, arena, local_cavities.left.items, &emitted, !use_transaction);
+            try emitLocalTriangles(scratch_allocator, engine, arena, local_cavities.right.items, &emitted, !use_transaction);
+            try linkCentralConstraint(engine, emitted.items, start_pt_idx, end_pt_idx, !use_transaction);
         } else {
-            try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, left_wall, true, &emitted);
-            try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, right_wall, false, &emitted);
-            try engine.linkNewTriangles(emitted.items);
+            try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, left_wall, true, &emitted, !use_transaction);
+            try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, right_wall, false, &emitted, !use_transaction);
+            if (use_transaction) {
+                try engine.linkNewTriangles(emitted.items);
+            } else {
+                try engine.linkNewTrianglesTrusted(emitted.items);
+            }
         }
 
         for (outer_edges.items) |edge| {
             for (emitted.items) |new_tri_idx| {
                 const new_tri = engine.mesh.triangles.get(@as(usize, @intCast(new_tri_idx)));
                 if (triangulate.Engine.edgeSide(new_tri, edge.v1, edge.v2) != null) {
-                    try engine.linkTrianglesByEdge(new_tri_idx, edge.adj_tri, edge.v1, edge.v2);
+                    if (use_transaction) {
+                        try engine.linkTrianglesByEdge(new_tri_idx, edge.adj_tri, edge.v1, edge.v2);
+                    } else {
+                        try engine.linkTrianglesByEdgeTrusted(new_tri_idx, edge.adj_tri, edge.v1, edge.v2);
+                    }
                     break;
                 }
             }
         }
 
-        if (!try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true)) return error.MissingConstraintEdge;
+        const marked_constraint = if (use_transaction)
+            try markConstraintInEmitted(engine, emitted.items, start_pt_idx, end_pt_idx, false)
+        else
+            try markConstraintInEmitted(engine, emitted.items, start_pt_idx, end_pt_idx, true);
+        if (!marked_constraint) {
+            const marked_global = if (use_transaction)
+                try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true)
+            else
+                try engine.setConstrainedEdgeByVerticesTrusted(start_pt_idx, end_pt_idx, true);
+            if (!marked_global) return error.MissingConstraintEdge;
+        }
         if (!use_local_cavity) {
             if (use_transaction) {
                 // A concurrent worker should abort and retry if legalization needs to
@@ -941,6 +1001,12 @@ fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path:
 
     try engine.validateConstraintRing(mesh_ids);
     try engine.validateConstraintRingFlags(mesh_ids);
+
+    var scanned_live_count: usize = 0;
+    for (0..engine.mesh.triangles.len) |tri_idx| {
+        if (!mesh.isDeadTriangle(engine.mesh.triangles.get(tri_idx))) scanned_live_count += 1;
+    }
+    try std.testing.expectEqual(scanned_live_count, engine.liveTriangleCount());
 }
 
 test "fixture constraint recovery remains manifold" {

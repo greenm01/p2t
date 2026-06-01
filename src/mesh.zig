@@ -35,6 +35,7 @@ pub const GlobalMesh = struct {
     edge_flags: std.ArrayListUnmanaged(u8) = .empty,
     triangle_versions: std.ArrayListUnmanaged(std.atomic.Value(u32)) = .empty,
     triangle_locks: std.ArrayListUnmanaged(std.atomic.Value(u8)) = .empty,
+    live_triangle_count: usize = 0,
 
     pub fn deinit(self: *GlobalMesh, allocator: std.mem.Allocator) void {
         self.vertices.deinit(allocator);
@@ -50,6 +51,7 @@ pub const GlobalMesh = struct {
         self.edge_flags.clearRetainingCapacity();
         self.triangle_versions.clearRetainingCapacity();
         self.triangle_locks.clearRetainingCapacity();
+        self.live_triangle_count = 0;
     }
 
     pub fn reserve(self: *GlobalMesh, allocator: std.mem.Allocator, vertex_capacity: usize, triangle_capacity: usize) !void {
@@ -65,6 +67,7 @@ pub const GlobalMesh = struct {
         try self.triangle_versions.append(allocator, std.atomic.Value(u32).init(1));
         errdefer _ = self.triangle_versions.pop();
         try self.triangle_locks.append(allocator, std.atomic.Value(u8).init(0));
+        if (!isDeadTriangle(tri)) self.live_triangle_count += 1;
     }
 
     pub fn ensureTriangleSlot(self: *GlobalMesh, allocator: std.mem.Allocator, triangle_index: i32) !void {
@@ -91,12 +94,14 @@ pub const GlobalMesh = struct {
 
     pub fn setTriangle(self: *GlobalMesh, triangle_index: i32, tri: Triangle) void {
         const slot = @as(usize, @intCast(triangle_index));
+        self.adjustLiveCount(self.triangles.get(slot), tri);
         self.triangles.set(slot, tri);
         self.bumpTriangleVersion(triangle_index);
     }
 
     pub fn setTriangleFresh(self: *GlobalMesh, triangle_index: i32, tri: Triangle) void {
         const slot = @as(usize, @intCast(triangle_index));
+        self.adjustLiveCount(self.triangles.get(slot), tri);
         self.triangles.set(slot, tri);
         self.edge_flags.items[slot] = 0;
         self.bumpTriangleVersion(triangle_index);
@@ -111,9 +116,45 @@ pub const GlobalMesh = struct {
 
     pub fn markDead(self: *GlobalMesh, triangle_index: i32) void {
         const slot = @as(usize, @intCast(triangle_index));
+        self.adjustLiveCount(self.triangles.get(slot), deadTriangle());
         self.triangles.set(slot, deadTriangle());
         self.edge_flags.items[slot] = 0;
         self.bumpTriangleVersion(triangle_index);
+    }
+
+    fn adjustLiveCount(self: *GlobalMesh, old_tri: Triangle, new_tri: Triangle) void {
+        const was_live = !isDeadTriangle(old_tri);
+        const is_live = !isDeadTriangle(new_tri);
+        if (!was_live and is_live) {
+            self.live_triangle_count += 1;
+        } else if (was_live and !is_live) {
+            self.live_triangle_count -= 1;
+        }
+    }
+
+    pub fn setTriangleTrusted(self: *GlobalMesh, triangle_index: i32, tri: Triangle) void {
+        const slot = @as(usize, @intCast(triangle_index));
+        self.adjustLiveCount(self.triangles.get(slot), tri);
+        self.triangles.set(slot, tri);
+    }
+
+    pub fn setTriangleFreshTrusted(self: *GlobalMesh, triangle_index: i32, tri: Triangle) void {
+        const slot = @as(usize, @intCast(triangle_index));
+        self.adjustLiveCount(self.triangles.get(slot), tri);
+        self.triangles.set(slot, tri);
+        self.edge_flags.items[slot] = 0;
+    }
+
+    pub fn setEdgeFlagsTrusted(self: *GlobalMesh, triangle_index: i32, flags: u8) void {
+        const slot = @as(usize, @intCast(triangle_index));
+        self.edge_flags.items[slot] = flags;
+    }
+
+    pub fn markDeadTrusted(self: *GlobalMesh, triangle_index: i32) void {
+        const slot = @as(usize, @intCast(triangle_index));
+        self.adjustLiveCount(self.triangles.get(slot), deadTriangle());
+        self.triangles.set(slot, deadTriangle());
+        self.edge_flags.items[slot] = 0;
     }
 };
 
@@ -164,9 +205,15 @@ test "GlobalMesh and ThreadArena" {
     try std.testing.expectEqual(mesh.triangles.len, mesh.edge_flags.items.len);
     try std.testing.expectEqual(mesh.triangles.len, mesh.triangle_versions.items.len);
     try std.testing.expectEqual(mesh.triangles.len, mesh.triangle_locks.items.len);
+    try std.testing.expectEqual(@as(usize, 1), mesh.live_triangle_count);
     const version = mesh.triangle_versions.items[0].load(.acquire);
     mesh.setTriangleFresh(0, .{ .v0 = 0, .v1 = 0, .v2 = 0, .adj0 = -1, .adj1 = -1, .adj2 = -1 });
     try std.testing.expect(mesh.triangle_versions.items[0].load(.acquire) != version);
+    const trusted_version = mesh.triangle_versions.items[0].load(.acquire);
+    mesh.setTriangleFreshTrusted(0, .{ .v0 = 0, .v1 = 0, .v2 = 0, .adj0 = -1, .adj1 = -1, .adj2 = -1 });
+    try std.testing.expectEqual(trusted_version, mesh.triangle_versions.items[0].load(.acquire));
+    mesh.markDeadTrusted(0);
+    try std.testing.expectEqual(@as(usize, 0), mesh.live_triangle_count);
 
     var arena = ThreadArena{};
     defer arena.deinit(allocator);

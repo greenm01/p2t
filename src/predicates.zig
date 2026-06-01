@@ -89,9 +89,9 @@ pub fn intersect(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex)
 
 pub fn pointOnSegment(a: mesh.Vertex, b: mesh.Vertex, p: mesh.Vertex) bool {
     const eps = 1e-9;
-    if (@abs(orient2d(a, b, p)) > eps) return false;
-    return p.x >= @min(a.x, b.x) - eps and p.x <= @max(a.x, b.x) + eps and
-        p.y >= @min(a.y, b.y) - eps and p.y <= @max(a.y, b.y) + eps;
+    if (p.x < @min(a.x, b.x) - eps or p.x > @max(a.x, b.x) + eps) return false;
+    if (p.y < @min(a.y, b.y) - eps or p.y > @max(a.y, b.y) + eps) return false;
+    return @abs(orient2d(a, b, p)) <= eps;
 }
 
 test "predicates" {
@@ -108,6 +108,9 @@ test "predicates" {
     // Collinear
     const c_collinear = mesh.Vertex{ .x = 5.0, .y = 0.0 };
     try std.testing.expect(orient2d(a, b, c_collinear) == 0.0);
+    try std.testing.expect(pointOnSegment(a, b, c_collinear));
+    try std.testing.expect(!pointOnSegment(a, b, mesh.Vertex{ .x = 11.0, .y = 0.0 }));
+    try std.testing.expect(!pointOnSegment(a, b, mesh.Vertex{ .x = 5.0, .y = 1.0 }));
 
     // InCircle
     const d_inside = mesh.Vertex{ .x = 2.0, .y = 2.0 };
