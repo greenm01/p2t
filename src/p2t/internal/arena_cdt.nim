@@ -849,8 +849,12 @@ when defined(p2tSlotCdt):
 
     if not n1.isNil and n1Side >= 0:
       n1.setNeighborSlot(n1Side, ot, otherRotateAmount)
+    if not n2.isNil and n2Side >= 0:
+      n2.neighborSlots[n2Side] = NextEdgeIndex[rotateAmount].uint8
     if not n3.isNil and n3Side >= 0:
       n3.setNeighborSlot(n3Side, t, rotateAmount)
+    if not n4.isNil and n4Side >= 0:
+      n4.neighborSlots[n4Side] = NextEdgeIndex[otherRotateAmount].uint8
 
     t.legalize(p, op)
     ot.legalize(op, p)
