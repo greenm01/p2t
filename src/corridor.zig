@@ -1177,6 +1177,36 @@ test "interior triangle count excludes exterior concave mesh" {
     }
 }
 
+test "polygon output cull removes exterior triangles" {
+    const allocator = std.testing.allocator;
+    var engine = triangulate.Engine.init(allocator);
+    defer engine.deinit();
+
+    var arena = mesh.ThreadArena{};
+    defer arena.deinit(allocator);
+
+    const vertices = [_]mesh.Vertex{
+        .{ .x = 0.0, .y = 0.0 },
+        .{ .x = 4.0, .y = 0.0 },
+        .{ .x = 4.0, .y = 3.0 },
+        .{ .x = 2.0, .y = 1.0 },
+        .{ .x = 0.0, .y = 3.0 },
+    };
+
+    const mesh_ids = try buildTrustedRing(allocator, &vertices, &engine, &arena);
+    defer allocator.free(mesh_ids);
+
+    const interior_count = try engine.countInteriorTriangles();
+    try std.testing.expect(interior_count < engine.liveTriangleCount());
+
+    _ = try engine.cullExteriorTrianglesTrusted();
+    try std.testing.expectEqual(interior_count, engine.liveTriangleCount());
+    try std.testing.expectEqual(interior_count, try engine.countInteriorTriangles());
+    try engine.validateTopology();
+    try engine.validateConstraintRing(mesh_ids);
+    try engine.validateConstraintRingFlags(mesh_ids);
+}
+
 fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path: []const u8, trusted: bool) !void {
     const fixture = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, fixture_path, allocator, .limited(1024 * 1024));
     defer allocator.free(fixture);

@@ -27,11 +27,24 @@ Fast-predicate BRIO Cleave remains roughly `4x` slower than fast-poly2tri on the
 
 This supports continuing with polygon-aware construction work: a meaningful fraction of insertion/cavity maintenance is spent on triangles that do not contribute to final polygon output.
 
+## Latest Polygon-Output Prototype
+
+`bench-single -Dpredicate-policy=fast -Dinstrument-mesh-stats=true -Dspatial-hints=true -Dpolygon-output-mode=true` now runs an explicit post-recovery polygon-output cull. This preserves the full-mesh path by default, then detaches interior boundary adjacencies and tombstones exterior/super triangles as a separate timed phase.
+
+Current BRIO results:
+
+- `dude/brio-morton`: `92` interior triangles/run, `92` live mesh after cull, cull about `1.0 us/run`.
+- `nazca-monkey/brio-morton`: `1202` interior triangles/run, `1202` live mesh after cull, cull about `16.3 us/run`.
+- `nazca-heron/brio-morton`: `1034` interior triangles/run, `1034` live mesh after cull, cull about `13.5 us/run`.
+
+The post-hoc cull proves the output mode and gives clean polygon-only live meshes, but it adds time rather than closing the gap. The next optimization should move polygon awareness earlier so exterior regions avoid some insertion, hint, adjacency, or legalization work instead of only being removed after the full mesh is built.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.
    - Keep the current full-mesh CDT path as the correctness baseline.
-   - Prototype a mode that reduces work on exterior triangles after boundary recovery.
+   - The post-recovery cull prototype is in place behind `-Dpolygon-output-mode=true`.
+   - Next: move from post-hoc deletion toward avoiding exterior-triangle maintenance earlier.
    - Measure whether exterior culling can avoid legalization, hint updates, or adjacency maintenance outside the constrained polygon.
 
 2. Profile insertion against interior relevance.

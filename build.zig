@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) void {
     const instrument_mesh_stats = b.option(bool, "instrument-mesh-stats", "Count mesh walk, cavity, legalization, and corridor metrics for benchmark diagnostics") orelse false;
     const circumcircle_filter = b.option(bool, "circumcircle-filter", "Enable cached circumcircle outside filter for insertion cavity expansion") orelse false;
     const spatial_hints = b.option(bool, "spatial-hints", "Enable coarse spatial triangle start hints for insertion walks") orelse false;
+    const polygon_output_mode = b.option(bool, "polygon-output-mode", "Cull exterior/super triangles after boundary recovery in polygon-output benchmark prototypes") orelse false;
     const predicate_policy: PredicatePolicy = if (std.mem.eql(u8, predicate_policy_name, "adaptive"))
         .adaptive
     else if (std.mem.eql(u8, predicate_policy_name, "strict"))
@@ -43,6 +44,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "instrument_mesh_stats", instrument_mesh_stats);
     build_options.addOption(bool, "circumcircle_filter", circumcircle_filter);
     build_options.addOption(bool, "spatial_hints", spatial_hints);
+    build_options.addOption(bool, "polygon_output_mode", polygon_output_mode);
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.

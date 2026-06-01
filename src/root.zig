@@ -1,5 +1,6 @@
 const std = @import("std");
 
+pub const build_options = @import("build_options");
 pub const parser = @import("parser.zig");
 pub const mesh = @import("mesh.zig");
 pub const spatial = @import("spatial.zig");

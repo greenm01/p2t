@@ -91,9 +91,11 @@ pub const EngineStats = struct {
     cavity_relevance_interior: u64 = 0,
     cavity_relevance_exterior: u64 = 0,
     cavity_relevance_unclassified: u64 = 0,
+    polygon_culled_triangles: u64 = 0,
+    polygon_culled_adjacencies: u64 = 0,
 
     pub fn any(self: EngineStats) bool {
-        return self.walk_calls != 0 or self.inserted_points != 0 or self.corridor_traces != 0 or self.find_live_edge_calls != 0 or self.cavity_relevance_samples != 0;
+        return self.walk_calls != 0 or self.inserted_points != 0 or self.corridor_traces != 0 or self.find_live_edge_calls != 0 or self.cavity_relevance_samples != 0 or self.polygon_culled_triangles != 0;
     }
 };
 
@@ -1260,6 +1262,47 @@ pub const Engine = struct {
             }
         }
         return count;
+    }
+
+    fn shouldCullForPolygonOutput(self: *const Engine, tri_idx: usize) bool {
+        const tri = self.mesh.triangles.get(tri_idx);
+        return mesh.isDeadTriangle(tri) or triangleHasSuperVertex(tri) or self.isExteriorTriangleMarked(@intCast(tri_idx));
+    }
+
+    pub fn cullExteriorTrianglesTrusted(self: *Engine) !usize {
+        try self.markExteriorTriangles();
+
+        var culled: usize = 0;
+        var detached: usize = 0;
+        for (0..self.mesh.triangles.len) |tri_idx| {
+            if (self.shouldCullForPolygonOutput(tri_idx)) continue;
+
+            var tri = self.mesh.triangles.get(tri_idx);
+            var changed = false;
+            for (0..3) |side| {
+                const neighbor_idx = triangleAdj(tri, side);
+                if (neighbor_idx < 0) continue;
+                const neighbor_slot: usize = @intCast(neighbor_idx);
+                if (neighbor_slot >= self.mesh.triangles.len or self.shouldCullForPolygonOutput(neighbor_slot)) {
+                    setTriangleAdj(&tri, side, -1);
+                    changed = true;
+                    detached += 1;
+                }
+            }
+            if (changed) self.mesh.setTriangleTrusted(@intCast(tri_idx), tri);
+        }
+
+        for (0..self.mesh.triangles.len) |tri_idx| {
+            if (!self.shouldCullForPolygonOutput(tri_idx)) continue;
+            if (!mesh.isDeadTriangle(self.mesh.triangles.get(tri_idx))) {
+                self.mesh.markDeadTrusted(@intCast(tri_idx));
+                culled += 1;
+            }
+        }
+
+        self.statAdd("polygon_culled_triangles", @intCast(culled));
+        self.statAdd("polygon_culled_adjacencies", @intCast(detached));
+        return culled;
     }
 
     fn triangleContainsPointCoords(xs: []const f64, ys: []const f64, tri: mesh.Triangle, pt: mesh.Vertex) bool {

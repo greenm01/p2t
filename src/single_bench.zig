@@ -1,6 +1,7 @@
 const std = @import("std");
 const p2t = @import("p2t");
 
+const build_options = p2t.build_options;
 const Io = std.Io;
 const corridor_module = p2t.corridor;
 const mesh = p2t.mesh;
@@ -28,6 +29,7 @@ const RoundTiming = struct {
     total_us: u64 = 0,
     insertion_us: u64 = 0,
     constraint_us: u64 = 0,
+    cull_us: u64 = 0,
     extraction_us: u64 = 0,
     triangles: usize = 0,
     live_triangles: usize = 0,
@@ -110,12 +112,19 @@ fn runRound(
         }
         const constraint_end = timer.now(io);
 
-        const extraction_start = timer.now(io);
+        const cull_start = constraint_end;
+        if (build_options.polygon_output_mode) {
+            _ = try engine.cullExteriorTrianglesTrusted();
+        }
+        const cull_end = timer.now(io);
+
+        const extraction_start = cull_end;
         const interior_triangles = try engine.countInteriorTriangles();
         const extraction_end = timer.now(io);
 
         timing.insertion_us += timer.elapsedMicros(insertion_start, insertion_end);
         timing.constraint_us += timer.elapsedMicros(insertion_end, constraint_end);
+        timing.cull_us += timer.elapsedMicros(cull_start, cull_end);
         timing.extraction_us += timer.elapsedMicros(extraction_start, extraction_end);
         timing.triangles += interior_triangles;
         timing.live_triangles += engine.liveTriangleCount();
@@ -157,7 +166,7 @@ fn printCavityRelevance(case: Case, order: Order, stats: triangulate.EngineStats
 }
 
 fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) void {
-    const phase_us = best.insertion_us + best.constraint_us + best.extraction_us;
+    const phase_us = best.insertion_us + best.constraint_us + best.cull_us + best.extraction_us;
     const other_us = if (best.total_us > phase_us)
         best.total_us - phase_us
     else
@@ -179,15 +188,28 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
             median.total_us,
         },
     );
-    std.debug.print(
-        "  phase best/run: insertion {d:>.3} us, constraints {d:>.3} us, extraction {d:>.3} us, setup+other {d:>.3} us\n",
-        .{
-            perRun(best.insertion_us, case.iterations),
-            perRun(best.constraint_us, case.iterations),
-            perRun(best.extraction_us, case.iterations),
-            perRun(other_us, case.iterations),
-        },
-    );
+    if (build_options.polygon_output_mode) {
+        std.debug.print(
+            "  phase best/run: insertion {d:>.3} us, constraints {d:>.3} us, polygon cull {d:>.3} us, extraction {d:>.3} us, setup+other {d:>.3} us\n",
+            .{
+                perRun(best.insertion_us, case.iterations),
+                perRun(best.constraint_us, case.iterations),
+                perRun(best.cull_us, case.iterations),
+                perRun(best.extraction_us, case.iterations),
+                perRun(other_us, case.iterations),
+            },
+        );
+    } else {
+        std.debug.print(
+            "  phase best/run: insertion {d:>.3} us, constraints {d:>.3} us, extraction {d:>.3} us, setup+other {d:>.3} us\n",
+            .{
+                perRun(best.insertion_us, case.iterations),
+                perRun(best.constraint_us, case.iterations),
+                perRun(best.extraction_us, case.iterations),
+                perRun(other_us, case.iterations),
+            },
+        );
+    }
     if (best.predicate_stats.any()) {
         std.debug.print(
             "  predicates/run: orient {d:>.1}, incircle {d:>.1}; exact/run: orient {d:>.1}, incircle {d:>.1}\n",
@@ -256,6 +278,15 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
                 @as(f64, @floatFromInt(best.engine_stats.find_live_edge_fast_fallbacks)) / iterations_f64,
             },
         );
+        if (best.engine_stats.polygon_culled_triangles != 0) {
+            std.debug.print(
+                "  polygon output/run: culled tris {d:>.1}, detached adjacencies {d:>.1}\n",
+                .{
+                    @as(f64, @floatFromInt(best.engine_stats.polygon_culled_triangles)) / iterations_f64,
+                    @as(f64, @floatFromInt(best.engine_stats.polygon_culled_adjacencies)) / iterations_f64,
+                },
+            );
+        }
     }
 }
 
@@ -346,7 +377,11 @@ pub fn main(init: std.process.Init) !void {
     cases[2] = try loadCase(allocator, init.io, "nazca-heron", "tests/fixtures/nazca_heron.dat", 30);
     defer for (cases) |case| deinitCase(allocator, case);
 
-    std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, validation skipped)\n", .{});
+    if (build_options.polygon_output_mode) {
+        std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, polygon-output cull prototype)\n", .{});
+    } else {
+        std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, validation skipped)\n", .{});
+    }
     for (cases) |case| {
         try benchCase(init.io, allocator, case, .{ .name = "morton", .indices = case.morton_indices });
         try benchCase(init.io, allocator, case, .{ .name = "brio-morton", .indices = case.brio_indices });
