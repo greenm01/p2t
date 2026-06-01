@@ -102,6 +102,27 @@ CPU-count mode used `7` workers for monkey and `5` for heron. It produced simila
 
 This validates that piece construction can be run independently and merged deterministically, but it is not enough to beat current BRIO. Thread spawn/allocation overhead keeps the piece phase above the ideal max-piece bound, and the serial visibility decomposition is still the dominant cost. The next serious optimization remains a cheaper partition builder; a reusable worker pool is only worth building after decomposition stops dominating.
 
+## Latest Decomposition Fast-Visible Prototype
+
+`-Ddecomposition-fast-visible=true` now adds local cone pruning and segment AABB rejection to the visibility-diagonal splitter, while preserving the existing midpoint-in-ring and edge-crossing checks as correctness guards. Decomposition diagnostics are reported when mesh instrumentation is enabled.
+
+Baseline diagnostics show why decomposition was expensive:
+
+- `nazca-monkey`: about `1919` candidate diagonals/run, `1,017,949` midpoint scan iterations/run, and `78,940` edge scans/run.
+- `nazca-heron`: about `1212` candidate diagonals/run, `535,513` midpoint scan iterations/run, and `34,774` edge scans/run.
+
+Fast-visible results with serial partitioned BW:
+
+- `nazca-monkey/partitioned-bw`: total about `799.5 us/run`; decomposition down to about `487.6 us/run`; midpoint scans down to `287,753`, edge scans down to `4,826`, cone rejects `1312`, AABB rejects `20,863`.
+- `nazca-heron/partitioned-bw`: total about `563.7 us/run`; decomposition down to about `276.5 us/run`; midpoint scans down to `142,375`, edge scans down to `821`, cone rejects `878`, AABB rejects `12,997`.
+
+Fast-visible plus 4-worker piece construction:
+
+- `nazca-monkey/partitioned-bw-parallel`: about `705.5 us/run`; decomposition `475.3 us/run`, piece BW wall `156.7 us/run`, assembly `31.4 us/run`, seam `31.7 us/run`.
+- `nazca-heron/partitioned-bw-parallel`: about `481.6 us/run`; decomposition `273.6 us/run`, piece BW wall `136.3 us/run`, assembly `29.1 us/run`, seam `35.3 us/run`.
+
+This is a real decomposition improvement but still not competitive with current BRIO. The remaining decomposition cost is mostly candidate count plus midpoint scans; the next decomposition experiment should avoid repeated point-in-ring scans entirely, either by using a cheaper guaranteed-internal candidate construction or replacing this sampled visibility splitter with a proper monotone/trapezoid-style partition builder.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.

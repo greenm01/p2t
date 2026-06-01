@@ -49,6 +49,13 @@ const RoundTiming = struct {
     dd_diagonals: usize = 0,
     dd_max_piece_vertices: usize = 0,
     dd_total_piece_vertices: usize = 0,
+    dd_split_candidates: u64 = 0,
+    dd_midpoint_scans: u64 = 0,
+    dd_edge_scans: u64 = 0,
+    dd_aabb_rejects: u64 = 0,
+    dd_cone_rejects: u64 = 0,
+    dd_accepted_diagonals: u64 = 0,
+    dd_failed_splits: u64 = 0,
     piece_bw_threads: usize = 0,
     local_legalization_tests: u64 = 0,
     local_edge_flips: u64 = 0,
@@ -419,6 +426,13 @@ fn runRound(
             timing.dd_diagonals += decomp_stats.diagonals;
             timing.dd_max_piece_vertices = @max(timing.dd_max_piece_vertices, decomp_stats.max_piece_vertices);
             timing.dd_total_piece_vertices += decomp_stats.total_piece_vertices;
+            timing.dd_split_candidates += decomp_stats.split_candidates;
+            timing.dd_midpoint_scans += decomp_stats.midpoint_scans;
+            timing.dd_edge_scans += decomp_stats.edge_scans;
+            timing.dd_aabb_rejects += decomp_stats.aabb_rejects;
+            timing.dd_cone_rejects += decomp_stats.cone_rejects;
+            timing.dd_accepted_diagonals += decomp_stats.accepted_diagonals;
+            timing.dd_failed_splits += decomp_stats.failed_splits;
             timing.seam_legalization_tests += seam_stats.legalization_tests - seam_stats_start.legalization_tests;
             timing.seam_edge_flips += seam_stats.edge_flips - seam_stats_start.edge_flips;
 
@@ -473,6 +487,13 @@ fn runRound(
             timing.dd_diagonals += decomp_stats.diagonals;
             timing.dd_max_piece_vertices = @max(timing.dd_max_piece_vertices, decomp_stats.max_piece_vertices);
             timing.dd_total_piece_vertices += decomp_stats.total_piece_vertices;
+            timing.dd_split_candidates += decomp_stats.split_candidates;
+            timing.dd_midpoint_scans += decomp_stats.midpoint_scans;
+            timing.dd_edge_scans += decomp_stats.edge_scans;
+            timing.dd_aabb_rejects += decomp_stats.aabb_rejects;
+            timing.dd_cone_rejects += decomp_stats.cone_rejects;
+            timing.dd_accepted_diagonals += decomp_stats.accepted_diagonals;
+            timing.dd_failed_splits += decomp_stats.failed_splits;
             timing.local_legalization_tests += local_stats.legalization_tests - local_tests_start;
             timing.local_edge_flips += local_stats.edge_flips - local_flips_start;
             timing.seam_legalization_tests += seam_stats.legalization_tests - local_stats.legalization_tests;
@@ -583,6 +604,23 @@ fn printCavityRelevance(case: Case, order: Order, stats: triangulate.EngineStats
     );
 }
 
+fn printDecompositionDiagnostics(best: RoundTiming, iterations: usize) void {
+    if (best.dd_split_candidates == 0 and best.dd_midpoint_scans == 0 and best.dd_edge_scans == 0) return;
+    const iterations_f64 = @as(f64, @floatFromInt(iterations));
+    std.debug.print(
+        "  decomposition detail/run: candidates {d:>.1}, midpoint scans {d:>.1}, edge scans {d:>.1}, aabb rejects {d:>.1}, cone rejects {d:>.1}, accepted {d:>.1}, failed splits {d:>.1}\n",
+        .{
+            @as(f64, @floatFromInt(best.dd_split_candidates)) / iterations_f64,
+            @as(f64, @floatFromInt(best.dd_midpoint_scans)) / iterations_f64,
+            @as(f64, @floatFromInt(best.dd_edge_scans)) / iterations_f64,
+            @as(f64, @floatFromInt(best.dd_aabb_rejects)) / iterations_f64,
+            @as(f64, @floatFromInt(best.dd_cone_rejects)) / iterations_f64,
+            @as(f64, @floatFromInt(best.dd_accepted_diagonals)) / iterations_f64,
+            @as(f64, @floatFromInt(best.dd_failed_splits)) / iterations_f64,
+        },
+    );
+}
+
 fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) void {
     const phase_us = if (partitionedBwMode())
         best.decomposition_us + best.piece_bw_us + best.piece_merge_us + best.assembly_us + best.seam_legalization_us + best.cull_us + best.extraction_us
@@ -657,6 +695,7 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
                 @as(f64, @floatFromInt(best.seam_edge_flips)) / @as(f64, @floatFromInt(case.iterations)),
             },
         );
+        printDecompositionDiagnostics(best, case.iterations);
     } else if (build_options.trapezoid_dd_mode) {
         const avg_pieces = @as(f64, @floatFromInt(best.dd_pieces)) / @as(f64, @floatFromInt(case.iterations));
         const avg_diagonals = @as(f64, @floatFromInt(best.dd_diagonals)) / @as(f64, @floatFromInt(case.iterations));
@@ -694,6 +733,7 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
                 @as(f64, @floatFromInt(best.seam_edge_flips)) / @as(f64, @floatFromInt(case.iterations)),
             },
         );
+        printDecompositionDiagnostics(best, case.iterations);
     } else if (build_options.polygon_seed_mode) {
         std.debug.print(
             "  phase best/run: polygon seed {d:>.3} us, legalization {d:>.3} us, extraction {d:>.3} us, setup+other {d:>.3} us\n",

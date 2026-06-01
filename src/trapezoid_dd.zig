@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const mesh = @import("mesh.zig");
 const polygon_seed = @import("polygon_seed.zig");
 const predicates = @import("predicates.zig");
@@ -16,12 +17,38 @@ pub const Stats = struct {
     diagonals: usize = 0,
     max_piece_vertices: usize = 0,
     total_piece_vertices: usize = 0,
+    split_candidates: u64 = 0,
+    midpoint_scans: u64 = 0,
+    edge_scans: u64 = 0,
+    aabb_rejects: u64 = 0,
+    cone_rejects: u64 = 0,
+    accepted_diagonals: u64 = 0,
+    failed_splits: u64 = 0,
+};
+
+const Diagnostics = struct {
+    split_candidates: u64 = 0,
+    midpoint_scans: u64 = 0,
+    edge_scans: u64 = 0,
+    aabb_rejects: u64 = 0,
+    cone_rejects: u64 = 0,
+    accepted_diagonals: u64 = 0,
+    failed_splits: u64 = 0,
+
+    inline fn inc(self: *Diagnostics, comptime field: []const u8) void {
+        if (build_options.instrument_mesh_stats) @field(self, field) += 1;
+    }
+
+    inline fn add(self: *Diagnostics, comptime field: []const u8, value: u64) void {
+        if (build_options.instrument_mesh_stats) @field(self, field) += value;
+    }
 };
 
 pub const Decomposition = struct {
     rings: std.ArrayListUnmanaged(i32) = .empty,
     pieces: std.ArrayListUnmanaged(Piece) = .empty,
     diagonals: std.ArrayListUnmanaged(polygon_seed.Segment) = .empty,
+    diagnostics: Diagnostics = .{},
 
     pub fn deinit(self: *Decomposition, allocator: std.mem.Allocator) void {
         self.diagonals.deinit(allocator);
@@ -33,12 +60,20 @@ pub const Decomposition = struct {
         self.rings.clearRetainingCapacity();
         self.pieces.clearRetainingCapacity();
         self.diagonals.clearRetainingCapacity();
+        self.diagnostics = .{};
     }
 
     pub fn stats(self: *const Decomposition) Stats {
         var out = Stats{
             .pieces = self.pieces.items.len,
             .diagonals = self.diagonals.items.len,
+            .split_candidates = self.diagnostics.split_candidates,
+            .midpoint_scans = self.diagnostics.midpoint_scans,
+            .edge_scans = self.diagnostics.edge_scans,
+            .aabb_rejects = self.diagnostics.aabb_rejects,
+            .cone_rejects = self.diagnostics.cone_rejects,
+            .accepted_diagonals = self.diagnostics.accepted_diagonals,
+            .failed_splits = self.diagnostics.failed_splits,
         };
         for (self.pieces.items) |piece| {
             out.total_piece_vertices += piece.len;
@@ -85,10 +120,11 @@ fn segmentsTouchOrCross(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.
     return false;
 }
 
-fn pointInRing(vertices: []const mesh.Vertex, ring: []const i32, p: mesh.Vertex) bool {
+fn pointInRing(vertices: []const mesh.Vertex, ring: []const i32, p: mesh.Vertex, diagnostics: *Diagnostics) bool {
     var inside = false;
     var j = ring.len - 1;
     for (0..ring.len) |i| {
+        diagnostics.inc("midpoint_scans");
         const vi = vertices[@as(usize, @intCast(ring[i]))];
         const vj = vertices[@as(usize, @intCast(ring[j]))];
         if (pointOnSegment(vj, vi, p)) return true;
@@ -110,14 +146,45 @@ fn areAdjacent(len: usize, i: usize, j: usize) bool {
     return dist == 1 or dist + 1 == len;
 }
 
-fn visibleDiagonal(vertices: []const mesh.Vertex, ring: []const i32, i: usize, j: usize) bool {
+fn bboxDisjoint(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) bool {
+    return @max(a.x, b.x) < @min(c.x, d.x) - eps or
+        @max(c.x, d.x) < @min(a.x, b.x) - eps or
+        @max(a.y, b.y) < @min(c.y, d.y) - eps or
+        @max(c.y, d.y) < @min(a.y, b.y) - eps;
+}
+
+fn locallyVisibleFrom(vertices: []const mesh.Vertex, ring: []const i32, vertex_pos: usize, target_pos: usize) bool {
+    const prev_pos = if (vertex_pos == 0) ring.len - 1 else vertex_pos - 1;
+    const next_pos = (vertex_pos + 1) % ring.len;
+    const prev = vertices[@as(usize, @intCast(ring[prev_pos]))];
+    const curr = vertices[@as(usize, @intCast(ring[vertex_pos]))];
+    const next = vertices[@as(usize, @intCast(ring[next_pos]))];
+    const target = vertices[@as(usize, @intCast(ring[target_pos]))];
+
+    const turn = orient(prev, curr, next);
+    const left_next = orient(curr, next, target);
+    const left_prev = orient(prev, curr, target);
+    if (turn >= -eps) {
+        return left_next >= -eps and left_prev >= -eps;
+    }
+    return !(left_next < -eps and left_prev < -eps);
+}
+
+fn visibleDiagonal(vertices: []const mesh.Vertex, ring: []const i32, i: usize, j: usize, diagnostics: *Diagnostics) bool {
     if (i == j or areAdjacent(ring.len, i, j)) return false;
+    diagnostics.inc("split_candidates");
+
+    if (build_options.decomposition_fast_visible and (!locallyVisibleFrom(vertices, ring, i, j) or !locallyVisibleFrom(vertices, ring, j, i))) {
+        diagnostics.inc("cone_rejects");
+        return false;
+    }
+
     const a_idx = ring[i];
     const b_idx = ring[j];
     const a = vertices[@as(usize, @intCast(a_idx))];
     const b = vertices[@as(usize, @intCast(b_idx))];
     const mid = mesh.Vertex{ .x = (a.x + b.x) * 0.5, .y = (a.y + b.y) * 0.5 };
-    if (!pointInRing(vertices, ring, mid)) return false;
+    if (!pointInRing(vertices, ring, mid, diagnostics)) return false;
 
     for (0..ring.len) |k| {
         const next = (k + 1) % ring.len;
@@ -126,13 +193,19 @@ fn visibleDiagonal(vertices: []const mesh.Vertex, ring: []const i32, i: usize, j
         if (c_idx == a_idx or c_idx == b_idx or d_idx == a_idx or d_idx == b_idx) continue;
         const c = vertices[@as(usize, @intCast(c_idx))];
         const d = vertices[@as(usize, @intCast(d_idx))];
+        if (build_options.decomposition_fast_visible and bboxDisjoint(a, b, c, d)) {
+            diagnostics.inc("aabb_rejects");
+            continue;
+        }
+        diagnostics.inc("edge_scans");
         if (segmentsTouchOrCross(a, b, c, d)) return false;
     }
 
+    diagnostics.inc("accepted_diagonals");
     return true;
 }
 
-fn findSplitDiagonal(vertices: []const mesh.Vertex, ring: []const i32) ?struct { i: usize, j: usize } {
+fn findSplitDiagonal(vertices: []const mesh.Vertex, ring: []const i32, diagnostics: *Diagnostics) ?struct { i: usize, j: usize } {
     if (ring.len <= 6) return null;
 
     const i_stride = @max(@as(usize, 1), ring.len / 64);
@@ -146,11 +219,12 @@ fn findSplitDiagonal(vertices: []const mesh.Vertex, ring: []const i32) ?struct {
             const wrapped = @mod(raw, @as(isize, @intCast(ring.len)));
             const j: usize = @intCast(wrapped);
             if (i == j or areAdjacent(ring.len, i, j)) continue;
-            if (!visibleDiagonal(vertices, ring, i, j)) continue;
+            if (!visibleDiagonal(vertices, ring, i, j, diagnostics)) continue;
             return .{ .i = i, .j = j };
         }
     }
 
+    diagnostics.inc("failed_splits");
     return null;
 }
 
@@ -201,7 +275,7 @@ pub fn decomposeSimple(allocator: std.mem.Allocator, vertices: []const mesh.Vert
             continue;
         }
 
-        const split = findSplitDiagonal(vertices, ring) orelse {
+        const split = findSplitDiagonal(vertices, ring, &out.diagnostics) orelse {
             const start = out.rings.items.len;
             try out.rings.appendSlice(allocator, ring);
             try out.pieces.append(allocator, .{ .start = start, .len = ring.len });
