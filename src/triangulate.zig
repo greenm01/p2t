@@ -57,6 +57,30 @@ pub const TriangleTransaction = struct {
     }
 };
 
+pub const InsertionPlan = struct {
+    cavity: std.ArrayListUnmanaged(i32) = .empty,
+    edges: std.ArrayListUnmanaged(Edge) = .empty,
+    footprint: std.ArrayListUnmanaged(i32) = .empty,
+    versions: std.ArrayListUnmanaged(TriangleVersionSnapshot) = .empty,
+    err: ?anyerror = null,
+
+    pub fn clearRetainingCapacity(self: *InsertionPlan) void {
+        self.cavity.clearRetainingCapacity();
+        self.edges.clearRetainingCapacity();
+        self.footprint.clearRetainingCapacity();
+        self.versions.clearRetainingCapacity();
+        self.err = null;
+    }
+
+    pub fn deinit(self: *InsertionPlan, allocator: std.mem.Allocator) void {
+        self.versions.deinit(allocator);
+        self.footprint.deinit(allocator);
+        self.edges.deinit(allocator);
+        self.cavity.deinit(allocator);
+        self.* = .{};
+    }
+};
+
 pub const EngineStats = struct {
     walk_calls: u64 = 0,
     walk_steps: u64 = 0,
@@ -94,9 +118,11 @@ pub const EngineStats = struct {
     cavity_relevance_unclassified: u64 = 0,
     polygon_culled_triangles: u64 = 0,
     polygon_culled_adjacencies: u64 = 0,
+    transaction_retries: u64 = 0,
+    transaction_conflicts: u64 = 0,
 
     pub fn any(self: EngineStats) bool {
-        return self.walk_calls != 0 or self.inserted_points != 0 or self.legalization_tests != 0 or self.edge_flips != 0 or self.corridor_traces != 0 or self.find_live_edge_calls != 0 or self.cavity_relevance_samples != 0 or self.polygon_culled_triangles != 0;
+        return self.walk_calls != 0 or self.inserted_points != 0 or self.legalization_tests != 0 or self.edge_flips != 0 or self.corridor_traces != 0 or self.find_live_edge_calls != 0 or self.cavity_relevance_samples != 0 or self.polygon_culled_triangles != 0 or self.transaction_retries != 0 or self.transaction_conflicts != 0;
     }
 };
 
@@ -446,6 +472,30 @@ pub const Engine = struct {
         return self.last_valid_tri;
     }
 
+    fn hintedStartTriangleNoStats(self: *const Engine, pt: mesh.Vertex) i32 {
+        if (!build_options.spatial_hints) return self.last_valid_tri;
+        if (self.hint_grid.items.len == 0) return self.last_valid_tri;
+
+        const cell = self.hintCellUnchecked(pt);
+        const direct = self.hint_grid.items[self.hintIndex(cell.x, cell.y)];
+        if (self.isValidStartTriangle(direct)) return direct;
+
+        const min_x = if (cell.x == 0) 0 else cell.x - 1;
+        const min_y = if (cell.y == 0) 0 else cell.y - 1;
+        const max_x = @min(cell.x + 1, self.hint_grid_side - 1);
+        const max_y = @min(cell.y + 1, self.hint_grid_side - 1);
+        var y = min_y;
+        while (y <= max_y) : (y += 1) {
+            var x = min_x;
+            while (x <= max_x) : (x += 1) {
+                const candidate = self.hint_grid.items[self.hintIndex(x, y)];
+                if (self.isValidStartTriangle(candidate)) return candidate;
+            }
+        }
+
+        return self.last_valid_tri;
+    }
+
     fn updateHintForPoint(self: *Engine, pt: mesh.Vertex, tri_idx: i32) void {
         if (!build_options.spatial_hints) return;
         if (self.hint_grid.items.len == 0 or !self.isValidStartTriangle(tri_idx)) return;
@@ -673,6 +723,58 @@ pub const Engine = struct {
         }
 
         self.statAdd("walk_fallback_scan_tris", scanned);
+        return -1;
+    }
+
+    fn walkNoStats(self: *const Engine, start_tri: i32, target: mesh.Vertex) i32 {
+        const xs = self.mesh.vertices.items(.x);
+        const ys = self.mesh.vertices.items(.y);
+        var curr = start_tri;
+        var limit: usize = 10000;
+
+        while (curr != -1 and limit > 0) : (limit -= 1) {
+            if (curr < 0) break;
+            const curr_slot = @as(usize, @intCast(curr));
+            if (curr_slot >= self.mesh.triangles.len) break;
+            const tri = self.mesh.triangles.get(curr_slot);
+            if (mesh.isDeadTriangle(tri)) break;
+
+            const v0: usize = @intCast(tri.v0);
+            const v1: usize = @intCast(tri.v1);
+            const v2: usize = @intCast(tri.v2);
+
+            if (predicates.orient2dCoords(xs[v0], ys[v0], xs[v1], ys[v1], target.x, target.y) < 0.0) {
+                curr = tri.adj0;
+                continue;
+            }
+            if (predicates.orient2dCoords(xs[v1], ys[v1], xs[v2], ys[v2], target.x, target.y) < 0.0) {
+                curr = tri.adj1;
+                continue;
+            }
+            if (predicates.orient2dCoords(xs[v2], ys[v2], xs[v0], ys[v0], target.x, target.y) < 0.0) {
+                curr = tri.adj2;
+                continue;
+            }
+
+            return curr;
+        }
+
+        var i: usize = 0;
+        while (i < self.mesh.triangles.len) : (i += 1) {
+            const tri = self.mesh.triangles.get(i);
+            if (mesh.isDeadTriangle(tri)) continue;
+            const v0: usize = @intCast(tri.v0);
+            const v1: usize = @intCast(tri.v1);
+            const v2: usize = @intCast(tri.v2);
+
+            if (predicates.orient2dCoords(xs[v0], ys[v0], xs[v1], ys[v1], target.x, target.y) >= 0.0 and
+                predicates.orient2dCoords(xs[v1], ys[v1], xs[v2], ys[v2], target.x, target.y) >= 0.0 and
+                predicates.orient2dCoords(xs[v2], ys[v2], xs[v0], ys[v0], target.x, target.y) >= 0.0)
+            {
+                return @as(i32, @intCast(i));
+            }
+        }
+
         return -1;
     }
 
@@ -1965,6 +2067,18 @@ pub const Engine = struct {
         return false;
     }
 
+    fn pointOnTriangleEdgeNoStats(self: *const Engine, tri: mesh.Triangle, pt: mesh.Vertex) bool {
+        const xs = self.mesh.vertices.items(.x);
+        const ys = self.mesh.vertices.items(.y);
+        inline for (0..3) |side| {
+            const edge = triangleEdgeAt(side, tri);
+            const v1: usize = @intCast(edge.v1);
+            const v2: usize = @intCast(edge.v2);
+            if (predicates.pointOnSegmentCoords(xs[v1], ys[v1], xs[v2], ys[v2], pt.x, pt.y)) return true;
+        }
+        return false;
+    }
+
     fn ensureBoundaryVertexCounters(self: *Engine, vertex_count: usize) !void {
         if (self.boundary_vertex_marks.items.len >= vertex_count) return;
 
@@ -2089,26 +2203,209 @@ pub const Engine = struct {
     pub fn insertPoint(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
         for (0..max_transaction_attempts) |_| {
             return self.insertPointAttempt(arena, pt, true, .transactional) catch |err| {
-                if (isRetryableTransactionError(err)) continue;
+                if (isRetryableTransactionError(err)) {
+                    self.statInc("transaction_retries");
+                    continue;
+                }
                 return err;
             };
         }
+        self.statInc("transaction_conflicts");
         return error.TransactionConflict;
     }
 
     pub fn insertUniquePoint(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
         for (0..max_transaction_attempts) |_| {
             return self.insertPointAttempt(arena, pt, false, .transactional) catch |err| {
-                if (isRetryableTransactionError(err)) continue;
+                if (isRetryableTransactionError(err)) {
+                    self.statInc("transaction_retries");
+                    continue;
+                }
                 return err;
             };
         }
+        self.statInc("transaction_conflicts");
         return error.TransactionConflict;
     }
 
     /// Single-thread fast path for already-deduplicated input. Not safe for concurrent mesh mutation.
     pub fn insertUniquePointTrusted(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
         return self.insertPointAttempt(arena, pt, false, .trusted);
+    }
+
+    fn isInsideCircumcircleNoStats(self: *const Engine, xs: []const f64, ys: []const f64, tri_idx: i32, pt: mesh.Vertex) bool {
+        if (tri_idx == -1) return false;
+        const tri = self.mesh.triangles.get(@as(usize, @intCast(tri_idx)));
+        if (mesh.isDeadTriangle(tri)) return false;
+        const v0: usize = @intCast(tri.v0);
+        const v1: usize = @intCast(tri.v1);
+        const v2: usize = @intCast(tri.v2);
+        return predicates.incircleCoords(xs[v0], ys[v0], xs[v1], ys[v1], xs[v2], ys[v2], pt.x, pt.y) > 0.0;
+    }
+
+    fn appendPlanCavityTriangle(plan: *InsertionPlan, allocator: std.mem.Allocator, tri_idx: i32) !void {
+        if (containsTriangle(plan.cavity.items, tri_idx)) return;
+        try plan.cavity.append(allocator, tri_idx);
+    }
+
+    fn extractPlanCavityBoundary(self: *const Engine, allocator: std.mem.Allocator, plan: *InsertionPlan) !void {
+        var edge_counter = CavityEdgeCounter{};
+        defer edge_counter.deinit(allocator);
+        try edge_counter.reset(allocator, plan.cavity.items.len * 3);
+
+        for (plan.cavity.items) |t_idx| {
+            const tri = self.mesh.triangles.get(@as(usize, @intCast(t_idx)));
+            if (mesh.isDeadTriangle(tri)) return error.InvalidCavityBoundary;
+            const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
+            for (neighbors, 0..) |n_idx, side| {
+                const edge = triangleEdge(tri, side);
+                try edge_counter.add(allocator, .{
+                    .adj_tri = n_idx,
+                    .v1 = edge.v1,
+                    .v2 = edge.v2,
+                    .old_tri = t_idx,
+                });
+            }
+        }
+
+        try edge_counter.appendBoundaryTo(allocator, &plan.edges);
+
+        for (plan.edges.items) |e| {
+            if (e.adj_tri != -1 and containsTriangle(plan.cavity.items, e.adj_tri)) {
+                return error.InvalidCavityBoundary;
+            }
+        }
+    }
+
+    pub fn buildInsertionPlan(self: *const Engine, allocator: std.mem.Allocator, pt: mesh.Vertex, plan: *InsertionPlan) !void {
+        plan.clearRetainingCapacity();
+
+        const start_tri = self.hintedStartTriangleNoStats(pt);
+        const container = self.walkNoStats(start_tri, pt);
+        if (container < 0) return error.WalkFailed;
+
+        try appendPlanCavityTriangle(plan, allocator, container);
+
+        const cavity_xs = self.mesh.vertices.items(.x);
+        const cavity_ys = self.mesh.vertices.items(.y);
+        var i: usize = 0;
+        while (i < plan.cavity.items.len) : (i += 1) {
+            const t_idx = plan.cavity.items[i];
+            const tri = self.mesh.triangles.get(@as(usize, @intCast(t_idx)));
+            inline for (0..3) |side| {
+                const n_idx = triangleAdjAt(side, tri);
+                if (n_idx != -1 and !containsTriangle(plan.cavity.items, n_idx)) {
+                    const edge = triangleEdgeAt(side, tri);
+                    const inside_circumcircle = self.isInsideCircumcircleNoStats(cavity_xs, cavity_ys, n_idx, pt);
+                    const v1: usize = @intCast(edge.v1);
+                    const v2: usize = @intCast(edge.v2);
+                    const point_on_edge = !inside_circumcircle and predicates.pointOnSegmentCoords(cavity_xs[v1], cavity_ys[v1], cavity_xs[v2], cavity_ys[v2], pt.x, pt.y);
+
+                    if (inside_circumcircle or point_on_edge) {
+                        try appendPlanCavityTriangle(plan, allocator, n_idx);
+                    }
+                }
+            }
+        }
+
+        try self.extractPlanCavityBoundary(allocator, plan);
+        plan.footprint.clearRetainingCapacity();
+        for (plan.cavity.items) |tri_idx| {
+            try self.appendTransactionTriangle(allocator, &plan.footprint, tri_idx);
+        }
+        for (plan.edges.items) |edge| {
+            try self.appendTransactionTriangle(allocator, &plan.footprint, edge.adj_tri);
+        }
+        if (!try self.snapshotTransactionFootprint(allocator, plan.footprint.items, &plan.versions)) return error.TransactionConflict;
+    }
+
+    pub fn commitInsertionPlan(self: *Engine, allocator: std.mem.Allocator, arena: *mesh.ThreadArena, pt: mesh.Vertex, plan: *InsertionPlan) !?i32 {
+        if (plan.err != null) return null;
+        if (!self.validateTriangleVersions(plan.versions.items)) return null;
+
+        self.statInc("inserted_points");
+        self.statAdd("cavity_triangles", @intCast(plan.cavity.items.len));
+        self.statAdd("cavity_edges", @intCast(plan.edges.items.len));
+        self.statMax("cavity_max_triangles", @intCast(plan.cavity.items.len));
+        self.statMax("cavity_max_edges", @intCast(plan.edges.items.len));
+        try self.recordCavityRelevanceSamples(plan.cavity.items);
+
+        const reused_cavity_count = @min(plan.edges.items.len, plan.cavity.items.len);
+        const needed_after_cavity = plan.edges.items.len - reused_cavity_count;
+        const reused_freelist_count = @min(needed_after_cavity, arena.freelist.items.len);
+        const appended_triangle_count = needed_after_cavity - reused_freelist_count;
+        const leftover_cavity_count = plan.cavity.items.len - reused_cavity_count;
+
+        var new_tri_indices: std.ArrayListUnmanaged(i32) = .empty;
+        defer new_tri_indices.deinit(allocator);
+        try new_tri_indices.ensureTotalCapacity(allocator, plan.edges.items.len);
+        for (0..reused_cavity_count) |edge_i| {
+            new_tri_indices.appendAssumeCapacity(plan.cavity.items[plan.cavity.items.len - 1 - edge_i]);
+        }
+        for (0..reused_freelist_count) |free_i| {
+            new_tri_indices.appendAssumeCapacity(arena.freelist.items[arena.freelist.items.len - 1 - free_i]);
+        }
+        for (0..appended_triangle_count) |append_i| {
+            new_tri_indices.appendAssumeCapacity(@as(i32, @intCast(self.mesh.triangles.len + append_i)));
+        }
+
+        try self.mesh.vertices.ensureUnusedCapacity(self.allocator, 1);
+        try self.mesh.ensureTriangleCapacity(self.allocator, self.mesh.triangles.len + appended_triangle_count);
+        try arena.freelist.ensureUnusedCapacity(self.allocator, leftover_cavity_count);
+        if (self.vertex_hint_tri.items.len < self.mesh.vertices.len + 1) {
+            try self.ensureVertexMetadataCapacity(self.mesh.vertices.len + 1);
+        }
+
+        const pt_idx = @as(i32, @intCast(self.mesh.vertices.len));
+        try self.mesh.vertices.append(self.allocator, pt);
+
+        for (plan.cavity.items) |t_idx| {
+            self.mesh.markDead(t_idx);
+        }
+        for (plan.cavity.items[0..leftover_cavity_count]) |t_idx| {
+            try arena.tombstone(self.allocator, t_idx);
+        }
+        for (0..reused_freelist_count) |_| {
+            _ = arena.getFreeSlot().?;
+        }
+        for (0..appended_triangle_count) |append_i| {
+            try self.mesh.ensureTriangleSlot(self.allocator, new_tri_indices.items[reused_cavity_count + reused_freelist_count + append_i]);
+        }
+
+        const emit_xs = self.mesh.vertices.items(.x);
+        const emit_ys = self.mesh.vertices.items(.y);
+        for (plan.edges.items, 0..) |e, edge_i| {
+            const t_idx = new_tri_indices.items[edge_i];
+            self.last_valid_tri = t_idx;
+
+            var a = e.v1;
+            var b = e.v2;
+            if (predicates.orient2dCoords(emit_xs[@as(usize, @intCast(a))], emit_ys[@as(usize, @intCast(a))], emit_xs[@as(usize, @intCast(b))], emit_ys[@as(usize, @intCast(b))], pt.x, pt.y) < 0.0) {
+                const tmp = a;
+                a = b;
+                b = tmp;
+            }
+
+            const new_tri = mesh.Triangle{
+                .v0 = a,
+                .v1 = b,
+                .v2 = pt_idx,
+                .adj0 = -1,
+                .adj1 = -1,
+                .adj2 = -1,
+            };
+            self.mesh.setTriangleFresh(t_idx, new_tri);
+            self.updateTriangleCircumcircle(t_idx, new_tri);
+            if (e.adj_tri != -1) {
+                try self.linkTrianglesByEdge(t_idx, e.adj_tri, e.v1, e.v2);
+            }
+        }
+        try self.linkNewTriangles(new_tri_indices.items);
+        if (@as(usize, @intCast(pt_idx)) < self.vertex_hint_tri.items.len) {
+            self.vertex_hint_tri.items[@as(usize, @intCast(pt_idx))] = self.last_valid_tri;
+        }
+        self.updateHintForPoint(pt, self.last_valid_tri);
+        return pt_idx;
     }
 
     // Simplified Bowyer-Watson insertion for testing

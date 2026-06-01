@@ -29,6 +29,8 @@ pub fn build(b: *std.Build) void {
     const instrument_mesh_stats = b.option(bool, "instrument-mesh-stats", "Count mesh walk, cavity, legalization, and corridor metrics for benchmark diagnostics") orelse false;
     const circumcircle_filter = b.option(bool, "circumcircle-filter", "Enable cached circumcircle outside filter for insertion cavity expansion") orelse false;
     const spatial_hints = b.option(bool, "spatial-hints", "Enable coarse spatial triangle start hints for insertion walks") orelse false;
+    const brio_parallel_mode = b.option(bool, "brio-parallel-mode", "Run BRIO insertion through the experimental threaded benchmark path") orelse false;
+    const brio_threads = b.option(usize, "brio-threads", "Worker count for experimental BRIO parallel benchmark mode; 0 uses detected CPU count") orelse 0;
     const polygon_output_mode = b.option(bool, "polygon-output-mode", "Cull exterior/super triangles after boundary recovery in polygon-output benchmark prototypes") orelse false;
     const polygon_seed_mode = b.option(bool, "polygon-seed-mode", "Build simple polygon interiors from an Earcut-style seed, then legalize unconstrained diagonals") orelse false;
     const trapezoid_dd_mode = b.option(bool, "trapezoid-dd-mode", "Partition simple polygons with visibility diagonals, legalize pieces, then legalize seams") orelse false;
@@ -66,6 +68,8 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "instrument_mesh_stats", instrument_mesh_stats);
     build_options.addOption(bool, "circumcircle_filter", circumcircle_filter);
     build_options.addOption(bool, "spatial_hints", spatial_hints);
+    build_options.addOption(bool, "brio_parallel_mode", brio_parallel_mode);
+    build_options.addOption(usize, "brio_threads", brio_threads);
     build_options.addOption(bool, "polygon_output_mode", polygon_output_mode);
     build_options.addOption(bool, "polygon_seed_mode", polygon_seed_mode);
     build_options.addOption(bool, "trapezoid_dd_mode", trapezoid_dd_mode);

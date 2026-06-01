@@ -200,6 +200,30 @@ Current cone-visible, cutoff-768, 4-worker macOS results:
 
 Ring order avoids local sort allocation and improves seam-edge lookup locality, but it regresses monkey piece construction badly. Morton is worse on both large fixtures. Keep BRIO as the production candidate and use the new flag only for diagnostics or future decomposition-specific order tests.
 
+## Latest BRIO Parallel Scaffold
+
+`-Dbrio-parallel-mode=true` now runs the large single-mesh benchmark through a BRIO bucket threaded scaffold. `-Dbrio-threads=N` controls worker count. The mode processes BRIO rounds as serial barriers, splits each round into worker chunks, and currently protects the existing trusted insertion path with a coarse insertion lock. Constraint recovery remains serial.
+
+Current macOS results with fast predicates and spatial hints:
+
+- BRIO baseline: monkey about `181.6 us/run`, heron about `154.4 us/run`.
+- 2-worker `brio-parallel`: monkey about `273.4 us/run`, heron about `255.6 us/run`.
+- 4-worker `brio-parallel`: monkey about `341.0 us/run`, heron about `331.5 us/run`.
+
+This validates the threaded benchmark harness, BRIO bucket barriers, and cross-platform worker plumbing, but it is not a speedup yet. The coarse insertion lock serializes all useful work, and extra worker/barrier overhead grows with thread count. The next parallel experiment should shrink the lock: pre-reserve all append slots or add an append allocator so independent transactional cavities can mutate disjoint locked triangles without taking a whole-insertion mutex.
+
+## Latest BRIO Staged-Planning Prototype
+
+The BRIO parallel path now builds insertion plans in worker threads for each BRIO bucket, then commits valid plans serially in deterministic order. A plan captures the walk/cavity result, boundary edges, footprint triangles, and triangle version snapshots. If a plan is stale, the benchmark switches the rest of that bucket to the existing trusted serial insertion path.
+
+Current 4-worker macOS results with fast predicates and spatial hints:
+
+- `dude/brio-parallel`: about `90.7 us/run`; planning about `67.0 us/run`, commit+fallback about `12.0 us/run`, `7/94` insertions committed from plans.
+- `nazca-monkey/brio-parallel`: about `420.7 us/run`; planning about `195.4 us/run`, commit+fallback about `169.0 us/run`, `9/1204` insertions committed from plans.
+- `nazca-heron/brio-parallel`: about `384.5 us/run`; planning about `180.4 us/run`, commit+fallback about `148.3 us/run`, `9/1036` insertions committed from plans.
+
+This rejects one-shot pre-bucket speculative planning as the next speedup. BRIO bucket insertions are strongly dependent: after the first few commits, most plans are stale. The useful signal is that safe parallel planning alone is not enough; the next BRIO parallel attempt needs either smaller spatial wavefronts with commit between waves, true concurrent disjoint-cavity commits, or a different partitioned strategy where independent work is established before insertion.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.

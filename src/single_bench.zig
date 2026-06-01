@@ -27,6 +27,12 @@ const Order = struct {
     indices: []const usize,
 };
 
+const bench_brio_seed = 0xC1EAFEED;
+
+fn brioParallelMode() bool {
+    return build_options.brio_parallel_mode;
+}
+
 fn decompositionMaxPieceVertices() usize {
     return @max(@as(usize, 3), build_options.decomposition_max_piece_vertices);
 }
@@ -66,6 +72,18 @@ const RoundTiming = struct {
     local_edge_flips: u64 = 0,
     seam_legalization_tests: u64 = 0,
     seam_edge_flips: u64 = 0,
+    brio_parallel_threads: usize = 0,
+    brio_parallel_buckets: usize = 0,
+    brio_parallel_inserted: usize = 0,
+    brio_parallel_lock_wait_us: u64 = 0,
+    brio_parallel_lock_hold_us: u64 = 0,
+    brio_parallel_dispatch_us: u64 = 0,
+    brio_parallel_plan_us: u64 = 0,
+    brio_parallel_commit_us: u64 = 0,
+    brio_parallel_planned: usize = 0,
+    brio_parallel_committed: usize = 0,
+    brio_parallel_invalidated: usize = 0,
+    brio_parallel_serial_fallbacks: usize = 0,
     predicate_stats: predicates.PredicateStats = .{},
     engine_stats: triangulate.EngineStats = .{},
 };
@@ -85,6 +103,245 @@ fn pcdtPieceOrderName() []const u8 {
         .ring => "ring",
     };
 }
+
+const BrioParallelStats = struct {
+    threads: usize = 1,
+    buckets: usize = 0,
+    inserted: usize = 0,
+    lock_wait_us: u64 = 0,
+    lock_hold_us: u64 = 0,
+    dispatch_us: u64 = 0,
+    plan_us: u64 = 0,
+    commit_us: u64 = 0,
+    planned: usize = 0,
+    committed: usize = 0,
+    invalidated: usize = 0,
+    serial_fallbacks: usize = 0,
+};
+
+const BrioWorkerStats = struct {
+    planned: usize = 0,
+    plan_errors: usize = 0,
+};
+
+const BrioWorkerContext = struct {
+    executor: *BrioParallelExecutor,
+    index: usize,
+    arena: mesh.ThreadArena = .{},
+    stats: BrioWorkerStats = .{},
+};
+
+fn brioConfiguredWorkerCount() !usize {
+    const requested = build_options.brio_threads;
+    const detected = if (requested == 0) try std.Thread.getCpuCount() else requested;
+    return @max(@as(usize, 1), detected);
+}
+
+fn brioExecutorWorkerMain(context: *BrioWorkerContext) void {
+    context.executor.workerLoop(context);
+}
+
+const BrioParallelExecutor = struct {
+    io: Io = undefined,
+    allocator: std.mem.Allocator = undefined,
+    thread_count: usize = 0,
+    threads: []std.Thread = &.{},
+    contexts: []BrioWorkerContext = &.{},
+    mutex: Io.Mutex = .init,
+    ready: Io.Condition = .init,
+    done: Io.Condition = .init,
+    shutdown: bool = false,
+    generation: usize = 0,
+    active_workers: usize = 0,
+    pending_workers: usize = 0,
+    start_order_pos: usize = 0,
+    end_order_pos: usize = 0,
+    engine: *triangulate.Engine = undefined,
+    vertices: []const mesh.Vertex = &.{},
+    order: []const usize = &.{},
+    plans: []triangulate.InsertionPlan = &.{},
+
+    fn init(self: *BrioParallelExecutor, io: Io, allocator: std.mem.Allocator, thread_count: usize) !void {
+        self.* = .{
+            .io = io,
+            .allocator = allocator,
+            .thread_count = thread_count,
+        };
+        self.threads = try allocator.alloc(std.Thread, thread_count);
+        errdefer {
+            allocator.free(self.threads);
+            self.threads = &.{};
+        }
+        self.contexts = try allocator.alloc(BrioWorkerContext, thread_count);
+        errdefer {
+            for (self.contexts) |*context| context.arena.deinit(allocator);
+            allocator.free(self.contexts);
+            self.contexts = &.{};
+        }
+
+        var started_threads: usize = 0;
+        for (0..thread_count) |i| {
+            self.contexts[i] = .{
+                .executor = self,
+                .index = i,
+            };
+            self.threads[i] = std.Thread.spawn(.{}, brioExecutorWorkerMain, .{&self.contexts[i]}) catch |err| {
+                self.requestShutdown();
+                for (self.threads[0..started_threads]) |thread| thread.join();
+                return err;
+            };
+            started_threads += 1;
+        }
+    }
+
+    fn deinit(self: *BrioParallelExecutor) void {
+        if (self.threads.len == 0) return;
+        self.requestShutdown();
+        for (self.threads) |thread| thread.join();
+        for (self.contexts) |*context| context.arena.deinit(self.allocator);
+        self.allocator.free(self.contexts);
+        self.allocator.free(self.threads);
+        self.* = .{};
+    }
+
+    fn requestShutdown(self: *BrioParallelExecutor) void {
+        self.mutex.lockUncancelable(self.io);
+        self.shutdown = true;
+        self.generation +%= 1;
+        self.ready.broadcast(self.io);
+        self.mutex.unlock(self.io);
+    }
+
+    fn runBucket(
+        self: *BrioParallelExecutor,
+        engine: *triangulate.Engine,
+        arena: *mesh.ThreadArena,
+        vertices: []const mesh.Vertex,
+        order: []const usize,
+        mesh_ids: []i32,
+        start_order_pos: usize,
+        end_order_pos: usize,
+    ) !BrioParallelStats {
+        const item_count = end_order_pos - start_order_pos;
+        if (item_count == 0) return .{};
+        const active_workers = @min(self.thread_count, item_count);
+        if (active_workers <= 1) {
+            var stats = BrioParallelStats{ .threads = 1, .buckets = 1 };
+            for (order[start_order_pos..end_order_pos]) |vertex_idx| {
+                mesh_ids[vertex_idx] = try engine.insertUniquePointTrusted(arena, vertices[vertex_idx]);
+                stats.inserted += 1;
+                stats.serial_fallbacks += 1;
+            }
+            return stats;
+        }
+
+        const plans = try self.allocator.alloc(triangulate.InsertionPlan, item_count);
+        defer self.allocator.free(plans);
+        for (plans) |*plan| plan.* = .{};
+
+        for (self.contexts) |*context| context.stats = .{};
+        const dispatch_start = timer.now(self.io);
+        self.mutex.lockUncancelable(self.io);
+        self.engine = engine;
+        self.vertices = vertices;
+        self.order = order;
+        self.plans = plans;
+        self.start_order_pos = start_order_pos;
+        self.end_order_pos = end_order_pos;
+        self.active_workers = active_workers;
+        self.pending_workers = active_workers;
+        self.generation +%= 1;
+        self.ready.broadcast(self.io);
+        while (self.pending_workers != 0) {
+            self.done.waitUncancelable(self.io, &self.mutex);
+        }
+        self.vertices = &.{};
+        self.order = &.{};
+        self.plans = &.{};
+        self.mutex.unlock(self.io);
+        const plan_us = timer.elapsedMicros(dispatch_start, timer.now(self.io));
+
+        var stats = BrioParallelStats{
+            .threads = active_workers,
+            .buckets = 1,
+            .dispatch_us = plan_us,
+            .plan_us = plan_us,
+        };
+        for (self.contexts[0..active_workers]) |context| {
+            stats.planned += context.stats.planned;
+            stats.invalidated += context.stats.plan_errors;
+        }
+
+        const commit_start = timer.now(self.io);
+        var serial_remainder = false;
+        for (plans, 0..) |*plan, plan_i| {
+            const vertex_idx = order[start_order_pos + plan_i];
+            const planned_insert = if (!serial_remainder)
+                try engine.commitInsertionPlan(self.allocator, arena, vertices[vertex_idx], plan)
+            else
+                null;
+            if (planned_insert) |inserted| {
+                mesh_ids[vertex_idx] = inserted;
+                stats.inserted += 1;
+                stats.committed += 1;
+            } else {
+                if (plan.err == null) stats.invalidated += 1;
+                serial_remainder = true;
+                mesh_ids[vertex_idx] = try engine.insertUniquePointTrusted(arena, vertices[vertex_idx]);
+                stats.inserted += 1;
+                stats.serial_fallbacks += 1;
+            }
+        }
+        stats.commit_us = timer.elapsedMicros(commit_start, timer.now(self.io));
+        return stats;
+    }
+
+    fn workerLoop(self: *BrioParallelExecutor, context: *BrioWorkerContext) void {
+        var seen_generation: usize = 0;
+        while (true) {
+            self.mutex.lockUncancelable(self.io);
+            while (!self.shutdown and self.generation == seen_generation) {
+                self.ready.waitUncancelable(self.io, &self.mutex);
+            }
+            if (self.shutdown) {
+                self.mutex.unlock(self.io);
+                return;
+            }
+            seen_generation = self.generation;
+            if (context.index >= self.active_workers) {
+                self.mutex.unlock(self.io);
+                continue;
+            }
+
+            const bucket_len = self.end_order_pos - self.start_order_pos;
+            const local_start = self.start_order_pos + (bucket_len * context.index) / self.active_workers;
+            const local_end = self.start_order_pos + (bucket_len * (context.index + 1)) / self.active_workers;
+            const order = self.order;
+            const vertices = self.vertices;
+            const plans = self.plans;
+            self.mutex.unlock(self.io);
+
+            if (local_start < local_end) {
+                const plan_allocator = context.arena.resetScratch(self.allocator);
+                for (local_start..local_end) |order_pos| {
+                    const vertex_idx = order[order_pos];
+                    const plan_index = order_pos - self.start_order_pos;
+                    var plan = &plans[plan_index];
+                    self.engine.buildInsertionPlan(plan_allocator, vertices[vertex_idx], plan) catch |err| {
+                        plan.err = err;
+                        context.stats.plan_errors += 1;
+                    };
+                    context.stats.planned += 1;
+                }
+            }
+
+            self.mutex.lockUncancelable(self.io);
+            self.pending_workers -= 1;
+            if (self.pending_workers == 0) self.done.signal(self.io);
+            self.mutex.unlock(self.io);
+        }
+    }
+};
 
 const PieceBuildResult = struct {
     indices: []i32 = &.{},
@@ -449,6 +706,39 @@ fn appendPcdtPiecesParallel(
     return stats;
 }
 
+fn runBrioParallelInsertion(
+    executor: *BrioParallelExecutor,
+    engine: *triangulate.Engine,
+    arena: *mesh.ThreadArena,
+    vertices: []const mesh.Vertex,
+    order: []const usize,
+    mesh_ids: []i32,
+) !BrioParallelStats {
+    var stats = BrioParallelStats{};
+    var start: usize = 0;
+    while (start < order.len) {
+        const round = spatial.brioRoundForIndex(order[start], bench_brio_seed);
+        var end = start + 1;
+        while (end < order.len and spatial.brioRoundForIndex(order[end], bench_brio_seed) == round) : (end += 1) {}
+
+        const bucket_stats = try executor.runBucket(engine, arena, vertices, order, mesh_ids, start, end);
+        stats.threads = @max(stats.threads, bucket_stats.threads);
+        stats.buckets += bucket_stats.buckets;
+        stats.inserted += bucket_stats.inserted;
+        stats.lock_wait_us += bucket_stats.lock_wait_us;
+        stats.lock_hold_us += bucket_stats.lock_hold_us;
+        stats.dispatch_us += bucket_stats.dispatch_us;
+        stats.plan_us += bucket_stats.plan_us;
+        stats.commit_us += bucket_stats.commit_us;
+        stats.planned += bucket_stats.planned;
+        stats.committed += bucket_stats.committed;
+        stats.invalidated += bucket_stats.invalidated;
+        stats.serial_fallbacks += bucket_stats.serial_fallbacks;
+        start = end;
+    }
+    return stats;
+}
+
 fn readFile(allocator: std.mem.Allocator, io: Io, path: []const u8) ![]u8 {
     const dir = Io.Dir.cwd();
     var file = try dir.openFile(io, path, .{});
@@ -479,7 +769,7 @@ fn loadCase(allocator: std.mem.Allocator, io: Io, name: []const u8, path: []cons
         .name = name,
         .vertices = vertices,
         .morton_indices = try spatial.sortVerticesByMorton(allocator, vertices),
-        .brio_indices = try spatial.sortVerticesByBrioMorton(allocator, vertices, 0xC1EAFEED),
+        .brio_indices = try spatial.sortVerticesByBrioMorton(allocator, vertices, bench_brio_seed),
         .iterations = iterations,
     };
 }
@@ -500,6 +790,7 @@ fn runRound(
     case: Case,
     order: Order,
     pcdt_executor: ?*PcdtExecutor,
+    brio_executor: ?*BrioParallelExecutor,
 ) !RoundTiming {
     var timing = RoundTiming{};
     var seed_indices: std.ArrayListUnmanaged(i32) = .empty;
@@ -671,8 +962,24 @@ fn runRound(
             try engine.initSuperTriangle(case.vertices);
 
             insertion_start = timer.now(io);
-            for (order.indices) |idx| {
-                mesh_ids[idx] = try engine.insertUniquePointTrusted(arena, case.vertices[idx]);
+            if (brioParallelMode() and brio_executor != null) {
+                const parallel_stats = try runBrioParallelInsertion(brio_executor.?, engine, arena, case.vertices, order.indices, mesh_ids);
+                timing.brio_parallel_threads = @max(timing.brio_parallel_threads, parallel_stats.threads);
+                timing.brio_parallel_buckets += parallel_stats.buckets;
+                timing.brio_parallel_inserted += parallel_stats.inserted;
+                timing.brio_parallel_lock_wait_us += parallel_stats.lock_wait_us;
+                timing.brio_parallel_lock_hold_us += parallel_stats.lock_hold_us;
+                timing.brio_parallel_dispatch_us += parallel_stats.dispatch_us;
+                timing.brio_parallel_plan_us += parallel_stats.plan_us;
+                timing.brio_parallel_commit_us += parallel_stats.commit_us;
+                timing.brio_parallel_planned += parallel_stats.planned;
+                timing.brio_parallel_committed += parallel_stats.committed;
+                timing.brio_parallel_invalidated += parallel_stats.invalidated;
+                timing.brio_parallel_serial_fallbacks += parallel_stats.serial_fallbacks;
+            } else {
+                for (order.indices) |idx| {
+                    mesh_ids[idx] = try engine.insertUniquePointTrusted(arena, case.vertices[idx]);
+                }
             }
             insertion_end = timer.now(io);
 
@@ -847,6 +1154,38 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
             },
         );
         printDecompositionDiagnostics(best, case.iterations);
+    } else if (brioParallelMode()) {
+        const iterations_f64 = @as(f64, @floatFromInt(case.iterations));
+        std.debug.print(
+            "  phase best/run: parallel insertion {d:>.3} us, constraints {d:>.3} us, extraction {d:>.3} us, setup+other {d:>.3} us\n",
+            .{
+                perRun(best.insertion_us, case.iterations),
+                perRun(best.constraint_us, case.iterations),
+                perRun(best.extraction_us, case.iterations),
+                perRun(other_us, case.iterations),
+            },
+        );
+        std.debug.print(
+            "  brio parallel/run: workers {d}, buckets {d:>.1}, inserted {d:>.1}, planned {d:>.1}, committed {d:>.1}, invalidated {d:>.1}, serial fallback {d:>.1}\n",
+            .{
+                best.brio_parallel_threads,
+                @as(f64, @floatFromInt(best.brio_parallel_buckets)) / iterations_f64,
+                @as(f64, @floatFromInt(best.brio_parallel_inserted)) / iterations_f64,
+                @as(f64, @floatFromInt(best.brio_parallel_planned)) / iterations_f64,
+                @as(f64, @floatFromInt(best.brio_parallel_committed)) / iterations_f64,
+                @as(f64, @floatFromInt(best.brio_parallel_invalidated)) / iterations_f64,
+                @as(f64, @floatFromInt(best.brio_parallel_serial_fallbacks)) / iterations_f64,
+            },
+        );
+        std.debug.print(
+            "  brio timing/run: plan {d:>.3} us, commit+fallback {d:>.3} us, old lock wait {d:>.3} us, old lock hold {d:>.3} us\n",
+            .{
+                perRun(best.brio_parallel_plan_us, case.iterations),
+                perRun(best.brio_parallel_commit_us, case.iterations),
+                perRun(best.brio_parallel_lock_wait_us, case.iterations),
+                perRun(best.brio_parallel_lock_hold_us, case.iterations),
+            },
+        );
     } else if (build_options.trapezoid_dd_mode) {
         const avg_pieces = @as(f64, @floatFromInt(best.dd_pieces)) / @as(f64, @floatFromInt(case.iterations));
         const avg_diagonals = @as(f64, @floatFromInt(best.dd_diagonals)) / @as(f64, @floatFromInt(case.iterations));
@@ -986,6 +1325,15 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
                 @as(f64, @floatFromInt(best.engine_stats.find_live_edge_fast_fallbacks)) / iterations_f64,
             },
         );
+        if (best.engine_stats.transaction_retries != 0 or best.engine_stats.transaction_conflicts != 0) {
+            std.debug.print(
+                "  transactions/run: retries {d:>.1}, conflicts {d:>.1}\n",
+                .{
+                    @as(f64, @floatFromInt(best.engine_stats.transaction_retries)) / iterations_f64,
+                    @as(f64, @floatFromInt(best.engine_stats.transaction_conflicts)) / iterations_f64,
+                },
+            );
+        }
         if (best.engine_stats.polygon_culled_triangles != 0) {
             std.debug.print(
                 "  polygon output/run: culled tris {d:>.1}, detached adjacencies {d:>.1}\n",
@@ -1023,16 +1371,26 @@ fn benchCase(io: Io, allocator: std.mem.Allocator, case: Case, order: Order) !vo
         pcdt_executor_ptr = &pcdt_executor;
     }
 
+    var brio_executor = BrioParallelExecutor{};
+    defer brio_executor.deinit();
+    var brio_executor_ptr: ?*BrioParallelExecutor = null;
+    if (brioParallelMode()) {
+        try brio_executor.init(io, allocator, try brioConfiguredWorkerCount());
+        brio_executor_ptr = &brio_executor;
+    }
+
     for (0..rounds) |round| {
-        timings[round] = try runRound(io, allocator, &engine, &arena, &corridor, mesh_ids, case, order, pcdt_executor_ptr);
+        timings[round] = try runRound(io, allocator, &engine, &arena, &corridor, mesh_ids, case, order, pcdt_executor_ptr, brio_executor_ptr);
     }
 
     std.mem.sortUnstable(RoundTiming, &timings, {}, lessTotal);
     printCase(case, order, timings[0], timings[rounds / 2]);
 
-    if (pcdtMode()) {
-        for (0..case.vertices.len) |i| {
-            mesh_ids[i] = @intCast(i);
+    if (pcdtMode() or brioParallelMode()) {
+        if (pcdtMode()) {
+            for (0..case.vertices.len) |i| {
+                mesh_ids[i] = @intCast(i);
+            }
         }
         try engine.validateTopology();
         try engine.validateConstraintRingFlags(mesh_ids);
@@ -1111,7 +1469,9 @@ pub fn main(init: std.process.Init) !void {
     cases[2] = try loadCase(allocator, init.io, "nazca-heron", "tests/fixtures/nazca_heron.dat", 30);
     defer for (cases) |case| deinitCase(allocator, case);
 
-    if (build_options.partitioned_cdt_parallel_mode) {
+    if (build_options.brio_parallel_mode) {
+        std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, parallel BRIO prototype)\n", .{});
+    } else if (build_options.partitioned_cdt_parallel_mode) {
         std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, parallel PCDT prototype)\n", .{});
     } else if (build_options.partitioned_cdt_mode) {
         std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, PCDT prototype)\n", .{});
@@ -1125,7 +1485,9 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, validation skipped)\n", .{});
     }
     for (cases) |case| {
-        if (build_options.partitioned_cdt_parallel_mode) {
+        if (build_options.brio_parallel_mode) {
+            try benchCase(init.io, allocator, case, .{ .name = "brio-parallel", .indices = case.brio_indices });
+        } else if (build_options.partitioned_cdt_parallel_mode) {
             try benchCase(init.io, allocator, case, .{ .name = "pcdt-parallel", .indices = case.morton_indices });
         } else if (build_options.partitioned_cdt_mode) {
             try benchCase(init.io, allocator, case, .{ .name = "pcdt", .indices = case.morton_indices });

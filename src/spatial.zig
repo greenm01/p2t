@@ -95,6 +95,10 @@ fn brioRound(hash: u64) u8 {
     return @intCast(@min(round, 63));
 }
 
+pub fn brioRoundForIndex(index: usize, seed: u64) u8 {
+    return brioRound(hash64(@as(u64, @intCast(index)) ^ seed));
+}
+
 pub fn sortVerticesByBrioMorton(allocator: std.mem.Allocator, vertices: []const mesh.Vertex, seed: u64) ![]usize {
     const codes = try computeMortonCodes(allocator, vertices);
     defer allocator.free(codes);
@@ -111,7 +115,7 @@ pub fn sortVerticesByBrioMorton(allocator: std.mem.Allocator, vertices: []const 
         item.* = .{
             .index = i,
             .code = codes[i],
-            .round = brioRound(hash64(@as(u64, @intCast(i)) ^ seed)),
+            .round = brioRoundForIndex(i, seed),
         };
     }
 
