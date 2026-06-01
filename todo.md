@@ -11,6 +11,28 @@ Current canonical PCDT command shape:
 - `-Dpartitioned-cdt-threads=N`
 - `-Dpartitioned-cdt-max-piece-vertices=N`
 
+## Current Optimization Position vs fast-poly2tri
+
+Cleave's best production-shaped path is still fast-predicate BRIO with spatial hints and BRIO-Morton ordering. Single-core insertion has been optimized substantially, but Cleave remains slower than fast-poly2tri on the large simple-polygon fixtures because it still builds and maintains a full convex-hull Delaunay mesh before extracting the constrained polygon interior.
+
+Realistic current comparison:
+
+- fast-poly2tri: about `76-88 us/run` on the large Nazca fixtures.
+- Cleave BRIO-Morton: typically about `170-195 us/run` on current macOS runs, depending on run noise and flags.
+- Cleave BRIO-Hilbert: benchmarkable and sometimes close/noisy, but not a stable replacement for BRIO-Morton; Hilbert ordering is more expensive to build.
+- Best PCDT/partitioned prototypes have become competitive on `nazca-heron` but are still not generally faster than BRIO or fast-poly2tri.
+
+The gap is no longer extraction overhead. Interior extraction is only about `10-14 us/run`; the remaining cost is full-mesh insertion, exterior-triangle maintenance, constraint recovery, and adjacency/hint bookkeeping for geometry that fast-poly2tri never constructs.
+
+Recent parallel findings:
+
+- Whole-round staged BRIO planning is correct but not a speedup: it commits only about one valid planned insertion per BRIO bucket on the large fixtures.
+- `-Dbrio-plan-window=N` micro-batching improves commit rate slightly but is much slower due to repeated dispatch/planning overhead.
+- `-Dbrio-disjoint-diagnostic=true` shows many planned BRIO footprints are geometrically disjoint, but serially continuing after a stale fallback is unsafe with the current validation and produced `InvalidTriangleAdjacency`.
+- LFQT/Dwyer-style decomposition is conceptually relevant for many-core DT, but the current diagnostic says it is not an immediate win for these small CDT polygon fixtures without a radix sort and a real merge phase.
+
+Recommended next optimization path: stop spending cycles on serial speculative BRIO variants. Either implement a true locked disjoint-wave commit path that commits a validated wave before any fallback mutation, or return to PCDT and reduce assembly/seam/local-piece overhead where independent work is explicit.
+
 ## Current Finding
 
 Cleave now reports polygon-interior triangles separately from the full live Delaunay mesh. This makes the `bench-single` comparison with fast-poly2tri fair on simple outer-ring fixtures:
