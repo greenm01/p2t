@@ -1,71 +1,86 @@
 const std = @import("std");
 const Io = std.Io;
+const parser = @import("parser.zig");
+const mesh = @import("mesh.zig");
+const triangulate = @import("triangulate.zig");
 
-const p2t = @import("p2t");
+pub fn readFile(allocator: std.mem.Allocator, io: Io, path: []const u8) ![]u8 {
+    const dir = Io.Dir.cwd();
+    var file = try dir.openFile(io, path, .{});
+    defer file.close(io);
 
-pub fn main(init: std.process.Init) !void {
-    // Prints to stderr, unbuffered, ignoring potential errors.
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+    var buf: [1024 * 1024]u8 = undefined;
+    const bufs = [_][]u8{&buf};
+    const bytes_read = try file.readPositional(io, &bufs, 0);
 
-    // This is appropriate for anything that lives as long as the process.
-    const arena: std.mem.Allocator = init.arena.allocator();
+    const result = try allocator.alloc(u8, bytes_read);
+    @memcpy(result, buf[0..bytes_read]);
+    return result;
+}
 
-    // Accessing command line arguments:
-    const args = try init.minimal.args.toSlice(arena);
-    for (args) |arg| {
-        std.log.info("arg: {s}", .{arg});
+pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: []const u8, iterations: usize) !void {
+    const file_content = try readFile(allocator, io, file_path);
+    defer allocator.free(file_content);
+
+    const points = try parser.parseDatString(allocator, file_content);
+    defer allocator.free(points);
+
+    // Prepare vertices
+    const vertices = try allocator.alloc(mesh.Vertex, points.len);
+    defer allocator.free(vertices);
+    for (points, 0..) |p, i| {
+        vertices[i] = .{ .x = p.x, .y = p.y };
     }
 
-    // In order to do I/O operations need an `Io` instance.
-    const io = init.io;
+    var times = try allocator.alloc(u64, iterations);
+    defer allocator.free(times);
 
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    const stdout_writer = &stdout_file_writer.interface;
+    var reportedTriangles: usize = 0;
 
-    try p2t.printAnotherMessage(stdout_writer);
+    for (0..iterations) |round| {
+        var engine = triangulate.Engine.init(allocator);
+        defer engine.deinit();
 
-    try stdout_writer.flush(); // Don't forget to flush!
+        var arena = mesh.ThreadArena{};
+        defer arena.deinit(allocator);
+
+        var ts_start: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts_start);
+
+        try engine.initSuperTriangle(vertices);
+
+        for (vertices) |v| {
+            try engine.insertPoint(&arena, v);
+        }
+
+        var ts_end: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts_end);
+        
+        const start_ns = @as(u64, @intCast(ts_start.sec)) * 1_000_000_000 + @as(u64, @intCast(ts_start.nsec));
+        const end_ns = @as(u64, @intCast(ts_end.sec)) * 1_000_000_000 + @as(u64, @intCast(ts_end.nsec));
+
+        const elapsed = end_ns - start_ns;
+        times[round] = @intCast(elapsed / 1000); // to us
+        reportedTriangles = engine.mesh.triangles.len;
+    }
+
+    std.mem.sortUnstable(u64, times, {}, std.sort.asc(u64));
+    const best = times[0];
+    const median = times[iterations / 2];
+
+    std.debug.print("{s} (Zig): {d} runs, {d} triangles, best {d} us, median {d} us\n", .{ name, iterations, reportedTriangles, best, median });
 }
 
-test "simple test" {
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(i32) = .empty;
-    defer list.deinit(gpa); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(gpa, 42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
+pub fn main(init: std.process.Init) !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
 
-test "fuzz example" {
-    try std.testing.fuzz({}, testOne, .{});
-}
+    std.debug.print("Starting Zig Benchmarks (Raw Point Insertion)...\n", .{});
 
-fn testOne(context: void, smith: *std.testing.Smith) !void {
-    _ = context;
-    // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(gpa);
-    while (!smith.eos()) switch (smith.value(enum { add_data, dup_data })) {
-        .add_data => {
-            const slice = try list.addManyAsSlice(gpa, smith.value(u4));
-            smith.bytes(slice);
-        },
-        .dup_data => {
-            if (list.items.len == 0) continue;
-            if (list.items.len > std.math.maxInt(u32)) return error.SkipZigTest;
-            const len = smith.valueRangeAtMost(u32, 1, @min(32, list.items.len));
-            const off = smith.valueRangeAtMost(u32, 0, @intCast(list.items.len - len));
-            try list.appendSlice(gpa, list.items[off..][0..len]);
-            try std.testing.expectEqualSlices(
-                u8,
-                list.items[off..][0..len],
-                list.items[list.items.len - len ..],
-            );
-        },
-    };
+    try bench(allocator, init.io, "fixture-test", "tests/fixtures/test.dat", 10000);
+    try bench(allocator, init.io, "diamond", "tests/fixtures/diamond.dat", 10000);
+    try bench(allocator, init.io, "star", "tests/fixtures/star.dat", 10000);
+    try bench(allocator, init.io, "dude", "tests/fixtures/dude.dat", 1000);
+    try bench(allocator, init.io, "nazca_heron", "tests/fixtures/nazca_heron.dat", 1000);
 }
