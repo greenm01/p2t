@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const PredicatePolicy = enum { adaptive, strict, fast };
+const PcdtPieceOrder = enum { brio, morton, ring };
 
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
@@ -37,6 +38,7 @@ pub fn build(b: *std.Build) void {
         (b.option(bool, "partitioned-bw-parallel-mode", "Deprecated alias for -Dpartitioned-cdt-parallel-mode") orelse false);
     const partitioned_cdt_threads = b.option(usize, "partitioned-cdt-threads", "Worker count for partitioned CDT parallel mode; 0 uses detected CPU count") orelse
         (b.option(usize, "partitioned-bw-threads", "Deprecated alias for -Dpartitioned-cdt-threads") orelse 0);
+    const partitioned_cdt_piece_order_name = b.option([]const u8, "partitioned-cdt-piece-order", "Local PCDT piece insertion order: brio, morton, or ring") orelse "brio";
     const decomposition_fast_visible = b.option(bool, "decomposition-fast-visible", "Enable fast visibility pruning for polygon decomposition prototypes") orelse false;
     const decomposition_cone_visible = b.option(bool, "decomposition-cone-visible", "Use endpoint cone plus edge-intersection visibility without midpoint containment scan") orelse false;
     const decomposition_max_piece_vertices = b.option(usize, "partitioned-cdt-max-piece-vertices", "Maximum vertices per decomposition piece in partitioned CDT prototypes") orelse
@@ -49,6 +51,14 @@ pub fn build(b: *std.Build) void {
         .fast
     else
         @panic("invalid -Dpredicate-policy; expected adaptive, strict, or fast");
+    const partitioned_cdt_piece_order: PcdtPieceOrder = if (std.mem.eql(u8, partitioned_cdt_piece_order_name, "brio"))
+        .brio
+    else if (std.mem.eql(u8, partitioned_cdt_piece_order_name, "morton"))
+        .morton
+    else if (std.mem.eql(u8, partitioned_cdt_piece_order_name, "ring"))
+        .ring
+    else
+        @panic("invalid -Dpartitioned-cdt-piece-order; expected brio, morton, or ring");
     const build_options = b.addOptions();
     build_options.addOption(bool, "strict_predicates", strict_predicates);
     build_options.addOption(PredicatePolicy, "predicate_policy", predicate_policy);
@@ -62,6 +72,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "partitioned_cdt_mode", partitioned_cdt_mode);
     build_options.addOption(bool, "partitioned_cdt_parallel_mode", partitioned_cdt_parallel_mode);
     build_options.addOption(usize, "partitioned_cdt_threads", partitioned_cdt_threads);
+    build_options.addOption(PcdtPieceOrder, "partitioned_cdt_piece_order", partitioned_cdt_piece_order);
     build_options.addOption(bool, "partitioned_bw_mode", partitioned_cdt_mode);
     build_options.addOption(bool, "partitioned_bw_parallel_mode", partitioned_cdt_parallel_mode);
     build_options.addOption(usize, "partitioned_bw_threads", partitioned_cdt_threads);

@@ -188,6 +188,18 @@ Current macOS results:
 
 This makes PCDT competitive with BRIO on heron in this run (`186.2 us/run` versus BRIO `161.8 us/run`) but still slower on monkey (`276.7 us/run` versus BRIO `175.3 us/run`). The remaining useful targets are local piece CDT wall time and assembly; thread spawn is no longer part of the timed inner loop, and seam cost is fixture-dependent.
 
+## Latest PCDT Piece-Order Sweep
+
+`-Dpartitioned-cdt-piece-order=brio|morton|ring` now controls local piece insertion order for PCDT benchmarks. The default remains `brio`.
+
+Current cone-visible, cutoff-768, 4-worker macOS results:
+
+- `brio`: monkey about `257.3 us/run`, heron about `196.4 us/run`.
+- `morton`: monkey about `306.3 us/run`, heron about `224.6 us/run`.
+- `ring`: monkey about `294.4 us/run`, heron about `191.0 us/run`.
+
+Ring order avoids local sort allocation and improves seam-edge lookup locality, but it regresses monkey piece construction badly. Morton is worse on both large fixtures. Keep BRIO as the production candidate and use the new flag only for diagnostics or future decomposition-specific order tests.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.

@@ -78,6 +78,14 @@ fn pcdtParallelMode() bool {
     return build_options.partitioned_cdt_parallel_mode;
 }
 
+fn pcdtPieceOrderName() []const u8 {
+    return switch (build_options.partitioned_cdt_piece_order) {
+        .brio => "brio",
+        .morton => "morton",
+        .ring => "ring",
+    };
+}
+
 const PieceBuildResult = struct {
     indices: []i32 = &.{},
     elapsed_us: u64 = 0,
@@ -167,13 +175,25 @@ fn appendPieceBowyerWatsonSeed(
     var local_arena = mesh.ThreadArena{};
     defer local_arena.deinit(allocator);
 
-    const local_order = try spatial.sortVerticesByBrioMorton(allocator, piece_vertices, 0x51EEDB0B);
-    defer allocator.free(local_order);
-
     const piece_mesh_ids = try allocator.alloc(i32, ring.len);
     defer allocator.free(piece_mesh_ids);
-    for (local_order) |local_idx| {
-        piece_mesh_ids[local_idx] = try local_engine.insertUniquePointTrusted(&local_arena, piece_vertices[local_idx]);
+    switch (build_options.partitioned_cdt_piece_order) {
+        .brio, .morton => {
+            const local_order = switch (build_options.partitioned_cdt_piece_order) {
+                .brio => try spatial.sortVerticesByBrioMorton(allocator, piece_vertices, 0x51EEDB0B),
+                .morton => try spatial.sortVerticesByMorton(allocator, piece_vertices),
+                .ring => unreachable,
+            };
+            defer allocator.free(local_order);
+            for (local_order) |local_idx| {
+                piece_mesh_ids[local_idx] = try local_engine.insertUniquePointTrusted(&local_arena, piece_vertices[local_idx]);
+            }
+        },
+        .ring => {
+            for (piece_vertices, 0..) |vertex, local_idx| {
+                piece_mesh_ids[local_idx] = try local_engine.insertUniquePointTrusted(&local_arena, vertex);
+            }
+        },
     }
 
     var local_corridor = corridor_module.Corridor{};
@@ -806,7 +826,7 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
             },
         );
         std.debug.print(
-            "  decomposition/run: target max {d}, pieces {d:>.1}, diagonals {d:>.1}, max piece {d}, mean piece vertices {d:>.1}, workers {d}; measured critical path {d:>.3} us/run ({d:>.3} us without decomp)\n",
+            "  decomposition/run: target max {d}, pieces {d:>.1}, diagonals {d:>.1}, max piece {d}, mean piece vertices {d:>.1}, workers {d}, piece order {s}; measured critical path {d:>.3} us/run ({d:>.3} us without decomp)\n",
             .{
                 decompositionMaxPieceVertices(),
                 avg_pieces,
@@ -814,6 +834,7 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
                 best.dd_max_piece_vertices,
                 mean_piece_vertices,
                 best.piece_bw_threads,
+                pcdtPieceOrderName(),
                 critical_path,
                 critical_path_without_decomp,
             },
