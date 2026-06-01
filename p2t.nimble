@@ -55,6 +55,18 @@ proc quoteArgs(args: openArray[string]): string =
       result.add " "
     result.add quoteShell(arg)
 
+proc tomlString(value: string): string =
+  result = "\""
+  for ch in value:
+    case ch
+    of '\\':
+      result.add "\\\\"
+    of '"':
+      result.add "\\\""
+    else:
+      result.add ch
+  result.add "\""
+
 proc findLibtess2Dir(): string =
   let envDir = getEnv("LIBTESS2_DIR")
   if envDir.len > 0 and fileExists(envDir / "Include" / "tesselator.h"):
@@ -80,6 +92,48 @@ proc findFastPoly2TriDir(): string =
   let siblingDir = getCurrentDir().parentDir / "fast-poly2tri"
   if fileExists(siblingDir / "MPE_fastpoly2tri.h"):
     return siblingDir
+
+proc findEarcutDir(): string =
+  let envDir = getEnv("EARCUT_DIR")
+  if envDir.len > 0 and fileExists(envDir / "Cargo.toml"):
+    return envDir
+
+  let homeDir = getHomeDir() / "src" / "earcut"
+  if fileExists(homeDir / "Cargo.toml"):
+    return homeDir
+
+  let siblingDir = getCurrentDir().parentDir / "earcut"
+  if fileExists(siblingDir / "Cargo.toml"):
+    return siblingDir
+
+proc buildEarcutBench(outPath: string): bool =
+  let earcutDir = findEarcutDir()
+  if earcutDir.len == 0:
+    echo "skipping earcut; set EARCUT_DIR=/path/to/earcut"
+    return false
+
+  let projectDir = "/tmp/p2t_earcut_bench"
+  sh "mkdir -p " & quoteShell(projectDir / "src")
+  writeFile(
+    projectDir / "Cargo.toml",
+    "[package]\n" &
+      "name = \"p2t_earcut_bench\"\n" &
+      "version = \"0.1.0\"\n" &
+      "edition = \"2024\"\n\n" &
+      "[dependencies]\n" &
+      "earcut = { path = " & tomlString(earcutDir) & " }\n\n" &
+      "[profile.release]\n" &
+      "opt-level = 3\n" &
+      "codegen-units = 1\n" &
+      "lto = \"fat\"\n" &
+      "panic = \"abort\"\n",
+  )
+  sh "cp " & quoteShell("bench/bench_earcut.rs") & " " &
+    quoteShell(projectDir / "src" / "main.rs")
+  sh "cargo build --release --manifest-path " & quoteShell(projectDir / "Cargo.toml")
+  sh "cp " & quoteShell(projectDir / "target" / "release" / "p2t_earcut_bench") &
+    " " & quoteShell(outPath)
+  true
 
 task testLibtess2, "compare dude fixture output against libtess2":
   let libtess2Dir = findLibtess2Dir()
@@ -212,6 +266,27 @@ task benchArenaFloat32Cdt, "run p2t benchmark with arena-backed float32 CDT":
   echo "p2t arena float32 CDT"
   sh quoteShell("/tmp/p2t_bench_arena_float32_cdt")
 
+task benchEarcutFixtures, "run earcut against the p2t benchmark fixtures":
+  if buildEarcutBench("/tmp/p2t_bench_earcut"):
+    sh quoteShell("/tmp/p2t_bench_earcut")
+
+task benchCdtStats, "report arena CDT operation counts":
+  nimCompile(
+    "bench/bench_cdt_stats",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tCdtStats",
+    outPath = "/tmp/p2t_bench_cdt_stats",
+    nimcache = "/tmp/p2t_bench_cdt_stats_d",
+  )
+  sh quoteShell("/tmp/p2t_bench_cdt_stats")
+
+  nimCompile(
+    "bench/bench_cdt_stats",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tCdtStats -d:p2tFrontHash",
+    outPath = "/tmp/p2t_bench_cdt_stats_front_hash",
+    nimcache = "/tmp/p2t_bench_cdt_stats_front_hash_d",
+  )
+  sh quoteShell("/tmp/p2t_bench_cdt_stats_front_hash")
+
 task benchCompareAll, "compare best Nim, front hash, fast-poly2tri, and libtess2":
   nimCompile(
     "bench/bench_p2t",
@@ -246,6 +321,9 @@ task benchCompareAll, "compare best Nim, front hash, fast-poly2tri, and libtess2
     reportArgs.add "fast-double=/tmp/p2t_fastpoly2tri_double"
   else:
     echo "skipping fast-poly2tri; set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri"
+
+  if buildEarcutBench("/tmp/p2t_bench_earcut"):
+    reportArgs.add "earcut-f64=/tmp/p2t_bench_earcut"
 
   let libtess2Dir = findLibtess2Dir()
   if libtess2Dir.len > 0:
@@ -457,4 +535,4 @@ task benchParallel, "benchmark tessellateBatch scaling across threads":
   sh quoteShell("/tmp/p2t_bench_parallel")
 
 task tidy, "format p2t sources":
-  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
+  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
