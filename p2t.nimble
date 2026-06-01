@@ -548,7 +548,7 @@ task benchBestTuned, "run best raw trusted p2t with Tier 1 tuned codegen flags":
   nimCompile(
     "bench/bench_p2t",
     flags =
-      "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt " &
+      "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tFrontHash " &
       TunedFlags,
     outPath = "/tmp/p2t_bench_best_tuned",
     nimcache = "/tmp/p2t_bench_best_tuned_d",
@@ -568,7 +568,7 @@ task benchBestTunedFastPoly2Tri, "compare Tier 1 tuned p2t against local fast-po
   nimCompile(
     "bench/bench_p2t",
     flags =
-      "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt " &
+      "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tFrontHash " &
       TunedFlags,
     outPath = "/tmp/p2t_bench_best_tuned",
     nimcache = "/tmp/p2t_bench_best_tuned_d",
