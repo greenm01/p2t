@@ -150,6 +150,15 @@ bookkeeping overhead:
 - `nazca-monkey`: about `684 us/run`, with insertion around `506 us/run`.
 - `nazca-heron`: about `809 us/run`, with insertion around `613 us/run`.
 
+A later small insertion-path cleanup checks the neighbor incircle predicate before
+the rarer point-on-edge cavity expansion case. The acceptance condition is unchanged,
+but it avoids unnecessary segment checks for triangles that are already in the
+cavity. On the current larger fixtures this reduces orientation calls and brings the
+diagnostic run to roughly:
+
+- `nazca-monkey`: about `633 us/run`, with insertion around `454 us/run`.
+- `nazca-heron`: about `660 us/run`, with insertion around `482 us/run`.
+
 1. Add a batch-throughput benchmark.
    Measure many independent triangulations across `1, 2, 4, 8, ...` workers. Reuse
    per-thread engines and arenas. Compare wall time, jobs/sec, and scaling efficiency.

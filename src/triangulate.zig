@@ -1593,13 +1593,14 @@ pub const Engine = struct {
                 if (self.isCavityMarked(n_idx)) continue;
 
                 const edge = triangleEdge(tri, side);
-                const point_on_edge = n_idx != -1 and predicates.pointOnSegment(
+                const inside_circumcircle = self.isInsideCircumcircle(n_idx, pt);
+                const point_on_edge = !inside_circumcircle and n_idx != -1 and predicates.pointOnSegment(
                     self.getVertex(edge.v1),
                     self.getVertex(edge.v2),
                     pt,
                 );
 
-                if (point_on_edge or self.isInsideCircumcircle(n_idx, pt)) {
+                if (inside_circumcircle or point_on_edge) {
                     try self.appendCavityTriangle(temp_allocator, cavity, n_idx);
                 }
             }
