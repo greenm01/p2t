@@ -118,6 +118,8 @@ coverage now includes:
   constraint-recovery timing.
 - `zig build bench-single -Dinstrument-predicates=true` for predicate call and exact
   fallback counters.
+- `zig build bench-single -Dinstrument-predicates=true -Dinstrument-mesh-stats=true`
+  for walk, cavity, legalization, and corridor counters.
 
 Recent larger-fixture diagnostic measurements show insertion dominates constraint
 recovery:
@@ -132,6 +134,13 @@ The instrumented adaptive run showed many predicate calls but very few exact
 orientation fallbacks and no exact incircle fallbacks on these fixtures. That means
 the immediate scalar bottleneck is mostly regular topology traversal, cavity work,
 and memory traffic, not exact-predicate fallback.
+
+The topology counters also showed no walk fallback scans on these fixtures. Average
+cavities are small, roughly `4-8` removed triangles per insertion, and current
+polygon-ring constraints are usually already local mesh edges or one-triangle
+corridors. The next scalar optimization target should therefore be the normal
+insertion path: fewer orientation calls per walk/cavity expansion, less repeated
+triangle/vertex loading, and tighter scratch data layout.
 
 1. Add a batch-throughput benchmark.
    Measure many independent triangulations across `1, 2, 4, 8, ...` workers. Reuse

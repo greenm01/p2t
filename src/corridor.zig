@@ -871,6 +871,8 @@ pub const Corridor = struct {
             if (start_tri < 0) return error.WalkFailed;
 
             try self.trace(allocator, engine, start_tri, end_pt_idx, start_pt_idx);
+            engine.statInc("corridor_traces");
+            engine.statAdd("corridor_triangles", @intCast(self.pierced_triangles.items.len));
             self.clearAndRetriangulate(allocator, engine, arena, start_pt_idx, end_pt_idx) catch |err| {
                 switch (err) {
                     error.TransactionConflict => continue,
@@ -895,6 +897,8 @@ pub const Corridor = struct {
         if (start_tri < 0) return error.WalkFailed;
 
         try self.trace(allocator, engine, start_tri, end_pt_idx, start_pt_idx);
+        engine.statInc("corridor_traces");
+        engine.statAdd("corridor_triangles", @intCast(self.pierced_triangles.items.len));
         try self.clearAndRetriangulateTrusted(allocator, engine, arena, start_pt_idx, end_pt_idx);
     }
 };

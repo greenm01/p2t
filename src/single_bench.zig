@@ -22,6 +22,7 @@ const RoundTiming = struct {
     constraint_us: u64 = 0,
     triangles: usize = 0,
     predicate_stats: predicates.PredicateStats = .{},
+    engine_stats: triangulate.EngineStats = .{},
 };
 
 fn readFile(allocator: std.mem.Allocator, io: Io, path: []const u8) ![]u8 {
@@ -85,6 +86,7 @@ fn runRound(
 ) !RoundTiming {
     var timing = RoundTiming{};
     predicates.resetStats();
+    engine.resetStats();
     const total_start = now();
 
     for (0..case.iterations) |_| {
@@ -113,6 +115,7 @@ fn runRound(
 
     timing.total_us = elapsedMicros(total_start, now());
     timing.predicate_stats = predicates.statsSnapshot();
+    timing.engine_stats = engine.statsSnapshot();
     return timing;
 }
 
@@ -159,6 +162,30 @@ fn printCase(case: Case, best: RoundTiming, median: RoundTiming) void {
                 @as(f64, @floatFromInt(best.predicate_stats.incircle_calls)) / @as(f64, @floatFromInt(case.iterations)),
                 @as(f64, @floatFromInt(best.predicate_stats.orient_exact)) / @as(f64, @floatFromInt(case.iterations)),
                 @as(f64, @floatFromInt(best.predicate_stats.incircle_exact)) / @as(f64, @floatFromInt(case.iterations)),
+            },
+        );
+    }
+    if (best.engine_stats.any()) {
+        const iterations_f64 = @as(f64, @floatFromInt(case.iterations));
+        const inserted_f64 = @max(@as(f64, @floatFromInt(best.engine_stats.inserted_points)), 1.0);
+        const traces_f64 = @max(@as(f64, @floatFromInt(best.engine_stats.corridor_traces)), 1.0);
+        std.debug.print(
+            "  topology/run: walks {d:>.1}, walk steps {d:>.1}, fallbacks {d:>.1}, fallback scans {d:>.1}\n",
+            .{
+                @as(f64, @floatFromInt(best.engine_stats.walk_calls)) / iterations_f64,
+                @as(f64, @floatFromInt(best.engine_stats.walk_steps)) / iterations_f64,
+                @as(f64, @floatFromInt(best.engine_stats.walk_fallbacks)) / iterations_f64,
+                @as(f64, @floatFromInt(best.engine_stats.walk_fallback_scan_tris)) / iterations_f64,
+            },
+        );
+        std.debug.print(
+            "  topology/insert: cavity tris {d:>.2}, cavity edges {d:>.2}; legalization/run: tests {d:>.1}, flips {d:>.1}; corridor tris/trace {d:>.2}\n",
+            .{
+                @as(f64, @floatFromInt(best.engine_stats.cavity_triangles)) / inserted_f64,
+                @as(f64, @floatFromInt(best.engine_stats.cavity_edges)) / inserted_f64,
+                @as(f64, @floatFromInt(best.engine_stats.legalization_tests)) / iterations_f64,
+                @as(f64, @floatFromInt(best.engine_stats.edge_flips)) / iterations_f64,
+                @as(f64, @floatFromInt(best.engine_stats.corridor_triangles)) / traces_f64,
             },
         );
     }

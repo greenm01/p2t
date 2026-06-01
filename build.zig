@@ -25,6 +25,7 @@ pub fn build(b: *std.Build) void {
     const strict_predicates = b.option(bool, "strict-predicates", "Always use f128 geometric predicates") orelse false;
     const predicate_policy_name = b.option([]const u8, "predicate-policy", "Geometric predicate policy: adaptive, strict, or fast") orelse if (strict_predicates) "strict" else "adaptive";
     const instrument_predicates = b.option(bool, "instrument-predicates", "Count predicate calls and exact fallbacks for benchmark diagnostics") orelse false;
+    const instrument_mesh_stats = b.option(bool, "instrument-mesh-stats", "Count mesh walk, cavity, legalization, and corridor metrics for benchmark diagnostics") orelse false;
     const predicate_policy: PredicatePolicy = if (std.mem.eql(u8, predicate_policy_name, "adaptive"))
         .adaptive
     else if (std.mem.eql(u8, predicate_policy_name, "strict"))
@@ -37,6 +38,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "strict_predicates", strict_predicates);
     build_options.addOption(PredicatePolicy, "predicate_policy", predicate_policy);
     build_options.addOption(bool, "instrument_predicates", instrument_predicates);
+    build_options.addOption(bool, "instrument_mesh_stats", instrument_mesh_stats);
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.

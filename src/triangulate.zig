@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const mesh = @import("mesh.zig");
 const spatial = @import("spatial.zig");
 const predicates = @import("predicates.zig");
@@ -52,6 +53,24 @@ pub const TriangleTransaction = struct {
     pub fn deinit(self: *TriangleTransaction, allocator: std.mem.Allocator) void {
         self.locked.deinit(allocator);
         self.versions.deinit(allocator);
+    }
+};
+
+pub const EngineStats = struct {
+    walk_calls: u64 = 0,
+    walk_steps: u64 = 0,
+    walk_fallbacks: u64 = 0,
+    walk_fallback_scan_tris: u64 = 0,
+    inserted_points: u64 = 0,
+    cavity_triangles: u64 = 0,
+    cavity_edges: u64 = 0,
+    legalization_tests: u64 = 0,
+    edge_flips: u64 = 0,
+    corridor_traces: u64 = 0,
+    corridor_triangles: u64 = 0,
+
+    pub fn any(self: EngineStats) bool {
+        return self.walk_calls != 0 or self.inserted_points != 0 or self.corridor_traces != 0;
     }
 };
 
@@ -173,6 +192,7 @@ pub const Engine = struct {
     trusted_spoke_sides: std.ArrayListUnmanaged(u8),
     trusted_spoke_generation: u32,
     vertex_hint_tri: std.ArrayListUnmanaged(i32),
+    stats: EngineStats,
 
     pub fn init(allocator: std.mem.Allocator) Engine {
         return .{
@@ -191,6 +211,7 @@ pub const Engine = struct {
             .trusted_spoke_sides = .empty,
             .trusted_spoke_generation = 1,
             .vertex_hint_tri = .empty,
+            .stats = .{},
         };
     }
 
@@ -214,6 +235,31 @@ pub const Engine = struct {
         self.trusted_edges.clearRetainingCapacity();
         self.trusted_new_tri_indices.clearRetainingCapacity();
         self.last_valid_tri = 0;
+    }
+
+    pub inline fn statInc(self: *Engine, comptime field: []const u8) void {
+        if (build_options.instrument_mesh_stats) {
+            @field(self.stats, field) += 1;
+        }
+    }
+
+    pub inline fn statAdd(self: *Engine, comptime field: []const u8, value: u64) void {
+        if (build_options.instrument_mesh_stats) {
+            @field(self.stats, field) += value;
+        }
+    }
+
+    pub fn resetStats(self: *Engine) void {
+        if (build_options.instrument_mesh_stats) {
+            self.stats = .{};
+        }
+    }
+
+    pub fn statsSnapshot(self: *const Engine) EngineStats {
+        if (build_options.instrument_mesh_stats) {
+            return self.stats;
+        }
+        return .{};
     }
 
     pub fn reserveForPointCount(self: *Engine, point_count: usize) !void {
@@ -278,10 +324,13 @@ pub const Engine = struct {
     }
 
     pub fn walk(self: *Engine, start_tri: i32, target: mesh.Vertex) i32 {
+        self.statInc("walk_calls");
         var curr = start_tri;
         var limit: usize = 10000;
+        var steps: u64 = 0;
 
         while (curr != -1 and limit > 0) : (limit -= 1) {
+            steps += 1;
             if (curr < 0) break;
             const curr_slot = @as(usize, @intCast(curr));
             if (curr_slot >= self.mesh.triangles.len) break;
@@ -305,12 +354,18 @@ pub const Engine = struct {
                 continue;
             }
 
+            self.statAdd("walk_steps", steps);
             return curr;
         }
 
+        self.statAdd("walk_steps", steps);
+        self.statInc("walk_fallbacks");
+
         // Linear scan fallback
         var i: usize = 0;
+        var scanned: u64 = 0;
         while (i < self.mesh.triangles.len) : (i += 1) {
+            scanned += 1;
             const tri = self.mesh.triangles.get(i);
             if (mesh.isDeadTriangle(tri)) continue;
             const v0 = self.mesh.vertices.get(@as(usize, @intCast(tri.v0)));
@@ -321,10 +376,12 @@ pub const Engine = struct {
                 predicates.orient2d(v1, v2, target) >= 0.0 and
                 predicates.orient2d(v2, v0, target) >= 0.0)
             {
+                self.statAdd("walk_fallback_scan_tris", scanned);
                 return @as(i32, @intCast(i));
             }
         }
 
+        self.statAdd("walk_fallback_scan_tris", scanned);
         return -1;
     }
 
@@ -1239,8 +1296,11 @@ pub const Engine = struct {
             iterations += 1;
 
             const edge = queue.pop().?;
-            _ = try self.flipEdge(&queue, allocator, tx, edge.tri, edge.side);
+            if (try self.flipEdge(&queue, allocator, tx, edge.tri, edge.side)) {
+                self.statInc("edge_flips");
+            }
         }
+        self.statAdd("legalization_tests", iterations);
     }
 
     pub fn validateCdtLegality(self: *Engine) !void {
@@ -1537,6 +1597,10 @@ pub const Engine = struct {
 
             break;
         }
+
+        self.statInc("inserted_points");
+        self.statAdd("cavity_triangles", @intCast(cavity.items.len));
+        self.statAdd("cavity_edges", @intCast(edges.items.len));
 
         var tx = TriangleTransaction{};
         var tx_started = false;
