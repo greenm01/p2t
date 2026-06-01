@@ -87,9 +87,13 @@ pub const EngineStats = struct {
     cavity_max_edges: u64 = 0,
     circumcircle_filter_rejects: u64 = 0,
     circumcircle_filter_fallbacks: u64 = 0,
+    cavity_relevance_samples: u64 = 0,
+    cavity_relevance_interior: u64 = 0,
+    cavity_relevance_exterior: u64 = 0,
+    cavity_relevance_unclassified: u64 = 0,
 
     pub fn any(self: EngineStats) bool {
-        return self.walk_calls != 0 or self.inserted_points != 0 or self.corridor_traces != 0 or self.find_live_edge_calls != 0;
+        return self.walk_calls != 0 or self.inserted_points != 0 or self.corridor_traces != 0 or self.find_live_edge_calls != 0 or self.cavity_relevance_samples != 0;
     }
 };
 
@@ -222,6 +226,8 @@ pub const Engine = struct {
     hint_min_y: f64,
     hint_scale_x: f64,
     hint_scale_y: f64,
+    cavity_relevance_enabled: bool,
+    cavity_relevance_samples: std.ArrayListUnmanaged(mesh.Vertex),
     stats: EngineStats,
 
     pub fn init(allocator: std.mem.Allocator) Engine {
@@ -252,11 +258,14 @@ pub const Engine = struct {
             .hint_min_y = 0.0,
             .hint_scale_x = 0.0,
             .hint_scale_y = 0.0,
+            .cavity_relevance_enabled = false,
+            .cavity_relevance_samples = .empty,
             .stats = .{},
         };
     }
 
     pub fn deinit(self: *Engine) void {
+        self.cavity_relevance_samples.deinit(self.allocator);
         self.hint_grid.deinit(self.allocator);
         self.vertex_hint_tri.deinit(self.allocator);
         self.interior_triangle_queue.deinit(self.allocator);
@@ -304,6 +313,23 @@ pub const Engine = struct {
     pub fn resetStats(self: *Engine) void {
         if (build_options.instrument_mesh_stats) {
             self.stats = .{};
+        }
+    }
+
+    pub fn beginCavityRelevanceDiagnostics(self: *Engine) void {
+        if (build_options.instrument_mesh_stats) {
+            self.cavity_relevance_samples.clearRetainingCapacity();
+            self.stats.cavity_relevance_samples = 0;
+            self.stats.cavity_relevance_interior = 0;
+            self.stats.cavity_relevance_exterior = 0;
+            self.stats.cavity_relevance_unclassified = 0;
+            self.cavity_relevance_enabled = true;
+        }
+    }
+
+    pub fn endCavityRelevanceDiagnostics(self: *Engine) void {
+        if (build_options.instrument_mesh_stats) {
+            self.cavity_relevance_enabled = false;
         }
     }
 
@@ -1236,6 +1262,69 @@ pub const Engine = struct {
         return count;
     }
 
+    fn triangleContainsPointCoords(xs: []const f64, ys: []const f64, tri: mesh.Triangle, pt: mesh.Vertex) bool {
+        const eps = 1e-9;
+        const v0: usize = @intCast(tri.v0);
+        const v1: usize = @intCast(tri.v1);
+        const v2: usize = @intCast(tri.v2);
+        return predicates.orient2dCoords(xs[v0], ys[v0], xs[v1], ys[v1], pt.x, pt.y) >= -eps and
+            predicates.orient2dCoords(xs[v1], ys[v1], xs[v2], ys[v2], pt.x, pt.y) >= -eps and
+            predicates.orient2dCoords(xs[v2], ys[v2], xs[v0], ys[v0], pt.x, pt.y) >= -eps;
+    }
+
+    fn findTriangleContainingPoint(self: *const Engine, pt: mesh.Vertex) ?usize {
+        const xs = self.mesh.vertices.items(.x);
+        const ys = self.mesh.vertices.items(.y);
+        for (0..self.mesh.triangles.len) |tri_idx| {
+            const tri = self.mesh.triangles.get(tri_idx);
+            if (mesh.isDeadTriangle(tri)) continue;
+            if (triangleContainsPointCoords(xs, ys, tri, pt)) return tri_idx;
+        }
+        return null;
+    }
+
+    fn recordCavityRelevanceSamples(self: *Engine, cavity: []const i32) !void {
+        if (!build_options.instrument_mesh_stats or !self.cavity_relevance_enabled) return;
+        const xs = self.mesh.vertices.items(.x);
+        const ys = self.mesh.vertices.items(.y);
+        try self.cavity_relevance_samples.ensureUnusedCapacity(self.allocator, cavity.len);
+        for (cavity) |tri_idx| {
+            if (tri_idx < 0) continue;
+            const slot: usize = @intCast(tri_idx);
+            if (slot >= self.mesh.triangles.len) continue;
+            const tri = self.mesh.triangles.get(slot);
+            if (mesh.isDeadTriangle(tri)) continue;
+            const v0: usize = @intCast(tri.v0);
+            const v1: usize = @intCast(tri.v1);
+            const v2: usize = @intCast(tri.v2);
+            self.cavity_relevance_samples.appendAssumeCapacity(.{
+                .x = (xs[v0] + xs[v1] + xs[v2]) / 3.0,
+                .y = (ys[v0] + ys[v1] + ys[v2]) / 3.0,
+            });
+        }
+    }
+
+    pub fn classifyCavityRelevanceDiagnostics(self: *Engine, interior: []const bool) void {
+        if (!build_options.instrument_mesh_stats) return;
+        self.cavity_relevance_enabled = false;
+        self.stats.cavity_relevance_samples = @intCast(self.cavity_relevance_samples.items.len);
+        self.stats.cavity_relevance_interior = 0;
+        self.stats.cavity_relevance_exterior = 0;
+        self.stats.cavity_relevance_unclassified = 0;
+
+        for (self.cavity_relevance_samples.items) |sample| {
+            const tri_idx = self.findTriangleContainingPoint(sample) orelse {
+                self.stats.cavity_relevance_unclassified += 1;
+                continue;
+            };
+            if (tri_idx < interior.len and interior[tri_idx]) {
+                self.stats.cavity_relevance_interior += 1;
+            } else {
+                self.stats.cavity_relevance_exterior += 1;
+            }
+        }
+    }
+
     pub fn hasLiveEdge(self: *Engine, a: i32, b: i32) bool {
         return self.findLiveEdge(a, b) != null;
     }
@@ -1978,6 +2067,7 @@ pub const Engine = struct {
         self.statAdd("cavity_edges", @intCast(edges.items.len));
         self.statMax("cavity_max_triangles", @intCast(cavity.items.len));
         self.statMax("cavity_max_edges", @intCast(edges.items.len));
+        try self.recordCavityRelevanceSamples(cavity.items);
 
         var tx = TriangleTransaction{};
         var tx_started = false;

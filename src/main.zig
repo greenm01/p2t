@@ -6,6 +6,7 @@ const triangulate = @import("triangulate.zig");
 const corridor_module = @import("corridor.zig");
 const spatial = @import("spatial.zig");
 const quality = @import("quality.zig");
+const timer = @import("timer.zig");
 
 pub fn readFile(allocator: std.mem.Allocator, io: Io, path: []const u8) ![]u8 {
     const dir = Io.Dir.cwd();
@@ -56,8 +57,7 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
     defer corridor.deinit(allocator);
 
     for (0..BENCH_ROUNDS) |round| {
-        var ts_start: std.os.linux.timespec = undefined;
-        _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts_start);
+        const start = timer.now(io);
 
         var total_triangles: usize = 0;
 
@@ -80,14 +80,7 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
             total_triangles += engine.liveTriangleCount();
         }
 
-        var ts_end: std.os.linux.timespec = undefined;
-        _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts_end);
-
-        const start_ns = @as(u64, @intCast(ts_start.sec)) * 1_000_000_000 + @as(u64, @intCast(ts_start.nsec));
-        const end_ns = @as(u64, @intCast(ts_end.sec)) * 1_000_000_000 + @as(u64, @intCast(ts_end.nsec));
-
-        const elapsed = end_ns - start_ns;
-        times[round] = @intCast(elapsed / 1000); // to us
+        times[round] = timer.elapsedMicros(start, timer.now(io));
         reportedTriangles = total_triangles;
     }
 

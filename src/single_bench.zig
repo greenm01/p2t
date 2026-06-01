@@ -8,6 +8,7 @@ const parser = p2t.parser;
 const predicates = p2t.predicates;
 const quality = p2t.quality;
 const spatial = p2t.spatial;
+const timer = p2t.timer;
 const triangulate = p2t.triangulate;
 
 const Case = struct {
@@ -75,19 +76,8 @@ fn deinitCase(allocator: std.mem.Allocator, case: Case) void {
     allocator.free(case.vertices);
 }
 
-fn now() std.os.linux.timespec {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts);
-    return ts;
-}
-
-fn elapsedMicros(start: std.os.linux.timespec, end: std.os.linux.timespec) u64 {
-    const start_ns = @as(u64, @intCast(start.sec)) * 1_000_000_000 + @as(u64, @intCast(start.nsec));
-    const end_ns = @as(u64, @intCast(end.sec)) * 1_000_000_000 + @as(u64, @intCast(end.nsec));
-    return @intCast((end_ns - start_ns) / 1000);
-}
-
 fn runRound(
+    io: Io,
     allocator: std.mem.Allocator,
     engine: *triangulate.Engine,
     arena: *mesh.ThreadArena,
@@ -99,7 +89,7 @@ fn runRound(
     var timing = RoundTiming{};
     predicates.resetStats();
     engine.resetStats();
-    const total_start = now();
+    const total_start = timer.now(io);
 
     for (0..case.iterations) |_| {
         engine.resetRetainingCapacity();
@@ -107,31 +97,31 @@ fn runRound(
 
         try engine.initSuperTriangle(case.vertices);
 
-        const insertion_start = now();
+        const insertion_start = timer.now(io);
         for (order.indices) |idx| {
             mesh_ids[idx] = try engine.insertUniquePointTrusted(arena, case.vertices[idx]);
         }
-        const insertion_end = now();
+        const insertion_end = timer.now(io);
 
         for (0..case.vertices.len) |i| {
             const start_idx = mesh_ids[i];
             const end_idx = mesh_ids[(i + 1) % case.vertices.len];
             try corridor.recoverConstraintTrusted(allocator, engine, arena, start_idx, end_idx);
         }
-        const constraint_end = now();
+        const constraint_end = timer.now(io);
 
-        const extraction_start = now();
+        const extraction_start = timer.now(io);
         const interior_triangles = try engine.countInteriorTriangles();
-        const extraction_end = now();
+        const extraction_end = timer.now(io);
 
-        timing.insertion_us += elapsedMicros(insertion_start, insertion_end);
-        timing.constraint_us += elapsedMicros(insertion_end, constraint_end);
-        timing.extraction_us += elapsedMicros(extraction_start, extraction_end);
+        timing.insertion_us += timer.elapsedMicros(insertion_start, insertion_end);
+        timing.constraint_us += timer.elapsedMicros(insertion_end, constraint_end);
+        timing.extraction_us += timer.elapsedMicros(extraction_start, extraction_end);
         timing.triangles += interior_triangles;
         timing.live_triangles += engine.liveTriangleCount();
     }
 
-    timing.total_us = elapsedMicros(total_start, now());
+    timing.total_us = timer.elapsedMicros(total_start, timer.now(io));
     timing.predicate_stats = predicates.statsSnapshot();
     timing.engine_stats = engine.statsSnapshot();
     return timing;
@@ -143,6 +133,27 @@ fn lessTotal(_: void, a: RoundTiming, b: RoundTiming) bool {
 
 fn perRun(value: u64, iterations: usize) f64 {
     return @as(f64, @floatFromInt(value)) / @as(f64, @floatFromInt(iterations));
+}
+
+fn printCavityRelevance(case: Case, order: Order, stats: triangulate.EngineStats) void {
+    if (stats.cavity_relevance_samples == 0) return;
+    const classified = stats.cavity_relevance_interior + stats.cavity_relevance_exterior;
+    const exterior_share = if (classified == 0)
+        0.0
+    else
+        @as(f64, @floatFromInt(stats.cavity_relevance_exterior)) * 100.0 / @as(f64, @floatFromInt(classified));
+    std.debug.print(
+        "  cavity relevance {s}/{s}: {d} samples, interior {d}, exterior {d} ({d:>.1}%), unclassified {d}\n",
+        .{
+            case.name,
+            order.name,
+            stats.cavity_relevance_samples,
+            stats.cavity_relevance_interior,
+            stats.cavity_relevance_exterior,
+            exterior_share,
+            stats.cavity_relevance_unclassified,
+        },
+    );
 }
 
 fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) void {
@@ -248,7 +259,7 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
     }
 }
 
-fn benchCase(allocator: std.mem.Allocator, case: Case, order: Order) !void {
+fn benchCase(io: Io, allocator: std.mem.Allocator, case: Case, order: Order) !void {
     const rounds = 3;
     var timings: [rounds]RoundTiming = undefined;
 
@@ -266,7 +277,7 @@ fn benchCase(allocator: std.mem.Allocator, case: Case, order: Order) !void {
     defer corridor.deinit(allocator);
 
     for (0..rounds) |round| {
-        timings[round] = try runRound(allocator, &engine, &arena, &corridor, mesh_ids, case, order);
+        timings[round] = try runRound(io, allocator, &engine, &arena, &corridor, mesh_ids, case, order);
     }
 
     std.mem.sortUnstable(RoundTiming, &timings, {}, lessTotal);
@@ -274,7 +285,8 @@ fn benchCase(allocator: std.mem.Allocator, case: Case, order: Order) !void {
 
     var interior: std.ArrayListUnmanaged(bool) = .empty;
     defer interior.deinit(allocator);
-    _ = try engine.markInteriorTriangles(allocator, &interior);
+    const diagnostic_stats = try runCavityRelevanceDiagnostic(allocator, &engine, &arena, &corridor, mesh_ids, case, order, &interior);
+    printCavityRelevance(case, order, diagnostic_stats);
 
     var stats = quality.QualityStats{};
     for (0..engine.mesh.triangles.len) |i| {
@@ -291,6 +303,38 @@ fn benchCase(allocator: std.mem.Allocator, case: Case, order: Order) !void {
     stats.print(case.name);
 }
 
+fn runCavityRelevanceDiagnostic(
+    allocator: std.mem.Allocator,
+    engine: *triangulate.Engine,
+    arena: *mesh.ThreadArena,
+    corridor: *corridor_module.Corridor,
+    mesh_ids: []i32,
+    case: Case,
+    order: Order,
+    interior: *std.ArrayListUnmanaged(bool),
+) !triangulate.EngineStats {
+    engine.resetRetainingCapacity();
+    arena.resetRetainingCapacity();
+    engine.resetStats();
+    engine.beginCavityRelevanceDiagnostics();
+    defer engine.endCavityRelevanceDiagnostics();
+
+    try engine.initSuperTriangle(case.vertices);
+    for (order.indices) |idx| {
+        mesh_ids[idx] = try engine.insertUniquePointTrusted(arena, case.vertices[idx]);
+    }
+
+    for (0..case.vertices.len) |i| {
+        const start_idx = mesh_ids[i];
+        const end_idx = mesh_ids[(i + 1) % case.vertices.len];
+        try corridor.recoverConstraintTrusted(allocator, engine, arena, start_idx, end_idx);
+    }
+
+    _ = try engine.markInteriorTriangles(allocator, interior);
+    engine.classifyCavityRelevanceDiagnostics(interior.items);
+    return engine.statsSnapshot();
+}
+
 pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -304,7 +348,7 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, validation skipped)\n", .{});
     for (cases) |case| {
-        try benchCase(allocator, case, .{ .name = "morton", .indices = case.morton_indices });
-        try benchCase(allocator, case, .{ .name = "brio-morton", .indices = case.brio_indices });
+        try benchCase(init.io, allocator, case, .{ .name = "morton", .indices = case.morton_indices });
+        try benchCase(init.io, allocator, case, .{ .name = "brio-morton", .indices = case.brio_indices });
     }
 }

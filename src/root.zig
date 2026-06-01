@@ -8,6 +8,7 @@ pub const triangulate = @import("triangulate.zig");
 pub const corridor = @import("corridor.zig");
 pub const cavity = @import("cavity.zig");
 pub const quality = @import("quality.zig");
+pub const timer = @import("timer.zig");
 
 test {
     std.testing.refAllDecls(@This());

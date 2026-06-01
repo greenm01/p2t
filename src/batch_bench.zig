@@ -5,6 +5,7 @@ const Io = std.Io;
 const mesh = p2t.mesh;
 const parser = p2t.parser;
 const spatial = p2t.spatial;
+const timer = p2t.timer;
 const triangulate = p2t.triangulate;
 const corridor_module = p2t.corridor;
 
@@ -108,13 +109,7 @@ fn workerMain(cases: []const Case, max_vertices: usize, jobs: usize, stride: usi
     }
 }
 
-fn elapsedMicros(start: std.os.linux.timespec, end: std.os.linux.timespec) u64 {
-    const start_ns = @as(u64, @intCast(start.sec)) * 1_000_000_000 + @as(u64, @intCast(start.nsec));
-    const end_ns = @as(u64, @intCast(end.sec)) * 1_000_000_000 + @as(u64, @intCast(end.nsec));
-    return @intCast((end_ns - start_ns) / 1000);
-}
-
-fn runThreadCount(allocator: std.mem.Allocator, cases: []const Case, max_vertices: usize, jobs: usize, thread_count: usize) !u64 {
+fn runThreadCount(io: Io, allocator: std.mem.Allocator, cases: []const Case, max_vertices: usize, jobs: usize, thread_count: usize) !u64 {
     var threads = try allocator.alloc(std.Thread, thread_count);
     defer allocator.free(threads);
 
@@ -122,16 +117,14 @@ fn runThreadCount(allocator: std.mem.Allocator, cases: []const Case, max_vertice
     defer allocator.free(stats);
     @memset(stats, .{});
 
-    var ts_start: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts_start);
+    const start = timer.now(io);
 
     for (0..thread_count) |i| {
         threads[i] = try std.Thread.spawn(.{}, workerMain, .{ cases, max_vertices, jobs, thread_count, i, &stats[i] });
     }
     for (threads) |thread| thread.join();
 
-    var ts_end: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts_end);
+    const end = timer.now(io);
 
     var total_jobs: usize = 0;
     var total_triangles: usize = 0;
@@ -141,7 +134,7 @@ fn runThreadCount(allocator: std.mem.Allocator, cases: []const Case, max_vertice
     }
     if (total_jobs != jobs or total_triangles == 0) return error.InvalidBenchmarkRun;
 
-    return elapsedMicros(ts_start, ts_end);
+    return timer.elapsedMicros(start, end);
 }
 
 fn printRun(thread_count: usize, jobs: usize, elapsed_us: u64, baseline_us: u64) void {
@@ -181,7 +174,7 @@ pub fn main(init: std.process.Init) !void {
         if (thread_count == last_count) continue;
         last_count = thread_count;
 
-        const elapsed_us = try runThreadCount(allocator, cases, max_vertices, jobs, thread_count);
+        const elapsed_us = try runThreadCount(init.io, allocator, cases, max_vertices, jobs, thread_count);
         if (baseline_us == 0) baseline_us = elapsed_us;
         printRun(thread_count, jobs, elapsed_us, baseline_us);
     }

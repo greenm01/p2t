@@ -5,6 +5,7 @@ const corridor_module = p2t.corridor;
 const mesh = p2t.mesh;
 const predicates = p2t.predicates;
 const spatial = p2t.spatial;
+const timer = p2t.timer;
 const triangulate = p2t.triangulate;
 
 const Case = struct {
@@ -30,18 +31,6 @@ const RoundTiming = struct {
     predicate_stats: predicates.PredicateStats = .{},
     engine_stats: triangulate.EngineStats = .{},
 };
-
-fn now() std.os.linux.timespec {
-    var ts: std.os.linux.timespec = undefined;
-    _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts);
-    return ts;
-}
-
-fn elapsedMicros(start: std.os.linux.timespec, end: std.os.linux.timespec) u64 {
-    const start_ns = @as(u64, @intCast(start.sec)) * 1_000_000_000 + @as(u64, @intCast(start.nsec));
-    const end_ns = @as(u64, @intCast(end.sec)) * 1_000_000_000 + @as(u64, @intCast(end.nsec));
-    return @intCast((end_ns - start_ns) / 1000);
-}
 
 fn gridIndex(case: Case, x: usize, y: usize) usize {
     return y * case.width + x;
@@ -71,7 +60,7 @@ fn makeGrid(allocator: std.mem.Allocator, case: Case) ![]mesh.Vertex {
     return vertices;
 }
 
-fn runRound(allocator: std.mem.Allocator, case: Case, vertices: []const mesh.Vertex, sorted_indices: []const usize) !RoundTiming {
+fn runRound(io: std.Io, allocator: std.mem.Allocator, case: Case, vertices: []const mesh.Vertex, sorted_indices: []const usize) !RoundTiming {
     var timing = RoundTiming{};
     predicates.resetStats();
 
@@ -88,7 +77,7 @@ fn runRound(allocator: std.mem.Allocator, case: Case, vertices: []const mesh.Ver
     const mesh_ids = try allocator.alloc(i32, vertices.len);
     defer allocator.free(mesh_ids);
 
-    const total_start = now();
+    const total_start = timer.now(io);
     for (0..case.iterations) |_| {
         engine.resetRetainingCapacity();
         arena.resetRetainingCapacity();
@@ -96,27 +85,27 @@ fn runRound(allocator: std.mem.Allocator, case: Case, vertices: []const mesh.Ver
 
         try engine.initSuperTriangle(vertices);
 
-        const insertion_start = now();
+        const insertion_start = timer.now(io);
         for (sorted_indices) |idx| {
             mesh_ids[idx] = try engine.insertUniquePointTrusted(&arena, vertices[idx]);
         }
-        const insertion_end = now();
+        const insertion_end = timer.now(io);
 
         const start_idx = mesh_ids[gridIndex(case, case.start_grid.x, case.start_grid.y)];
         const end_idx = mesh_ids[gridIndex(case, case.end_grid.x, case.end_grid.y)];
         try corridor.recoverConstraintTrusted(allocator, &engine, &arena, start_idx, end_idx);
-        const constraint_end = now();
+        const constraint_end = timer.now(io);
 
         try engine.validateTopology();
         try engine.validateConstraintFlags();
         try engine.validateCdtLegality();
 
-        timing.insertion_us += elapsedMicros(insertion_start, insertion_end);
-        timing.constraint_us += elapsedMicros(insertion_end, constraint_end);
+        timing.insertion_us += timer.elapsedMicros(insertion_start, insertion_end);
+        timing.constraint_us += timer.elapsedMicros(insertion_end, constraint_end);
         timing.triangles += engine.liveTriangleCount();
         timing.engine_stats = addStats(timing.engine_stats, engine.statsSnapshot());
     }
-    timing.total_us = elapsedMicros(total_start, now());
+    timing.total_us = timer.elapsedMicros(total_start, timer.now(io));
     timing.predicate_stats = predicates.statsSnapshot();
     return timing;
 }
@@ -153,6 +142,10 @@ fn addStats(a: triangulate.EngineStats, b: triangulate.EngineStats) triangulate.
     out.cavity_max_edges = @max(out.cavity_max_edges, b.cavity_max_edges);
     out.circumcircle_filter_rejects += b.circumcircle_filter_rejects;
     out.circumcircle_filter_fallbacks += b.circumcircle_filter_fallbacks;
+    out.cavity_relevance_samples += b.cavity_relevance_samples;
+    out.cavity_relevance_interior += b.cavity_relevance_interior;
+    out.cavity_relevance_exterior += b.cavity_relevance_exterior;
+    out.cavity_relevance_unclassified += b.cavity_relevance_unclassified;
     return out;
 }
 
@@ -228,7 +221,7 @@ fn printCase(case: Case, order: Order, timing: RoundTiming) void {
     }
 }
 
-pub fn main(_: std.process.Init) !void {
+pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -249,9 +242,9 @@ pub fn main(_: std.process.Init) !void {
         const brio_indices = try spatial.sortVerticesByBrioMorton(allocator, vertices, 0x5E67C1EA);
         defer allocator.free(brio_indices);
 
-        const morton_timing = try runRound(allocator, case, vertices, morton_indices);
+        const morton_timing = try runRound(init.io, allocator, case, vertices, morton_indices);
         printCase(case, .{ .name = "morton", .indices = morton_indices }, morton_timing);
-        const brio_timing = try runRound(allocator, case, vertices, brio_indices);
+        const brio_timing = try runRound(init.io, allocator, case, vertices, brio_indices);
         printCase(case, .{ .name = "brio-morton", .indices = brio_indices }, brio_timing);
     }
 }

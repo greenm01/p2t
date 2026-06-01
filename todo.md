@@ -17,6 +17,16 @@ Fast-predicate BRIO Cleave remains roughly `4x` slower than fast-poly2tri on the
 - fast-poly2tri float/double: about `76-88 us/run`.
 - Interior extraction costs only about `10-14 us/run`, so optimizing extraction alone will not close the gap.
 
+## Latest Cavity-Relevance Diagnostic
+
+`bench-single -Dpredicate-policy=fast -Dinstrument-mesh-stats=true -Dspatial-hints=true` now runs on macOS/Linux-portable benchmark timers and reports one untimed cavity relevance pass after each timed case. Current BRIO results show a large share of insertion cavity work later maps to exterior mesh:
+
+- `dude/brio-morton`: `354` cavity samples, `138` interior, `216` exterior (`61.0%` exterior).
+- `nazca-monkey/brio-morton`: `4702` cavity samples, `2355` interior, `2347` exterior (`49.9%` exterior).
+- `nazca-heron/brio-morton`: `4078` cavity samples, `1943` interior, `2135` exterior (`52.4%` exterior).
+
+This supports continuing with polygon-aware construction work: a meaningful fraction of insertion/cavity maintenance is spent on triangles that do not contribute to final polygon output.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.
