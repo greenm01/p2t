@@ -2,9 +2,37 @@ const std = @import("std");
 const mesh = @import("mesh.zig");
 const triangulate = @import("triangulate.zig");
 const predicates = @import("predicates.zig");
+const parser = @import("parser.zig");
+const spatial = @import("spatial.zig");
 
 pub const Corridor = struct {
     pierced_triangles: std.ArrayListUnmanaged(i32) = .empty,
+
+    const EdgeKey = struct { v1: i32, v2: i32 };
+    const EdgeRecord = struct { v1: i32, v2: i32 };
+    const BoundaryNode = struct {
+        neighbors: [8]i32 = [_]i32{-1} ** 8,
+        degree: u8 = 0,
+
+        fn addNeighbor(self: *BoundaryNode, neighbor: i32) !void {
+            for (self.neighbors[0..self.degree]) |existing| {
+                if (existing == neighbor) return;
+            }
+            if (self.degree >= self.neighbors.len) return error.InvalidCorridorBoundary;
+            self.neighbors[self.degree] = neighbor;
+            self.degree += 1;
+        }
+    };
+
+    const ChainCandidate = struct {
+        side: i32,
+        score: f64,
+        vertices: std.ArrayListUnmanaged(i32) = .empty,
+
+        fn deinit(self: *ChainCandidate, allocator: std.mem.Allocator) void {
+            self.vertices.deinit(allocator);
+        }
+    };
 
     pub fn deinit(self: *Corridor, allocator: std.mem.Allocator) void {
         self.pierced_triangles.deinit(allocator);
@@ -136,33 +164,122 @@ pub const Corridor = struct {
         }
     }
 
-    pub fn triangulatePseudoPolygon(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32, wall: []i32, is_left: bool) !void {
-        _ = self;
-        if (wall.len == 0) return;
+    fn canonicalEdge(a: i32, b: i32) EdgeKey {
+        return .{ .v1 = @min(a, b), .v2 = @max(a, b) };
+    }
 
+    fn addBoundaryNeighbor(engine: *triangulate.Engine, nodes: *std.AutoHashMap(i32, BoundaryNode), a: i32, b: i32) !void {
+        var entry = try nodes.getOrPut(a);
+        if (!entry.found_existing) entry.value_ptr.* = .{};
+        if (entry.value_ptr.degree >= entry.value_ptr.neighbors.len) {
+            const av = engine.getVertex(a);
+            const bv = engine.getVertex(b);
+            std.debug.print("InvalidCorridorBoundary: vertex {d} ({d},{d}) exceeded boundary neighbor capacity with {d} ({d},{d})\n", .{ a, av.x, av.y, b, bv.x, bv.y });
+            return error.InvalidCorridorBoundary;
+        }
+        try entry.value_ptr.addNeighbor(b);
+    }
+
+    fn buildBoundaryGraph(
+        self: *Corridor,
+        engine: *triangulate.Engine,
+        edge_counts: *std.AutoHashMap(EdgeKey, usize),
+        nodes: *std.AutoHashMap(i32, BoundaryNode),
+    ) !void {
+        for (self.pierced_triangles.items) |t_idx| {
+            const tri = engine.mesh.triangles.get(@as(usize, @intCast(t_idx)));
+            const edges = [_]EdgeRecord{
+                .{ .v1 = tri.v0, .v2 = tri.v1 },
+                .{ .v1 = tri.v1, .v2 = tri.v2 },
+                .{ .v1 = tri.v2, .v2 = tri.v0 },
+            };
+
+            for (edges) |e| {
+                const key = canonicalEdge(e.v1, e.v2);
+                const count = edge_counts.get(key) orelse 0;
+                try edge_counts.put(key, count + 1);
+            }
+        }
+
+        var it = edge_counts.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.* != 1) continue;
+            const a = entry.key_ptr.v1;
+            const b = entry.key_ptr.v2;
+            try addBoundaryNeighbor(engine, nodes, a, b);
+            try addBoundaryNeighbor(engine, nodes, b, a);
+        }
+    }
+
+    fn validateBoundaryDegrees(nodes: *std.AutoHashMap(i32, BoundaryNode), start_pt_idx: i32, end_pt_idx: i32) !void {
+        var it = nodes.iterator();
+        while (it.next()) |entry| {
+            if (entry.key_ptr.* == start_pt_idx or entry.key_ptr.* == end_pt_idx) {
+                if (entry.value_ptr.degree >= 2) continue;
+            }
+            if (entry.value_ptr.degree != 2) {
+                std.debug.print("InvalidCorridorBoundary: vertex {d} has boundary degree {d}\n", .{ entry.key_ptr.*, entry.value_ptr.degree });
+                return error.InvalidCorridorBoundary;
+            }
+        }
+    }
+
+    fn traceBoundaryChain(
+        nodes: *std.AutoHashMap(i32, BoundaryNode),
+        allocator: std.mem.Allocator,
+        start_pt_idx: i32,
+        end_pt_idx: i32,
+        first_neighbor: i32,
+        out: *std.ArrayListUnmanaged(i32),
+    ) !void {
+        out.clearRetainingCapacity();
+
+        var prev = start_pt_idx;
+        var curr = first_neighbor;
+        var steps: usize = 0;
+        const limit = nodes.count() + 1;
+
+        while (curr != end_pt_idx) : (steps += 1) {
+            if (steps > limit) {
+                return error.InvalidCorridorBoundary;
+            }
+            if (curr == start_pt_idx) {
+                return error.InvalidCorridorBoundary;
+            }
+
+            try out.append(allocator, curr);
+
+            const node = nodes.get(curr) orelse return error.InvalidCorridorBoundary;
+            if (node.degree != 2) {
+                return error.InvalidCorridorBoundary;
+            }
+            const next = if (node.neighbors[0] == prev) node.neighbors[1] else if (node.neighbors[1] == prev) node.neighbors[0] else {
+                return error.InvalidCorridorBoundary;
+            };
+
+            prev = curr;
+            curr = next;
+        }
+    }
+
+    fn chainSideScore(engine: *triangulate.Engine, start_pt_idx: i32, end_pt_idx: i32, chain: []const i32) struct { side: i32, score: f64 } {
+        if (chain.len == 0) return .{ .side = 0, .score = std.math.inf(f64) };
         const start_pt = engine.getVertex(start_pt_idx);
         const end_pt = engine.getVertex(end_pt_idx);
+        var side: i32 = 0;
+        var score = std.math.inf(f64);
+        for (chain) |v_idx| {
+            const orient = predicates.orient2d(start_pt, end_pt, engine.getVertex(v_idx));
+            if (orient > 0.0 and side == 0) side = 1;
+            if (orient < 0.0 and side == 0) side = -1;
+            if (orient != 0.0) score = @min(score, @abs(orient));
+        }
+        return .{ .side = side, .score = score };
+    }
 
-        // Sort wall by projection along the segment
-        const dx = end_pt.x - start_pt.x;
-        const dy = end_pt.y - start_pt.y;
-
-        const Context = struct {
-            engine: *triangulate.Engine,
-            start: mesh.Vertex,
-            dx: f64,
-            dy: f64,
-
-            pub fn lessThan(ctx: @This(), a_idx: i32, b_idx: i32) bool {
-                const a = ctx.engine.getVertex(a_idx);
-                const b = ctx.engine.getVertex(b_idx);
-                const proj_a = (a.x - ctx.start.x) * ctx.dx + (a.y - ctx.start.y) * ctx.dy;
-                const proj_b = (b.x - ctx.start.x) * ctx.dx + (b.y - ctx.start.y) * ctx.dy;
-                return proj_a < proj_b;
-            }
-        };
-
-        std.mem.sortUnstable(i32, wall, Context{ .engine = engine, .start = start_pt, .dx = dx, .dy = dy }, Context.lessThan);
+    pub fn triangulatePseudoPolygon(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32, wall: []const i32, is_left: bool) !void {
+        _ = self;
+        if (wall.len == 0) return;
 
         var stack: std.ArrayListUnmanaged(i32) = .empty;
         defer stack.deinit(allocator);
@@ -257,35 +374,63 @@ pub const Corridor = struct {
     }
 
     pub fn clearAndRetriangulate(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
-        const EdgeKey = struct { v1: i32, v2: i32 };
-
         try self.augmentPiercedBySegmentScan(allocator, engine, start_pt_idx, end_pt_idx);
 
-        // 1. Extract boundaries
-        // We collect all boundary edges of the corridor. A boundary edge is one that belongs to exactly one pierced triangle.
         var edge_counts = std.AutoHashMap(EdgeKey, usize).init(allocator);
         defer edge_counts.deinit();
 
-        var edge_to_adj = std.AutoHashMap(EdgeKey, i32).init(allocator);
-        defer edge_to_adj.deinit();
+        var boundary_nodes = std.AutoHashMap(i32, BoundaryNode).init(allocator);
+        defer boundary_nodes.deinit();
 
-        for (self.pierced_triangles.items) |t_idx| {
-            const tri = engine.mesh.triangles.get(@as(usize, @intCast(t_idx)));
-            const edges = [_]struct { v1: i32, v2: i32, adj: i32 }{
-                .{ .v1 = tri.v0, .v2 = tri.v1, .adj = tri.adj0 },
-                .{ .v1 = tri.v1, .v2 = tri.v2, .adj = tri.adj1 },
-                .{ .v1 = tri.v2, .v2 = tri.v0, .adj = tri.adj2 },
+        try self.buildBoundaryGraph(engine, &edge_counts, &boundary_nodes);
+        try validateBoundaryDegrees(&boundary_nodes, start_pt_idx, end_pt_idx);
+
+        const start_node = boundary_nodes.get(start_pt_idx) orelse {
+            std.debug.print("InvalidCorridorBoundary: missing start vertex {d} in boundary\n", .{start_pt_idx});
+            return error.InvalidCorridorBoundary;
+        };
+        const end_node = boundary_nodes.get(end_pt_idx) orelse {
+            std.debug.print("InvalidCorridorBoundary: missing end vertex {d} in boundary\n", .{end_pt_idx});
+            return error.InvalidCorridorBoundary;
+        };
+        if (start_node.degree < 2 or end_node.degree < 2) {
+            std.debug.print("InvalidCorridorBoundary: endpoint degrees start {d}:{d}, end {d}:{d}\n", .{ start_pt_idx, start_node.degree, end_pt_idx, end_node.degree });
+            return error.InvalidCorridorBoundary;
+        }
+
+        var candidates: std.ArrayListUnmanaged(ChainCandidate) = .empty;
+        defer {
+            for (candidates.items) |*candidate| candidate.deinit(allocator);
+            candidates.deinit(allocator);
+        }
+
+        for (start_node.neighbors[0..start_node.degree]) |neighbor| {
+            var chain: std.ArrayListUnmanaged(i32) = .empty;
+            traceBoundaryChain(&boundary_nodes, allocator, start_pt_idx, end_pt_idx, neighbor, &chain) catch {
+                chain.deinit(allocator);
+                continue;
             };
+            const side_score = chainSideScore(engine, start_pt_idx, end_pt_idx, chain.items);
+            try candidates.append(allocator, .{
+                .side = side_score.side,
+                .score = side_score.score,
+                .vertices = chain,
+            });
+        }
 
-            for (edges) |e| {
-                const min_v = @min(e.v1, e.v2);
-                const max_v = @max(e.v1, e.v2);
-                const key = EdgeKey{ .v1 = min_v, .v2 = max_v };
-
-                const count = edge_counts.get(key) orelse 0;
-                try edge_counts.put(key, count + 1);
-                try edge_to_adj.put(key, e.adj);
+        var left_chain: ?usize = null;
+        var right_chain: ?usize = null;
+        for (candidates.items, 0..) |candidate, idx| {
+            if (candidate.side > 0) {
+                if (left_chain == null or candidate.score < candidates.items[left_chain.?].score) left_chain = idx;
+            } else if (candidate.side < 0) {
+                if (right_chain == null or candidate.score < candidates.items[right_chain.?].score) right_chain = idx;
             }
+        }
+
+        if (left_chain == null or right_chain == null) {
+            std.debug.print("InvalidCorridorBoundary: could not split {d} chains into opposite sides\n", .{candidates.items.len});
+            return error.InvalidCorridorBoundary;
         }
 
         // 2. Detach live outer neighbors from the soon-to-be-cleared corridor.
@@ -321,55 +466,8 @@ pub const Corridor = struct {
             try arena.tombstone(allocator, t_idx);
         }
 
-        const start_pt = engine.getVertex(start_pt_idx);
-        const end_pt = engine.getVertex(end_pt_idx);
-
-        var left_wall_set = std.AutoHashMap(i32, void).init(allocator);
-        defer left_wall_set.deinit();
-
-        var right_wall_set = std.AutoHashMap(i32, void).init(allocator);
-        defer right_wall_set.deinit();
-
-        // Separate boundary vertices into left and right walls based on orientation
-        var it = edge_counts.iterator();
-        while (it.next()) |entry| {
-            if (entry.value_ptr.* == 1) { // It's a boundary edge
-                const v1_idx = entry.key_ptr.v1;
-                const v2_idx = entry.key_ptr.v2;
-
-                if (v1_idx != start_pt_idx and v1_idx != end_pt_idx) {
-                    const v1 = engine.getVertex(v1_idx);
-                    if (predicates.orient2d(start_pt, end_pt, v1) > 0.0) {
-                        try left_wall_set.put(v1_idx, {});
-                    } else {
-                        try right_wall_set.put(v1_idx, {});
-                    }
-                }
-
-                if (v2_idx != start_pt_idx and v2_idx != end_pt_idx) {
-                    const v2 = engine.getVertex(v2_idx);
-                    if (predicates.orient2d(start_pt, end_pt, v2) > 0.0) {
-                        try left_wall_set.put(v2_idx, {});
-                    } else {
-                        try right_wall_set.put(v2_idx, {});
-                    }
-                }
-            }
-        }
-
-        var left_wall: std.ArrayListUnmanaged(i32) = .empty;
-        defer left_wall.deinit(allocator);
-        var left_it = left_wall_set.keyIterator();
-        while (left_it.next()) |v| try left_wall.append(allocator, v.*);
-
-        var right_wall: std.ArrayListUnmanaged(i32) = .empty;
-        defer right_wall.deinit(allocator);
-        var right_it = right_wall_set.keyIterator();
-        while (right_it.next()) |v| try right_wall.append(allocator, v.*);
-
-        // 4. Linear Triangulation (Stack-based algorithm for monotone polygon)
-        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, left_wall.items, true);
-        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, right_wall.items, false);
+        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[left_chain.?].vertices.items, true);
+        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[right_chain.?].vertices.items, false);
         try engine.rebuildAdjacency();
     }
 };
@@ -403,4 +501,61 @@ test "corridor trace" {
     try corridor.trace(std.testing.allocator, &engine, start_tri, end_pt, start_pt);
 
     try std.testing.expect(corridor.pierced_triangles.items.len > 0);
+}
+
+test "dude fixture constraint recovery remains manifold" {
+    const allocator = std.testing.allocator;
+    const fixture = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "tests/fixtures/dude.dat", allocator, .limited(1024 * 1024));
+    defer allocator.free(fixture);
+
+    const points = try parser.parseDatString(allocator, fixture);
+    defer allocator.free(points);
+
+    const vertices = try allocator.alloc(mesh.Vertex, points.len);
+    defer allocator.free(vertices);
+    for (points, 0..) |p, i| {
+        vertices[i] = .{ .x = p.x, .y = p.y };
+    }
+
+    var engine = triangulate.Engine.init(allocator);
+    defer engine.deinit();
+
+    var arena = mesh.ThreadArena{};
+    defer arena.deinit(allocator);
+
+    try engine.initSuperTriangle(vertices);
+
+    const sorted_indices = try spatial.sortVerticesByMorton(allocator, vertices);
+    defer allocator.free(sorted_indices);
+
+    const mesh_ids = try allocator.alloc(i32, vertices.len);
+    defer allocator.free(mesh_ids);
+
+    for (sorted_indices) |idx| {
+        mesh_ids[idx] = try engine.insertPoint(&arena, vertices[idx]);
+        try engine.validateTopology();
+    }
+
+    var corridor = Corridor{};
+    defer corridor.deinit(allocator);
+
+    for (0..vertices.len) |i| {
+        const start_idx = mesh_ids[i];
+        const end_idx = mesh_ids[(i + 1) % vertices.len];
+
+        if (engine.hasLiveEdge(start_idx, end_idx)) continue;
+
+        const start_pt = engine.getVertex(start_idx);
+        const end_pt = engine.getVertex(end_idx);
+
+        corridor.pierced_triangles.clearRetainingCapacity();
+
+        const start_tri = engine.walk(engine.last_valid_tri, start_pt);
+        try std.testing.expect(start_tri >= 0);
+        try corridor.trace(allocator, &engine, start_tri, end_pt, start_pt);
+        try corridor.clearAndRetriangulate(allocator, &engine, &arena, start_idx, end_idx);
+        try engine.validateTopology();
+    }
+
+    try engine.validateConstraintRing(mesh_ids);
 }
