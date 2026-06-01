@@ -197,6 +197,22 @@ task testArenaFrontHashCdt, "run p2t tests with arena CDT front hash":
     nimcache = "/tmp/p2t_test_arena_front_hash_cdt_d",
   )
 
+task testArenaSlotCdt, "run p2t tests with arena CDT neighbor slots":
+  nimRun(
+    "tests/test_p2t",
+    flags = "-d:p2tArenaCdt -d:p2tSlotCdt",
+    outPath = "/tmp/p2t_test_arena_slot_cdt",
+    nimcache = "/tmp/p2t_test_arena_slot_cdt_d",
+  )
+
+task testArenaSlotFrontHashCdt, "run p2t tests with arena CDT neighbor slots and front hash":
+  nimRun(
+    "tests/test_p2t",
+    flags = "-d:p2tArenaCdt -d:p2tSlotCdt -d:p2tFrontHash",
+    outPath = "/tmp/p2t_test_arena_slot_front_hash_cdt",
+    nimcache = "/tmp/p2t_test_arena_slot_front_hash_cdt_d",
+  )
+
 task testArenaFloat32Cdt, "run p2t tests with arena-backed float32 CDT":
   nimRun(
     "tests/test_p2t",
@@ -255,6 +271,17 @@ task benchArenaFrontHashCdt, "run p2t benchmark with arena CDT front hash":
   echo "p2t arena front hash CDT"
   sh quoteShell("/tmp/p2t_bench_arena_front_hash_cdt")
 
+task benchArenaSlotFrontHashCdt, "run p2t benchmark with arena CDT neighbor slots and front hash":
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tSlotCdt -d:p2tFrontHash",
+    outPath = "/tmp/p2t_bench_arena_slot_front_hash_cdt",
+    nimcache = "/tmp/p2t_bench_arena_slot_front_hash_cdt_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_arena_slot_front_hash_cdt")
+  echo "p2t arena slot front hash CDT"
+  sh quoteShell("/tmp/p2t_bench_arena_slot_front_hash_cdt")
+
 task benchArenaFloat32Cdt, "run p2t benchmark with arena-backed float32 CDT":
   nimCompile(
     "bench/bench_p2t",
@@ -304,9 +331,18 @@ task benchCompareAll, "compare best Nim, front hash, fast-poly2tri, and libtess2
   )
   sh "strip " & quoteShell("/tmp/p2t_bench_arena_front_hash_cdt")
 
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tSlotCdt -d:p2tFrontHash",
+    outPath = "/tmp/p2t_bench_arena_slot_front_hash_cdt",
+    nimcache = "/tmp/p2t_bench_arena_slot_front_hash_cdt_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_arena_slot_front_hash_cdt")
+
   var reportArgs = @[
     "nim-best=/tmp/p2t_bench_best",
     "nim-front-hash=/tmp/p2t_bench_arena_front_hash_cdt",
+    "nim-slot-front-hash=/tmp/p2t_bench_arena_slot_front_hash_cdt",
   ]
 
   let fastDir = findFastPoly2TriDir()

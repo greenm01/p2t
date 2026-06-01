@@ -60,14 +60,14 @@ proc report(name: string, input: TessInput) =
     edgeWalkPerEvent = stats.edgeWalkSteps.ratio(stats.edgeEvents)
     flipScanPerEvent = stats.flipScans.ratio(stats.flipEvents)
 
-  echo &"{name},{points},{triangles},{stats.pointEvents},{stats.locateNodeSteps},{locatePerPoint:.3f},{stats.fills},{stats.fillBasins},{stats.legalizeCalls},{stats.legalizeEdges},{stats.rotations},{stats.edgeEvents},{stats.edgeWalkSteps},{edgeWalkPerEvent:.3f},{stats.flipEvents},{stats.flipScans},{flipScanPerEvent:.3f},{stats.incircleCalls},{stats.incircleSuccesses},{stats.inScanAreaCalls},{stats.mapTriangleToNodesCalls},{stats.mapTriangleNodeUpdates},{stats.indexCalls},{stats.edgeIndexCalls},{stats.meshCleanVisits},{stats.markNeighborCalls},{stats.swapNeighborScans},{stats.slotRotations},{stats.locateNodeHashHits},{stats.locateNodeHashMisses},{stats.frontBucketUpdates}"
+  echo &"{name},{points},{triangles},{stats.pointEvents},{stats.locateNodeSteps},{locatePerPoint:.3f},{stats.fills},{stats.fillBasins},{stats.legalizeCalls},{stats.legalizeEdges},{stats.rotations},{stats.edgeEvents},{stats.edgeWalkSteps},{edgeWalkPerEvent:.3f},{stats.flipEvents},{stats.flipScans},{flipScanPerEvent:.3f},{stats.incircleCalls},{stats.incircleSuccesses},{stats.inScanAreaCalls},{stats.mapTriangleToNodesCalls},{stats.mapTriangleNodeUpdates},{stats.indexCalls},{stats.edgeIndexCalls},{stats.meshCleanVisits},{stats.markNeighborCalls},{stats.swapNeighborScans},{stats.slotRotations},{stats.slotFallbacks},{stats.locateNodeHashHits},{stats.locateNodeHashMisses},{stats.frontBucketUpdates}"
 
 when defined(p2tFrontHash):
   echo "arena CDT stats with front hash"
 else:
   echo "arena CDT stats"
 
-echo "case,points,triangles,pointEvents,locateSteps,locateStepsPerPoint,fills,fillBasins,legalizeCalls,legalizeEdges,rotations,edgeEvents,edgeWalkSteps,edgeWalkStepsPerEvent,flipEvents,flipScans,flipScansPerEvent,incircleCalls,incircleSuccesses,inScanAreaCalls,mapTriangleToNodesCalls,mapTriangleNodeUpdates,indexCalls,edgeIndexCalls,meshCleanVisits,markNeighborCalls,swapNeighborScans,slotRotations,hashHits,hashMisses,frontBucketUpdates"
+echo "case,points,triangles,pointEvents,locateSteps,locateStepsPerPoint,fills,fillBasins,legalizeCalls,legalizeEdges,rotations,edgeEvents,edgeWalkSteps,edgeWalkStepsPerEvent,flipEvents,flipScans,flipScansPerEvent,incircleCalls,incircleSuccesses,inScanAreaCalls,mapTriangleToNodesCalls,mapTriangleNodeUpdates,indexCalls,edgeIndexCalls,meshCleanVisits,markNeighborCalls,swapNeighborScans,slotRotations,slotFallbacks,hashHits,hashMisses,frontBucketUpdates"
 
 report(
   "small-ui-quad",

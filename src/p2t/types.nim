@@ -63,7 +63,7 @@ when defined(p2tArenaCdt):
       edgeEvents*, edgeWalkSteps*, flipEvents*, flipScans*: uint64
       indexCalls*, edgeIndexCalls*, mapTriangleToNodesCalls*: uint64
       incircleCalls*, inScanAreaCalls*, meshCleanVisits*: uint64
-      locateNodeSteps*, swapNeighborScans*, slotRotations*: uint64
+      locateNodeSteps*, swapNeighborScans*, slotRotations*, slotFallbacks*: uint64
       legalizeEdges*, incircleSuccesses*, markNeighborCalls*: uint64
       mapTriangleNodeUpdates*: uint64
       locateNodeHashHits*, locateNodeHashMisses*, frontBucketUpdates*: uint64

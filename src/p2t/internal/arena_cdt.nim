@@ -793,6 +793,18 @@ when defined(p2tSlotCdt):
     t.neighborSlots[side] =
       if other.isNil or otherSide < 0: NilNeighborSlot else: otherSide.uint8
 
+  proc neighborSlot(t: ptr ArenaTriangle, side: int): int {.inline.} =
+    let neighbor = t.neighbors[side]
+    if neighbor.isNil:
+      return -1
+    let slot = t.neighborSlots[side].int
+    if slot >= 0 and slot < 3 and neighbor.neighbors[slot] == t:
+      return slot
+    statIncGlobal(slotFallbacks)
+    result = neighbor.neighborIndexPlain(t)
+    if result >= 0:
+      t.neighborSlots[side] = result.uint8
+
   proc rotateTrianglePairIndexed(
       ws: var ArenaWorkspace,
       t: ptr ArenaTriangle,
@@ -823,44 +835,10 @@ when defined(p2tSlotCdt):
       de2 = t.hasFlag(delaunayFlag(tNext))
       de3 = ot.hasFlag(delaunayFlag(otPrev))
       de4 = ot.hasFlag(delaunayFlag(otNext))
-    var
-      n1Side =
-        if n1.isNil:
-          -1
-        else:
-          n1.edgeIndexPlain(
-            t.points[NextEdgeIndex[tPrev]], t.points[PrevEdgeIndex[tPrev]]
-          )
-      n2Side =
-        if n2.isNil:
-          -1
-        else:
-          n2.edgeIndexPlain(
-            t.points[NextEdgeIndex[tNext]], t.points[PrevEdgeIndex[tNext]]
-          )
-      n3Side =
-        if n3.isNil:
-          -1
-        else:
-          n3.edgeIndexPlain(
-            ot.points[NextEdgeIndex[otPrev]], ot.points[PrevEdgeIndex[otPrev]]
-          )
-      n4Side =
-        if n4.isNil:
-          -1
-        else:
-          n4.edgeIndexPlain(
-            ot.points[NextEdgeIndex[otNext]], ot.points[PrevEdgeIndex[otNext]]
-          )
-
-    if n1Side < 0 and not n1.isNil:
-      n1Side = n1.neighborIndexPlain(t)
-    if n2Side < 0 and not n2.isNil:
-      n2Side = n2.neighborIndexPlain(t)
-    if n3Side < 0 and not n3.isNil:
-      n3Side = n3.neighborIndexPlain(ot)
-    if n4Side < 0 and not n4.isNil:
-      n4Side = n4.neighborIndexPlain(ot)
+      n1Side = t.neighborSlot(tPrev)
+      n2Side = t.neighborSlot(tNext)
+      n3Side = ot.neighborSlot(otPrev)
+      n4Side = ot.neighborSlot(otNext)
 
     t.setNeighborSlot(rotateAmount, n3, n3Side)
     t.setNeighborSlot(NextEdgeIndex[rotateAmount], n2, n2Side)
@@ -869,9 +847,9 @@ when defined(p2tSlotCdt):
     ot.setNeighborSlot(NextEdgeIndex[otherRotateAmount], n4, n4Side)
     ot.setNeighborSlot(PrevEdgeIndex[otherRotateAmount], t, PrevEdgeIndex[rotateAmount])
 
-    if not n1.isNil:
+    if not n1.isNil and n1Side >= 0:
       n1.setNeighborSlot(n1Side, ot, otherRotateAmount)
-    if not n3.isNil:
+    if not n3.isNil and n3Side >= 0:
       n3.setNeighborSlot(n3Side, t, rotateAmount)
 
     t.legalize(p, op)
