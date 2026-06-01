@@ -64,6 +64,7 @@ when defined(p2tArenaCdt):
       indexCalls*, edgeIndexCalls*, mapTriangleToNodesCalls*: uint64
       incircleCalls*, inScanAreaCalls*, meshCleanVisits*: uint64
       locateNodeSteps*, swapNeighborScans*, slotRotations*: uint64
+      locateNodeHashHits*, locateNodeHashMisses*, frontBucketUpdates*: uint64
 
   when defined(p2tFloat32Cdt):
     type ArenaReal* = float32
@@ -116,6 +117,9 @@ when defined(p2tArenaCdt):
       meshStack*: seq[ptr ArenaTriangle]
       interiorTriangles*: seq[ptr ArenaTriangle]
       pointCount*, edgeCount*, triangleCount*, nodeCount*, rawInteriorCount*: int
+      when defined(p2tFrontHash):
+        frontBuckets*: seq[ptr ArenaNode]
+        frontBucketMin*, frontBucketScale*: ArenaReal
       front*: ArenaFront
       head*, tail*: ptr ArenaPoint
       afHead*, afMiddle*, afTail*: ptr ArenaNode

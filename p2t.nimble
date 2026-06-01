@@ -129,6 +129,14 @@ task testArenaCdt, "run p2t tests with arena-backed CDT":
     nimcache = "/tmp/p2t_test_arena_cdt_d",
   )
 
+task testArenaFrontHashCdt, "run p2t tests with arena CDT front hash":
+  nimRun(
+    "tests/test_p2t",
+    flags = "-d:p2tArenaCdt -d:p2tFrontHash",
+    outPath = "/tmp/p2t_test_arena_front_hash_cdt",
+    nimcache = "/tmp/p2t_test_arena_front_hash_cdt_d",
+  )
+
 task testArenaFloat32Cdt, "run p2t tests with arena-backed float32 CDT":
   nimRun(
     "tests/test_p2t",
@@ -175,6 +183,17 @@ task benchArenaCdt, "run p2t benchmark with arena-backed CDT":
   sh "strip " & quoteShell("/tmp/p2t_bench_arena_cdt")
   echo "p2t arena CDT"
   sh quoteShell("/tmp/p2t_bench_arena_cdt")
+
+task benchArenaFrontHashCdt, "run p2t benchmark with arena CDT front hash":
+  nimCompile(
+    "bench/bench_p2t",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tFrontHash",
+    outPath = "/tmp/p2t_bench_arena_front_hash_cdt",
+    nimcache = "/tmp/p2t_bench_arena_front_hash_cdt_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_arena_front_hash_cdt")
+  echo "p2t arena front hash CDT"
+  sh quoteShell("/tmp/p2t_bench_arena_front_hash_cdt")
 
 task benchArenaFloat32Cdt, "run p2t benchmark with arena-backed float32 CDT":
   nimCompile(
