@@ -35,11 +35,25 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
         vertices[i] = .{ .x = p.x, .y = p.y };
     }
 
+    const sorted_indices = try spatial.sortVerticesByMorton(allocator, vertices);
+    defer allocator.free(sorted_indices);
+    const mesh_ids = try allocator.alloc(i32, vertices.len);
+    defer allocator.free(mesh_ids);
+
     const BENCH_ROUNDS = 5;
     var times = try allocator.alloc(u64, BENCH_ROUNDS);
     defer allocator.free(times);
 
     var reportedTriangles: usize = 0;
+    var engine = triangulate.Engine.init(allocator);
+    defer engine.deinit();
+    try engine.reserveForPointCount(vertices.len);
+
+    var arena = mesh.ThreadArena{};
+    defer arena.deinit(allocator);
+
+    var corridor = corridor_module.Corridor{};
+    defer corridor.deinit(allocator);
 
     for (0..BENCH_ROUNDS) |round| {
         var ts_start: std.os.linux.timespec = undefined;
@@ -48,25 +62,14 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
         var total_triangles: usize = 0;
 
         for (0..iterations) |_| {
-            var engine = triangulate.Engine.init(allocator);
-            defer engine.deinit();
-
-            var arena = mesh.ThreadArena{};
-            defer arena.deinit(allocator);
+            engine.resetRetainingCapacity();
+            arena.resetRetainingCapacity();
 
             try engine.initSuperTriangle(vertices);
 
-            const sorted_indices = try spatial.sortVerticesByMorton(allocator, vertices);
-            defer allocator.free(sorted_indices);
-            const mesh_ids = try allocator.alloc(i32, vertices.len);
-            defer allocator.free(mesh_ids);
-
             for (sorted_indices) |idx| {
-                mesh_ids[idx] = try engine.insertPoint(&arena, vertices[idx]);
+                mesh_ids[idx] = try engine.insertUniquePoint(&arena, vertices[idx]);
             }
-
-            var corridor = corridor_module.Corridor{};
-            defer corridor.deinit(allocator);
 
             for (0..vertices.len) |i| {
                 const start_idx = mesh_ids[i];
@@ -97,25 +100,14 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
     // Calculate quality for the last run
     if (iterations > 0) {
         // We will just do a final run to measure quality so we don't skew the timing loop
-        var engine = triangulate.Engine.init(allocator);
-        defer engine.deinit();
-
-        var arena = mesh.ThreadArena{};
-        defer arena.deinit(allocator);
+        engine.resetRetainingCapacity();
+        arena.resetRetainingCapacity();
 
         engine.initSuperTriangle(vertices) catch unreachable;
 
-        const sorted_indices = spatial.sortVerticesByMorton(allocator, vertices) catch unreachable;
-        defer allocator.free(sorted_indices);
-        const mesh_ids = allocator.alloc(i32, vertices.len) catch unreachable;
-        defer allocator.free(mesh_ids);
-
         for (sorted_indices) |idx| {
-            mesh_ids[idx] = engine.insertPoint(&arena, vertices[idx]) catch unreachable;
+            mesh_ids[idx] = engine.insertUniquePoint(&arena, vertices[idx]) catch unreachable;
         }
-
-        var corridor = corridor_module.Corridor{};
-        defer corridor.deinit(allocator);
 
         for (0..vertices.len) |i| {
             const start_idx = mesh_ids[i];

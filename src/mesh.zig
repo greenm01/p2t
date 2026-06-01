@@ -44,6 +44,19 @@ pub const GlobalMesh = struct {
         self.triangle_locks.deinit(allocator);
     }
 
+    pub fn clearRetainingCapacity(self: *GlobalMesh) void {
+        self.vertices.clearRetainingCapacity();
+        self.triangles.clearRetainingCapacity();
+        self.edge_flags.clearRetainingCapacity();
+        self.triangle_versions.clearRetainingCapacity();
+        self.triangle_locks.clearRetainingCapacity();
+    }
+
+    pub fn reserve(self: *GlobalMesh, allocator: std.mem.Allocator, vertex_capacity: usize, triangle_capacity: usize) !void {
+        try self.vertices.ensureTotalCapacity(allocator, vertex_capacity);
+        try self.ensureTriangleCapacity(allocator, triangle_capacity);
+    }
+
     pub fn appendTriangle(self: *GlobalMesh, allocator: std.mem.Allocator, tri: Triangle) !void {
         try self.triangles.append(allocator, tri);
         errdefer _ = self.triangles.pop();
@@ -115,6 +128,13 @@ pub const ThreadArena = struct {
 
     pub fn tombstone(self: *ThreadArena, allocator: std.mem.Allocator, triangle_index: i32) !void {
         try self.freelist.append(allocator, triangle_index);
+    }
+
+    pub fn resetRetainingCapacity(self: *ThreadArena) void {
+        self.freelist.clearRetainingCapacity();
+        if (self.scratch) |*scratch| {
+            _ = scratch.reset(.retain_capacity);
+        }
     }
 
     pub fn getFreeSlot(self: *ThreadArena) ?i32 {

@@ -163,6 +163,15 @@ pub const Engine = struct {
         self.mesh.deinit(self.allocator);
     }
 
+    pub fn resetRetainingCapacity(self: *Engine) void {
+        self.mesh.clearRetainingCapacity();
+        self.last_valid_tri = 0;
+    }
+
+    pub fn reserveForPointCount(self: *Engine, point_count: usize) !void {
+        try self.mesh.reserve(self.allocator, point_count + 3, point_count * 3 + 8);
+    }
+
     pub fn initSuperTriangle(self: *Engine, vertices: []const mesh.Vertex) !void {
         const bounds = spatial.BoundingBox.fromVertices(vertices);
         const dx = bounds.max_x - bounds.min_x;
@@ -1011,7 +1020,17 @@ pub const Engine = struct {
 
     pub fn insertPoint(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
         for (0..max_transaction_attempts) |_| {
-            return self.insertPointAttempt(arena, pt) catch |err| {
+            return self.insertPointAttempt(arena, pt, true) catch |err| {
+                if (isRetryableTransactionError(err)) continue;
+                return err;
+            };
+        }
+        return error.TransactionConflict;
+    }
+
+    pub fn insertUniquePoint(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
+        for (0..max_transaction_attempts) |_| {
+            return self.insertPointAttempt(arena, pt, false) catch |err| {
                 if (isRetryableTransactionError(err)) continue;
                 return err;
             };
@@ -1020,13 +1039,15 @@ pub const Engine = struct {
     }
 
     // Simplified Bowyer-Watson insertion for testing
-    fn insertPointAttempt(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
+    fn insertPointAttempt(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex, check_duplicate: bool) !i32 {
         // Prevent duplicate or extremely close points
-        var v_idx: usize = 0;
-        while (v_idx < self.mesh.vertices.len) : (v_idx += 1) {
-            const existing_v = self.mesh.vertices.get(v_idx);
-            if (@abs(existing_v.x - pt.x) < 1e-6 and @abs(existing_v.y - pt.y) < 1e-6) {
-                return @as(i32, @intCast(v_idx));
+        if (check_duplicate) {
+            var v_idx: usize = 0;
+            while (v_idx < self.mesh.vertices.len) : (v_idx += 1) {
+                const existing_v = self.mesh.vertices.get(v_idx);
+                if (@abs(existing_v.x - pt.x) < 1e-6 and @abs(existing_v.y - pt.y) < 1e-6) {
+                    return @as(i32, @intCast(v_idx));
+                }
             }
         }
 

@@ -1,7 +1,8 @@
 const std = @import("std");
 const mesh = @import("mesh.zig");
+const build_options = @import("build_options");
 
-pub fn orient2d(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
+fn orient2dExact(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
     const ax: f128 = @floatCast(a.x);
     const ay: f128 = @floatCast(a.y);
     const bx: f128 = @floatCast(b.x);
@@ -13,7 +14,20 @@ pub fn orient2d(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
     return @floatCast(res);
 }
 
-pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) f64 {
+pub fn orient2d(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
+    if (build_options.strict_predicates) return orient2dExact(a, b, c);
+
+    const acx = a.x - c.x;
+    const bcx = b.x - c.x;
+    const acy = a.y - c.y;
+    const bcy = b.y - c.y;
+    const det = acx * bcy - acy * bcx;
+    const permanent = @abs(acx * bcy) + @abs(acy * bcx);
+    if (@abs(det) > permanent * 1.0e-15) return det;
+    return orient2dExact(a, b, c);
+}
+
+fn incircleExact(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) f64 {
     const ax: f128 = @floatCast(a.x);
     const ay: f128 = @floatCast(a.y);
     const bx: f128 = @floatCast(b.x);
@@ -39,6 +53,28 @@ pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) 
         clift * (adx * bdy - bdx * ady);
 
     return @floatCast(res);
+}
+
+pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) f64 {
+    if (build_options.strict_predicates) return incircleExact(a, b, c, d);
+
+    const adx = a.x - d.x;
+    const ady = a.y - d.y;
+    const bdx = b.x - d.x;
+    const bdy = b.y - d.y;
+    const cdx = c.x - d.x;
+    const cdy = c.y - d.y;
+
+    const abdet = bdx * cdy - cdx * bdy;
+    const bcdet = cdx * ady - adx * cdy;
+    const cadet = adx * bdy - bdx * ady;
+    const alift = adx * adx + ady * ady;
+    const blift = bdx * bdx + bdy * bdy;
+    const clift = cdx * cdx + cdy * cdy;
+    const det = alift * abdet + blift * bcdet + clift * cadet;
+    const permanent = @abs(alift * abdet) + @abs(blift * bcdet) + @abs(clift * cadet);
+    if (@abs(det) > permanent * 1.0e-12) return det;
+    return incircleExact(a, b, c, d);
 }
 
 pub fn intersect(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) bool {
