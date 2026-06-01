@@ -487,9 +487,13 @@ pub const Corridor = struct {
         defer footprint.deinit(allocator);
         try self.collectTransactionFootprint(allocator, engine, outer_edges.items, &footprint);
 
+        var expected_versions: std.ArrayListUnmanaged(triangulate.TriangleVersionSnapshot) = .empty;
+        defer expected_versions.deinit(allocator);
+        if (!try engine.snapshotTransactionFootprint(allocator, footprint.items, &expected_versions)) return error.TransactionConflict;
+
         var tx = triangulate.TriangleTransaction{};
         defer tx.deinit(allocator);
-        if (!try engine.beginTriangleTransaction(allocator, footprint.items, &tx)) return error.TransactionConflict;
+        if (!try engine.beginTriangleTransactionWithVersions(allocator, footprint.items, expected_versions.items, &tx)) return error.TransactionConflict;
         errdefer engine.endTriangleTransaction(&tx);
 
         // 2. Detach live outer neighbors from the soon-to-be-cleared corridor.

@@ -360,11 +360,30 @@ pub const Engine = struct {
         }
     }
 
+    pub fn snapshotTransactionFootprint(self: *const Engine, allocator: std.mem.Allocator, footprint: []const i32, snapshots: *std.ArrayListUnmanaged(TriangleVersionSnapshot)) !bool {
+        snapshots.clearRetainingCapacity();
+
+        for (footprint) |tri_idx| {
+            if (tri_idx < 0) return false;
+            const slot = @as(usize, @intCast(tri_idx));
+            if (slot >= self.mesh.triangles.len) return false;
+            if (mesh.isDeadTriangle(self.mesh.triangles.get(slot))) return false;
+            try snapshots.append(allocator, self.snapshotTriangleVersion(tri_idx));
+        }
+
+        return true;
+    }
+
     fn sortTriangleIds(ids: []i32) void {
         std.mem.sortUnstable(i32, ids, {}, std.sort.asc(i32));
     }
 
     pub fn beginTriangleTransaction(self: *Engine, allocator: std.mem.Allocator, requested_triangles: []const i32, tx: *TriangleTransaction) !bool {
+        const no_expected_versions: []const TriangleVersionSnapshot = &.{};
+        return self.beginTriangleTransactionWithVersions(allocator, requested_triangles, no_expected_versions, tx);
+    }
+
+    pub fn beginTriangleTransactionWithVersions(self: *Engine, allocator: std.mem.Allocator, requested_triangles: []const i32, expected_versions: []const TriangleVersionSnapshot, tx: *TriangleTransaction) !bool {
         tx.locked.clearRetainingCapacity();
         tx.versions.clearRetainingCapacity();
 
@@ -398,6 +417,15 @@ pub const Engine = struct {
                 tx.versions.clearRetainingCapacity();
                 return err;
             };
+        }
+
+        if (!self.validateTriangleVersions(expected_versions)) {
+            for (tx.locked.items[0..acquired]) |locked_tri| {
+                self.unlockTriangle(locked_tri);
+            }
+            tx.locked.clearRetainingCapacity();
+            tx.versions.clearRetainingCapacity();
+            return false;
         }
 
         if (!self.revalidateTriangleTransaction(tx)) {
@@ -1024,9 +1052,13 @@ pub const Engine = struct {
         defer footprint.deinit(self.allocator);
         try self.collectCavityTransactionFootprint(self.allocator, cavity.items, edges.items, &footprint);
 
+        var expected_versions: std.ArrayListUnmanaged(TriangleVersionSnapshot) = .empty;
+        defer expected_versions.deinit(self.allocator);
+        if (!try self.snapshotTransactionFootprint(self.allocator, footprint.items, &expected_versions)) return error.TransactionConflict;
+
         var tx = TriangleTransaction{};
         defer tx.deinit(self.allocator);
-        if (!try self.beginTriangleTransaction(self.allocator, footprint.items, &tx)) return error.TransactionConflict;
+        if (!try self.beginTriangleTransactionWithVersions(self.allocator, footprint.items, expected_versions.items, &tx)) return error.TransactionConflict;
         errdefer self.endTriangleTransaction(&tx);
 
         // Tombstone cavity
@@ -1276,6 +1308,27 @@ test "triangle transaction revalidation detects mutation" {
     try std.testing.expect(!engine.revalidateTriangleTransaction(&tx));
 
     engine.endTriangleTransaction(&tx);
+    try std.testing.expect(!engine.isTriangleLocked(0));
+    try std.testing.expect(!engine.isTriangleLocked(1));
+}
+
+test "triangle transactions reject stale expected versions" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const quad = try initIllegalQuad(&engine);
+
+    const requested = [_]i32{ 0, 1 };
+    var expected_versions: std.ArrayListUnmanaged(TriangleVersionSnapshot) = .empty;
+    defer expected_versions.deinit(std.testing.allocator);
+    try std.testing.expect(try engine.snapshotTransactionFootprint(std.testing.allocator, &requested, &expected_versions));
+
+    try std.testing.expect(try engine.setConstrainedEdgeByVertices(quad.a, quad.b, true));
+
+    var tx = TriangleTransaction{};
+    defer tx.deinit(std.testing.allocator);
+    try std.testing.expect(!try engine.beginTriangleTransactionWithVersions(std.testing.allocator, &requested, expected_versions.items, &tx));
+    try std.testing.expectEqual(@as(usize, 0), tx.locked.items.len);
     try std.testing.expect(!engine.isTriangleLocked(0));
     try std.testing.expect(!engine.isTriangleLocked(1));
 }
