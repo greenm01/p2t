@@ -133,6 +133,80 @@ when defined(p2tArenaCdt):
       basin*: ArenaBasin
       edgeEvent*: ArenaEdgeEvent
 
+when defined(p2tIdxCdt):
+  # int32-index twin of the pointer arena. Every mesh handle is a 32-bit index
+  # into the workspace seqs (sentinel -1), so the hot structs are ~half the
+  # width of their pointer counterparts. Selected with -d:p2tIdxCdt; used to
+  # A/B the int32-index vs pointer-arena data layout on the same algorithm.
+  when defined(p2tFloat32Cdt):
+    type IdxReal* = float32
+  else:
+    type IdxReal* = float64
+
+  type
+    IdxPointId* = int32
+    IdxEdgeId* = int32
+    IdxTriangleId* = int32
+    IdxNodeId* = int32
+
+    IdxPoint* = object
+      x*, y*: IdxReal
+      sourceIndex*: int32
+      firstEdge*: IdxEdgeId
+      node*: IdxNodeId
+      when defined(p2tIdxPad):
+        pad*: uint32 # pad 28B -> 32B (pow2) to replace imul with shift
+
+    IdxEdge* = object
+      p*, q*: IdxPointId
+      next*: IdxEdgeId
+
+    IdxTriangle* = object
+      neighbors*: array[3, IdxTriangleId]
+      points*: array[3, IdxPointId]
+      flags*: uint32
+      when defined(p2tIdxPad):
+        pad*: uint32 # pad 28B -> 32B (pow2) to replace imul with shift
+
+    IdxNode* = object
+      point*: IdxPointId
+      triangle*: IdxTriangleId
+      next*, prev*: IdxNodeId
+      value*: IdxReal
+      when defined(p2tIdxPad):
+        pad*: uint64 # pad 24B -> 32B (pow2) to replace imul with shift
+
+    IdxFront* = object
+      head*, tail*, searchNode*: IdxNodeId
+
+    IdxBasin* = object
+      leftNode*, bottomNode*, rightNode*: IdxNodeId
+      width*: IdxReal
+      leftHighest*: bool
+
+    IdxEdgeEvent* = object
+      constrainedEdge*: IdxEdgeId
+      right*: bool
+
+    IdxWorkspace* = object
+      points*: seq[IdxPoint]
+      edges*: seq[IdxEdge]
+      triangles*: seq[IdxTriangle]
+      nodes*: seq[IdxNode]
+      activePoints*: seq[IdxPointId]
+      sortTemp*: seq[IdxPointId]
+      meshStack*: seq[IdxTriangleId]
+      interiorTriangles*: seq[IdxTriangleId]
+      pointCount*, edgeCount*, triangleCount*, nodeCount*, rawInteriorCount*: int
+      when FrontHashOn:
+        frontBuckets*: seq[IdxNodeId]
+        frontBucketMin*, frontBucketScale*: IdxReal
+      front*: IdxFront
+      head*, tail*: IdxPointId
+      afHead*, afMiddle*, afTail*: IdxNodeId
+      basin*: IdxBasin
+      edgeEvent*: IdxEdgeEvent
+
 type
   Vec2* = object
     x*, y*: float64
@@ -175,7 +249,23 @@ type
     triangles*: seq[array[3, int]]
     boundaryEdges*: seq[array[2, int]]
 
-when defined(p2tArenaCdt):
+when defined(p2tIdxCdt):
+  type
+    TessRawResult* = object
+      ok*: bool
+      error*: TessError
+      vertices*: ptr seq[Vec2]
+      idx*: ptr IdxWorkspace
+
+    TessWorkspace* = object
+      vertices*: seq[Vec2]
+      polygon*: seq[int]
+      indexMap*: seq[int]
+      scratch*: seq[int]
+      cdt*: CdtWorkspace
+      idx*: IdxWorkspace
+
+elif defined(p2tArenaCdt):
   type
     TessRawResult* = object
       ok*: bool

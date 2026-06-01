@@ -1,5 +1,7 @@
 import ./[geometry, types]
-when defined(p2tArenaCdt):
+when defined(p2tIdxCdt):
+  import ./internal/idx_cdt as cdt
+elif defined(p2tArenaCdt):
   import ./internal/arena_cdt as cdt
 else:
   import ./internal/cdt
@@ -234,7 +236,11 @@ proc tessellateTrustedRaw*(
 
   when defined(p2tFastRawCdt):
     let raw = workspace.triangulateCdtRaw(input)
-    when defined(p2tArenaCdt):
+    when defined(p2tIdxCdt):
+      return TessRawResult(
+        ok: true, error: tessError(tekNone), vertices: raw.vertices, idx: raw.idx
+      )
+    elif defined(p2tArenaCdt):
       return TessRawResult(
         ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
       )
@@ -245,7 +251,11 @@ proc tessellateTrustedRaw*(
   else:
     try:
       let raw = workspace.triangulateCdtRaw(input)
-      when defined(p2tArenaCdt):
+      when defined(p2tIdxCdt):
+        TessRawResult(
+          ok: true, error: tessError(tekNone), vertices: raw.vertices, idx: raw.idx
+        )
+      elif defined(p2tArenaCdt):
         TessRawResult(
           ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
         )

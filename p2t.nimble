@@ -231,6 +231,14 @@ task testArenaFloat32Cdt, "run p2t tests with arena-backed float32 CDT":
     nimcache = "/tmp/p2t_test_arena_float32_cdt_d",
   )
 
+task testIdxCdt, "run p2t tests with int32-index CDT twin":
+  nimRun(
+    "tests/test_p2t",
+    flags = "-d:p2tIdxCdt",
+    outPath = "/tmp/p2t_test_idx_cdt",
+    nimcache = "/tmp/p2t_test_idx_cdt_d",
+  )
+
 task testMemory, "run repeated tessellation memory smoke":
   nimRun(
     "tests/test_memory",
@@ -556,6 +564,19 @@ task benchBestTuned, "run best raw trusted p2t with Tier 1 tuned codegen flags":
   sh "strip " & quoteShell("/tmp/p2t_bench_best_tuned")
   echo "p2t best raw trusted CDT (Tier 1 tuned)"
   sh quoteShell("/tmp/p2t_bench_best_tuned")
+
+task benchIdxTuned, "run int32-index CDT twin with Tier 1 tuned codegen flags":
+  nimCompile(
+    "bench/bench_p2t",
+    flags =
+      "--mm:arc --threads:off -d:release --opt:speed -d:p2tIdxCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt " &
+      TunedFlags,
+    outPath = "/tmp/p2t_bench_idx_tuned",
+    nimcache = "/tmp/p2t_bench_idx_tuned_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_idx_tuned")
+  echo "p2t int32-index CDT twin (Tier 1 tuned)"
+  sh quoteShell("/tmp/p2t_bench_idx_tuned")
 
 task benchBestTunedFastPoly2Tri, "compare Tier 1 tuned p2t against local fast-poly2tri":
   let fastDir = findFastPoly2TriDir()
