@@ -72,7 +72,10 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
                 const start_idx = mesh_ids[i];
                 const end_idx = mesh_ids[(i + 1) % vertices.len];
 
-                if (engine.hasLiveEdge(start_idx, end_idx)) continue;
+                if (engine.hasLiveEdge(start_idx, end_idx)) {
+                    _ = try engine.setConstrainedEdgeByVertices(start_idx, end_idx, true);
+                    continue;
+                }
 
                 const start_pt = engine.getVertex(start_idx);
                 const end_pt = engine.getVertex(end_idx);
@@ -133,7 +136,10 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
             const start_idx = mesh_ids[i];
             const end_idx = mesh_ids[(i + 1) % vertices.len];
 
-            if (engine.hasLiveEdge(start_idx, end_idx)) continue;
+            if (engine.hasLiveEdge(start_idx, end_idx)) {
+                _ = engine.setConstrainedEdgeByVertices(start_idx, end_idx, true) catch unreachable;
+                continue;
+            }
 
             const start_pt = engine.getVertex(start_idx);
             const end_pt = engine.getVertex(end_idx);
@@ -149,6 +155,9 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
 
         engine.validateTopology() catch unreachable;
         engine.validateConstraintRing(mesh_ids) catch unreachable;
+        engine.validateConstraintFlags() catch unreachable;
+        engine.validateConstraintRingFlags(mesh_ids) catch unreachable;
+        engine.validateCdtLegality() catch unreachable;
 
         var stats = quality.QualityStats{};
         for (0..engine.mesh.triangles.len) |i| {

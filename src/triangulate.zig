@@ -10,6 +10,11 @@ pub const Edge = struct {
     old_tri: i32,
 };
 
+const LegalizeEdge = struct {
+    tri: i32,
+    side: usize,
+};
+
 const CavityEdgeBucket = struct {
     generation: u32 = 0,
     entry_index: i32 = -1,
@@ -151,7 +156,7 @@ pub const Engine = struct {
         try self.mesh.vertices.append(self.allocator, v1);
         try self.mesh.vertices.append(self.allocator, v2);
 
-        try self.mesh.triangles.append(self.allocator, .{
+        try self.mesh.appendTriangle(self.allocator, .{
             .v0 = 0,
             .v1 = 2,
             .v2 = 1,
@@ -249,6 +254,65 @@ pub const Engine = struct {
         return null;
     }
 
+    fn edgeFlag(side: usize) u8 {
+        return @as(u8, 1) << @as(u3, @intCast(side));
+    }
+
+    pub fn oppositeVertex(tri: mesh.Triangle, side: usize) i32 {
+        return switch (side) {
+            0 => tri.v2,
+            1 => tri.v0,
+            else => tri.v1,
+        };
+    }
+
+    pub fn isConstrainedSide(self: *const Engine, tri_idx: i32, side: usize) bool {
+        if (tri_idx < 0) return false;
+        const slot = @as(usize, @intCast(tri_idx));
+        if (slot >= self.mesh.edge_flags.items.len) return false;
+        return (self.mesh.edge_flags.items[slot] & edgeFlag(side)) != 0;
+    }
+
+    pub fn setConstrainedSide(self: *Engine, tri_idx: i32, side: usize, value: bool) void {
+        const slot = @as(usize, @intCast(tri_idx));
+        if (value) {
+            self.mesh.edge_flags.items[slot] |= edgeFlag(side);
+        } else {
+            self.mesh.edge_flags.items[slot] &= ~edgeFlag(side);
+        }
+    }
+
+    pub fn setConstrainedTriangleEdge(self: *Engine, tri_idx: i32, side: usize, value: bool) !void {
+        const tri = self.mesh.triangles.get(@as(usize, @intCast(tri_idx)));
+        if (mesh.isDeadTriangle(tri)) return error.InvalidTriangleVertex;
+
+        self.setConstrainedSide(tri_idx, side, value);
+        const neighbor_idx = triangleAdj(tri, side);
+        if (neighbor_idx == -1) return;
+
+        const edge = triangleEdge(tri, side);
+        const neighbor = self.mesh.triangles.get(@as(usize, @intCast(neighbor_idx)));
+        const neighbor_side = edgeSide(neighbor, edge.v1, edge.v2) orelse return error.InvalidTriangleAdjacency;
+        self.setConstrainedSide(neighbor_idx, neighbor_side, value);
+    }
+
+    pub fn findLiveEdge(self: *Engine, a: i32, b: i32) ?struct { tri: i32, side: usize } {
+        for (0..self.mesh.triangles.len) |i| {
+            const tri = self.mesh.triangles.get(i);
+            if (mesh.isDeadTriangle(tri)) continue;
+            if (edgeSide(tri, a, b)) |side| {
+                return .{ .tri = @as(i32, @intCast(i)), .side = side };
+            }
+        }
+        return null;
+    }
+
+    pub fn setConstrainedEdgeByVertices(self: *Engine, a: i32, b: i32, value: bool) !bool {
+        const found = self.findLiveEdge(a, b) orelse return false;
+        try self.setConstrainedTriangleEdge(found.tri, found.side, value);
+        return true;
+    }
+
     pub fn linkTriangleSides(self: *Engine, tri_a_idx: i32, side_a: usize, tri_b_idx: i32, side_b: usize) !void {
         if (tri_a_idx < 0 or tri_b_idx < 0) return;
         const tri_a_slot = @as(usize, @intCast(tri_a_idx));
@@ -259,10 +323,13 @@ pub const Engine = struct {
         var tri_b = self.mesh.triangles.get(tri_b_slot);
         if (mesh.isDeadTriangle(tri_a) or mesh.isDeadTriangle(tri_b)) return error.InvalidTriangleAdjacency;
 
+        const constrained = self.isConstrainedSide(tri_a_idx, side_a) or self.isConstrainedSide(tri_b_idx, side_b);
         setTriangleAdj(&tri_a, side_a, tri_b_idx);
         setTriangleAdj(&tri_b, side_b, tri_a_idx);
         self.mesh.triangles.set(tri_a_slot, tri_a);
         self.mesh.triangles.set(tri_b_slot, tri_b);
+        self.setConstrainedSide(tri_a_idx, side_a, constrained);
+        self.setConstrainedSide(tri_b_idx, side_b, constrained);
     }
 
     pub fn linkTrianglesByEdge(self: *Engine, tri_a_idx: i32, tri_b_idx: i32, edge_v1: i32, edge_v2: i32) !void {
@@ -302,15 +369,11 @@ pub const Engine = struct {
     }
 
     pub fn hasLiveEdge(self: *Engine, a: i32, b: i32) bool {
-        for (0..self.mesh.triangles.len) |i| {
-            const tri = self.mesh.triangles.get(i);
-            if (mesh.isDeadTriangle(tri)) continue;
-            if (edgeSide(tri, a, b) != null) return true;
-        }
-        return false;
+        return self.findLiveEdge(a, b) != null;
     }
 
     pub fn validateTopology(self: *Engine) !void {
+        if (self.mesh.triangles.len != self.mesh.edge_flags.items.len) return error.InvalidTriangleAdjacency;
         for (0..self.mesh.triangles.len) |i| {
             const tri = self.mesh.triangles.get(i);
             if (mesh.isDeadTriangle(tri)) continue;
@@ -344,6 +407,40 @@ pub const Engine = struct {
             const a = mesh_ids[i];
             const b = mesh_ids[(i + 1) % mesh_ids.len];
             if (!self.hasLiveEdge(a, b)) return error.MissingConstraintEdge;
+        }
+    }
+
+    pub fn validateConstraintFlags(self: *Engine) !void {
+        if (self.mesh.triangles.len != self.mesh.edge_flags.items.len) return error.InvalidTriangleAdjacency;
+
+        for (0..self.mesh.triangles.len) |i| {
+            const tri = self.mesh.triangles.get(i);
+            const flags = self.mesh.edge_flags.items[i];
+            if (mesh.isDeadTriangle(tri)) {
+                if (flags != 0) return error.InvalidTriangleAdjacency;
+                continue;
+            }
+
+            for (0..3) |side| {
+                const neighbor_idx = triangleAdj(tri, side);
+                if (neighbor_idx == -1) continue;
+                const edge = triangleEdge(tri, side);
+                const neighbor = self.mesh.triangles.get(@as(usize, @intCast(neighbor_idx)));
+                const neighbor_side = edgeSide(neighbor, edge.v1, edge.v2) orelse return error.InvalidTriangleAdjacency;
+                if (self.isConstrainedSide(@as(i32, @intCast(i)), side) != self.isConstrainedSide(neighbor_idx, neighbor_side)) {
+                    return error.InvalidTriangleAdjacency;
+                }
+            }
+        }
+    }
+
+    pub fn validateConstraintRingFlags(self: *Engine, mesh_ids: []const i32) !void {
+        if (mesh_ids.len < 2) return;
+        for (0..mesh_ids.len) |i| {
+            const a = mesh_ids[i];
+            const b = mesh_ids[(i + 1) % mesh_ids.len];
+            const found = self.findLiveEdge(a, b) orelse return error.MissingConstraintEdge;
+            if (!self.isConstrainedSide(found.tri, found.side)) return error.MissingConstraintEdge;
         }
     }
 
@@ -413,6 +510,191 @@ pub const Engine = struct {
         const v1 = self.getVertex(tri.v1);
         const v2 = self.getVertex(tri.v2);
         return predicates.incircle(v0, v1, v2, pt) > 0.0;
+    }
+
+    fn triangleHasSuperVertex(tri: mesh.Triangle) bool {
+        return tri.v0 < 3 or tri.v1 < 3 or tri.v2 < 3;
+    }
+
+    fn makeTriangleCcw(self: *Engine, a: i32, b: i32, c: i32) mesh.Triangle {
+        var v1 = b;
+        var v2 = c;
+        if (predicates.orient2d(self.getVertex(a), self.getVertex(v1), self.getVertex(v2)) < 0.0) {
+            const tmp = v1;
+            v1 = v2;
+            v2 = tmp;
+        }
+        return .{
+            .v0 = a,
+            .v1 = v1,
+            .v2 = v2,
+            .adj0 = -1,
+            .adj1 = -1,
+            .adj2 = -1,
+            .lock = 0,
+        };
+    }
+
+    fn edgeIsFlipCandidate(self: *Engine, tri_idx: i32, side: usize) ?struct { neighbor: i32, neighbor_side: usize, a: i32, b: i32, c: i32, d: i32 } {
+        if (tri_idx < 0) return null;
+        const tri = self.mesh.triangles.get(@as(usize, @intCast(tri_idx)));
+        if (mesh.isDeadTriangle(tri) or triangleHasSuperVertex(tri)) return null;
+        if (self.isConstrainedSide(tri_idx, side)) return null;
+
+        const neighbor_idx = triangleAdj(tri, side);
+        if (neighbor_idx == -1) return null;
+        const neighbor = self.mesh.triangles.get(@as(usize, @intCast(neighbor_idx)));
+        if (mesh.isDeadTriangle(neighbor) or triangleHasSuperVertex(neighbor)) return null;
+
+        const edge = triangleEdge(tri, side);
+        const neighbor_side = edgeSide(neighbor, edge.v1, edge.v2) orelse return null;
+        if (self.isConstrainedSide(neighbor_idx, neighbor_side)) return null;
+
+        const c = oppositeVertex(tri, side);
+        const d = oppositeVertex(neighbor, neighbor_side);
+        if (c == d or c == edge.v1 or c == edge.v2 or d == edge.v1 or d == edge.v2) return null;
+
+        const a_pt = self.getVertex(edge.v1);
+        const b_pt = self.getVertex(edge.v2);
+        const c_pt = self.getVertex(c);
+        const d_pt = self.getVertex(d);
+        const c_side = predicates.orient2d(a_pt, b_pt, c_pt);
+        const d_side = predicates.orient2d(a_pt, b_pt, d_pt);
+        if (c_side == 0.0 or d_side == 0.0 or c_side * d_side >= 0.0) return null;
+
+        const new1 = self.makeTriangleCcw(c, edge.v1, d);
+        const new2 = self.makeTriangleCcw(c, d, edge.v2);
+        if (predicates.orient2d(self.getVertex(new1.v0), self.getVertex(new1.v1), self.getVertex(new1.v2)) <= 0.0) return null;
+        if (predicates.orient2d(self.getVertex(new2.v0), self.getVertex(new2.v1), self.getVertex(new2.v2)) <= 0.0) return null;
+
+        return .{
+            .neighbor = neighbor_idx,
+            .neighbor_side = neighbor_side,
+            .a = edge.v1,
+            .b = edge.v2,
+            .c = c,
+            .d = d,
+        };
+    }
+
+    fn edgeNeedsFlip(self: *Engine, tri_idx: i32, side: usize) bool {
+        const candidate = self.edgeIsFlipCandidate(tri_idx, side) orelse return false;
+
+        var a = candidate.a;
+        var b = candidate.b;
+        const c = candidate.c;
+        const d = candidate.d;
+        if (predicates.orient2d(self.getVertex(a), self.getVertex(b), self.getVertex(c)) < 0.0) {
+            const tmp = a;
+            a = b;
+            b = tmp;
+        }
+        return predicates.incircle(self.getVertex(a), self.getVertex(b), self.getVertex(c), self.getVertex(d)) > 0.0;
+    }
+
+    fn appendTriangleEdges(queue: *std.ArrayListUnmanaged(LegalizeEdge), allocator: std.mem.Allocator, tri_idx: i32) !void {
+        inline for (0..3) |side| {
+            try queue.append(allocator, .{ .tri = tri_idx, .side = side });
+        }
+    }
+
+    fn flipEdge(self: *Engine, queue: *std.ArrayListUnmanaged(LegalizeEdge), allocator: std.mem.Allocator, tri_idx: i32, side: usize) !bool {
+        const candidate = self.edgeIsFlipCandidate(tri_idx, side) orelse return false;
+        if (!self.edgeNeedsFlip(tri_idx, side)) return false;
+
+        const neighbor_idx = candidate.neighbor;
+        const tri = self.mesh.triangles.get(@as(usize, @intCast(tri_idx)));
+        const neighbor = self.mesh.triangles.get(@as(usize, @intCast(neighbor_idx)));
+
+        const OldEdge = struct {
+            v1: i32,
+            v2: i32,
+            adj: i32,
+            constrained: bool,
+        };
+
+        var old_edges: [4]OldEdge = undefined;
+        var old_len: usize = 0;
+        for (0..3) |old_side| {
+            if (old_side == side) continue;
+            const edge = triangleEdge(tri, old_side);
+            old_edges[old_len] = .{
+                .v1 = edge.v1,
+                .v2 = edge.v2,
+                .adj = triangleAdj(tri, old_side),
+                .constrained = self.isConstrainedSide(tri_idx, old_side),
+            };
+            old_len += 1;
+        }
+        for (0..3) |old_side| {
+            if (old_side == candidate.neighbor_side) continue;
+            const edge = triangleEdge(neighbor, old_side);
+            old_edges[old_len] = .{
+                .v1 = edge.v1,
+                .v2 = edge.v2,
+                .adj = triangleAdj(neighbor, old_side),
+                .constrained = self.isConstrainedSide(neighbor_idx, old_side),
+            };
+            old_len += 1;
+        }
+
+        self.mesh.setTriangleFresh(tri_idx, self.makeTriangleCcw(candidate.c, candidate.a, candidate.d));
+        self.mesh.setTriangleFresh(neighbor_idx, self.makeTriangleCcw(candidate.c, candidate.d, candidate.b));
+
+        try self.linkTrianglesByEdge(tri_idx, neighbor_idx, candidate.c, candidate.d);
+
+        const new_tris = [_]i32{ tri_idx, neighbor_idx };
+        for (old_edges[0..old_len]) |old_edge| {
+            for (new_tris) |new_tri_idx| {
+                const new_tri = self.mesh.triangles.get(@as(usize, @intCast(new_tri_idx)));
+                if (edgeSide(new_tri, old_edge.v1, old_edge.v2)) |new_side| {
+                    if (old_edge.constrained) self.setConstrainedSide(new_tri_idx, new_side, true);
+                    if (old_edge.adj != -1) {
+                        try self.linkTrianglesByEdge(new_tri_idx, old_edge.adj, old_edge.v1, old_edge.v2);
+                    }
+                    break;
+                }
+            }
+        }
+
+        try appendTriangleEdges(queue, allocator, tri_idx);
+        try appendTriangleEdges(queue, allocator, neighbor_idx);
+        self.last_valid_tri = tri_idx;
+        return true;
+    }
+
+    pub fn legalizeFromTriangles(self: *Engine, allocator: std.mem.Allocator, seed_triangles: []const i32) !void {
+        var queue: std.ArrayListUnmanaged(LegalizeEdge) = .empty;
+        defer queue.deinit(allocator);
+
+        for (seed_triangles) |tri_idx| {
+            try appendTriangleEdges(&queue, allocator, tri_idx);
+        }
+
+        var iterations: usize = 0;
+        const limit = @max(@as(usize, 1024), self.mesh.triangles.len * 128 + queue.items.len * 16);
+        while (queue.items.len > 0) {
+            if (iterations > limit) return error.CdtLegalizationDidNotConverge;
+            iterations += 1;
+
+            const edge = queue.pop().?;
+            _ = try self.flipEdge(&queue, allocator, edge.tri, edge.side);
+        }
+    }
+
+    pub fn validateCdtLegality(self: *Engine) !void {
+        for (0..self.mesh.triangles.len) |tri_idx| {
+            const tri_i32 = @as(i32, @intCast(tri_idx));
+            const tri = self.mesh.triangles.get(tri_idx);
+            if (mesh.isDeadTriangle(tri) or triangleHasSuperVertex(tri)) continue;
+
+            for (0..3) |side| {
+                const neighbor_idx = triangleAdj(tri, side);
+                if (neighbor_idx == -1 or neighbor_idx < tri_i32) continue;
+                if (self.isConstrainedSide(tri_i32, side)) continue;
+                if (self.edgeNeedsFlip(tri_i32, side)) return error.IllegalDelaunayEdge;
+            }
+        }
     }
 
     fn cavityContains(cavity: []const i32, tri_idx: i32) bool {
@@ -597,9 +879,7 @@ pub const Engine = struct {
             const new_idx = arena.getFreeSlot() orelse @as(i32, @intCast(self.mesh.triangles.len));
             try new_tri_indices.append(self.allocator, new_idx);
 
-            if (new_idx == self.mesh.triangles.len) {
-                try self.mesh.triangles.append(self.allocator, undefined); // Placeholder
-            }
+            try self.mesh.ensureTriangleSlot(self.allocator, new_idx);
         }
 
         // Setup the new triangles and link them
@@ -616,7 +896,7 @@ pub const Engine = struct {
                 b = tmp;
             }
 
-            self.mesh.triangles.set(@as(usize, @intCast(t_idx)), .{
+            self.mesh.setTriangleFresh(t_idx, .{
                 .v0 = a,
                 .v1 = b,
                 .v2 = c,
@@ -678,4 +958,79 @@ test "cavity edge counter keeps only once-used boundary edges" {
     try std.testing.expectEqual(@as(usize, 1), edges.items.len);
     try std.testing.expectEqual(@as(i32, 2), edges.items[0].v1);
     try std.testing.expectEqual(@as(i32, 3), edges.items[0].v2);
+}
+
+fn initIllegalQuad(engine: *Engine) !struct { a: i32, b: i32, c: i32, d: i32 } {
+    const allocator = std.testing.allocator;
+    try engine.mesh.vertices.append(allocator, .{ .x = -100.0, .y = -100.0 });
+    try engine.mesh.vertices.append(allocator, .{ .x = 0.0, .y = 100.0 });
+    try engine.mesh.vertices.append(allocator, .{ .x = 100.0, .y = -100.0 });
+    try engine.mesh.vertices.append(allocator, .{ .x = 0.0, .y = 0.0 });
+    try engine.mesh.vertices.append(allocator, .{ .x = 1.0, .y = 0.0 });
+    try engine.mesh.vertices.append(allocator, .{ .x = 0.0, .y = 1.0 });
+    try engine.mesh.vertices.append(allocator, .{ .x = 0.5, .y = -0.1 });
+
+    try engine.mesh.appendTriangle(allocator, .{
+        .v0 = 3,
+        .v1 = 4,
+        .v2 = 5,
+        .adj0 = 1,
+        .adj1 = -1,
+        .adj2 = -1,
+        .lock = 0,
+    });
+    try engine.mesh.appendTriangle(allocator, .{
+        .v0 = 4,
+        .v1 = 3,
+        .v2 = 6,
+        .adj0 = 0,
+        .adj1 = -1,
+        .adj2 = -1,
+        .lock = 0,
+    });
+    return .{ .a = 3, .b = 4, .c = 5, .d = 6 };
+}
+
+test "edge flags are reciprocal sidecar metadata" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const quad = try initIllegalQuad(&engine);
+    try engine.validateTopology();
+    try std.testing.expect(try engine.setConstrainedEdgeByVertices(quad.a, quad.b, true));
+
+    const found = engine.findLiveEdge(quad.a, quad.b).?;
+    try std.testing.expect(engine.isConstrainedSide(found.tri, found.side));
+    try engine.validateConstraintFlags();
+}
+
+test "legalizer flips an illegal unconstrained quad edge" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const quad = try initIllegalQuad(&engine);
+    const seeds = [_]i32{ 0, 1 };
+    try engine.legalizeFromTriangles(std.testing.allocator, &seeds);
+
+    try engine.validateTopology();
+    try engine.validateConstraintFlags();
+    try engine.validateCdtLegality();
+    try std.testing.expect(!engine.hasLiveEdge(quad.a, quad.b));
+    try std.testing.expect(engine.hasLiveEdge(quad.c, quad.d));
+}
+
+test "legalizer skips constrained illegal edges" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const quad = try initIllegalQuad(&engine);
+    try std.testing.expect(try engine.setConstrainedEdgeByVertices(quad.a, quad.b, true));
+
+    const seeds = [_]i32{ 0, 1 };
+    try engine.legalizeFromTriangles(std.testing.allocator, &seeds);
+
+    try engine.validateTopology();
+    try engine.validateConstraintFlags();
+    try std.testing.expect(engine.hasLiveEdge(quad.a, quad.b));
+    try engine.validateConstraintRingFlags(&[_]i32{ quad.a, quad.b });
 }

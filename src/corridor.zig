@@ -344,9 +344,7 @@ pub const Corridor = struct {
                 if (is_convex) {
                     // Create triangle
                     const new_tri_idx = arena.getFreeSlot() orelse @as(i32, @intCast(engine.mesh.triangles.len));
-                    if (new_tri_idx == engine.mesh.triangles.len) {
-                        try engine.mesh.triangles.append(allocator, undefined);
-                    }
+                    try engine.mesh.ensureTriangleSlot(allocator, new_tri_idx);
                     try emitted.append(allocator, new_tri_idx);
 
                     const t0 = prev_idx;
@@ -360,7 +358,7 @@ pub const Corridor = struct {
                         t2 = tmp;
                     }
 
-                    engine.mesh.triangles.set(@as(usize, @intCast(new_tri_idx)), .{
+                    engine.mesh.setTriangleFresh(new_tri_idx, .{
                         .v0 = t0,
                         .v1 = t1,
                         .v2 = t2,
@@ -385,9 +383,7 @@ pub const Corridor = struct {
             const prev_idx = stack.items[stack.items.len - 2];
 
             const new_tri_idx = arena.getFreeSlot() orelse @as(i32, @intCast(engine.mesh.triangles.len));
-            if (new_tri_idx == engine.mesh.triangles.len) {
-                try engine.mesh.triangles.append(allocator, undefined);
-            }
+            try engine.mesh.ensureTriangleSlot(allocator, new_tri_idx);
             try emitted.append(allocator, new_tri_idx);
 
             const t0 = prev_idx;
@@ -400,7 +396,7 @@ pub const Corridor = struct {
                 t2 = tmp;
             }
 
-            engine.mesh.triangles.set(@as(usize, @intCast(new_tri_idx)), .{
+            engine.mesh.setTriangleFresh(new_tri_idx, .{
                 .v0 = t0,
                 .v1 = t1,
                 .v2 = t2,
@@ -527,6 +523,9 @@ pub const Corridor = struct {
                 }
             }
         }
+
+        if (!try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true)) return error.MissingConstraintEdge;
+        try engine.legalizeFromTriangles(allocator, emitted.items);
     }
 };
 
@@ -600,7 +599,10 @@ fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path:
         const start_idx = mesh_ids[i];
         const end_idx = mesh_ids[(i + 1) % vertices.len];
 
-        if (engine.hasLiveEdge(start_idx, end_idx)) continue;
+        if (engine.hasLiveEdge(start_idx, end_idx)) {
+            _ = try engine.setConstrainedEdgeByVertices(start_idx, end_idx, true);
+            continue;
+        }
 
         const start_pt = engine.getVertex(start_idx);
         const end_pt = engine.getVertex(end_idx);
@@ -612,9 +614,12 @@ fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path:
         try corridor.trace(allocator, &engine, start_tri, end_pt, start_pt);
         try corridor.clearAndRetriangulate(allocator, &engine, &arena, start_idx, end_idx);
         try engine.validateTopology();
+        try engine.validateConstraintFlags();
+        try engine.validateCdtLegality();
     }
 
     try engine.validateConstraintRing(mesh_ids);
+    try engine.validateConstraintRingFlags(mesh_ids);
 }
 
 test "fixture constraint recovery remains manifold" {
