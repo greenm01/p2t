@@ -1,3 +1,8 @@
+const
+  ## The front-hash locate-node accelerator is on by default for arena builds
+  ## (it wins on every large fixture). Opt out with -d:p2tNoFrontHash.
+  FrontHashOn* = not defined(p2tNoFrontHash)
+
 type
   # 32-bit ids keep CdtTriangle/CdtNode compact (better cache behavior during
   # the sweep). 2^31 points/triangles is far beyond any realistic input.
@@ -119,7 +124,7 @@ when defined(p2tArenaCdt):
       meshStack*: seq[ptr ArenaTriangle]
       interiorTriangles*: seq[ptr ArenaTriangle]
       pointCount*, edgeCount*, triangleCount*, nodeCount*, rawInteriorCount*: int
-      when defined(p2tFrontHash):
+      when FrontHashOn:
         frontBuckets*: seq[ptr ArenaNode]
         frontBucketMin*, frontBucketScale*: ArenaReal
       front*: ArenaFront

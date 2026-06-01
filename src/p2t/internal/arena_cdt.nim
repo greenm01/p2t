@@ -22,7 +22,7 @@ const
 when defined(p2tSlotCdt):
   const NilNeighborSlot = 255'u8
 
-when defined(p2tFrontHash):
+when FrontHashOn:
   const
     FrontHashMinPoints {.intdefine.} = 512
     # 0 = uncapped. The hash is a pure accelerator for locateNode (the linear
@@ -91,7 +91,7 @@ proc resetCdt(ws: var ArenaWorkspace) =
   ws.sortTemp.setLen(0)
   ws.meshStack.setLen(0)
   ws.interiorTriangles.setLen(0)
-  when defined(p2tFrontHash):
+  when FrontHashOn:
     ws.frontBuckets.setLen(0)
     ws.frontBucketMin = 0
     ws.frontBucketScale = 0
@@ -124,7 +124,7 @@ proc reserveArena(
   workspace.arena.triangles.ensureCapacity(2 * pointCount + 4)
   workspace.arena.meshStack.reserveSeq(2 * pointCount + 4)
   workspace.arena.interiorTriangles.reserveSeq(2 * pointCount + 4)
-  when defined(p2tFrontHash):
+  when FrontHashOn:
     if frontHashPointCountEnabled(pointCount):
       workspace.arena.frontBuckets.reserveSeq(max(16, pointCount div 4))
   workspace.arena.activePoints.reserveSeq(pointCount + 2)
@@ -453,7 +453,7 @@ proc newNode(
   p.node = result
   inc ws.nodeCount
 
-when defined(p2tFrontHash):
+when FrontHashOn:
   proc frontHashBucketCount(pointCount: int): int =
     var root = 1
     while root * root < pointCount:
@@ -549,7 +549,7 @@ when defined(p2tFrontHash):
     nil
 
 proc locateNode(ws: var ArenaWorkspace, x: ArenaReal): ptr ArenaNode =
-  when defined(p2tFrontHash):
+  when FrontHashOn:
     var node =
       if ws.frontBuckets.len == 0:
         ws.front.searchNode
@@ -564,7 +564,7 @@ proc locateNode(ws: var ArenaWorkspace, x: ArenaReal): ptr ArenaNode =
       node = node.prev
       if not node.isNil and x >= node.value:
         ws.front.searchNode = node
-        when defined(p2tFrontHash):
+        when FrontHashOn:
           if ws.frontBuckets.len != 0:
             ws.updateFrontBucket(node)
         return node
@@ -574,7 +574,7 @@ proc locateNode(ws: var ArenaWorkspace, x: ArenaReal): ptr ArenaNode =
       node = node.next
       if not node.isNil and x < node.value:
         ws.front.searchNode = node.prev
-        when defined(p2tFrontHash):
+        when FrontHashOn:
           if ws.frontBuckets.len != 0:
             ws.updateFrontBucket(node.prev)
         return node.prev
@@ -690,7 +690,7 @@ proc initTriangulation(ws: var ArenaWorkspace) =
     dy = Alpha * (ymax - ymin)
   ws.head = ws.newPoint(xmax + dx, ymin - dy)
   ws.tail = ws.newPoint(xmin - dx, ymin - dy)
-  when defined(p2tFrontHash):
+  when FrontHashOn:
     ws.initFrontHash(ws.tail.x, ws.head.x, ws.activePoints.len)
   ws.sortActivePoints()
 
@@ -706,7 +706,7 @@ proc createAdvancingFront(ws: var ArenaWorkspace) =
   ws.afMiddle.next = ws.afTail
   ws.afMiddle.prev = ws.afHead
   ws.afTail.prev = ws.afMiddle
-  when defined(p2tFrontHash):
+  when FrontHashOn:
     ws.updateFrontBucket(ws.afHead)
     ws.updateFrontBucket(ws.afMiddle)
     ws.updateFrontBucket(ws.afTail)
@@ -1150,7 +1150,7 @@ proc newFrontTriangle(
   result.prev = n
   n.next.prev = result
   n.next = result
-  when defined(p2tFrontHash):
+  when FrontHashOn:
     ws.updateFrontBucket(result)
 
   if not ws.legalize(t):
