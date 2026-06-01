@@ -15,6 +15,22 @@ pub const Triangle = struct {
     lock: u8,
 };
 
+pub fn deadTriangle() Triangle {
+    return .{
+        .v0 = -1,
+        .v1 = -1,
+        .v2 = -1,
+        .adj0 = -1,
+        .adj1 = -1,
+        .adj2 = -1,
+        .lock = 0,
+    };
+}
+
+pub fn isDeadTriangle(tri: Triangle) bool {
+    return tri.v0 < 0 or tri.v1 < 0 or tri.v2 < 0;
+}
+
 pub const GlobalMesh = struct {
     vertices: std.MultiArrayList(Vertex) = .empty,
     triangles: std.MultiArrayList(Triangle) = .empty,
@@ -22,6 +38,10 @@ pub const GlobalMesh = struct {
     pub fn deinit(self: *GlobalMesh, allocator: std.mem.Allocator) void {
         self.vertices.deinit(allocator);
         self.triangles.deinit(allocator);
+    }
+
+    pub fn markDead(self: *GlobalMesh, triangle_index: i32) void {
+        self.triangles.set(@as(usize, @intCast(triangle_index)), deadTriangle());
     }
 };
 

@@ -58,18 +58,21 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
 
             const sorted_indices = try spatial.sortVerticesByMorton(allocator, vertices);
             defer allocator.free(sorted_indices);
+            const mesh_ids = try allocator.alloc(i32, vertices.len);
+            defer allocator.free(mesh_ids);
 
             for (sorted_indices) |idx| {
-                try engine.insertPoint(&arena, vertices[idx]);
+                mesh_ids[idx] = try engine.insertPoint(&arena, vertices[idx]);
             }
+            try engine.validateTopology();
 
             var corridor = corridor_module.Corridor{};
             defer corridor.deinit(allocator);
 
             for (0..vertices.len) |i| {
-                const start_idx = @as(i32, @intCast(i));
-                const end_idx = @as(i32, @intCast((i + 1) % vertices.len));
-                
+                const start_idx = mesh_ids[i];
+                const end_idx = mesh_ids[(i + 1) % vertices.len];
+
                 const start_pt = engine.getVertex(start_idx);
                 const end_pt = engine.getVertex(end_idx);
 
@@ -82,12 +85,14 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
                 }
             }
 
-            total_triangles += engine.mesh.triangles.len;
+            try engine.validateTopology();
+            try engine.validateConstraintRing(mesh_ids);
+            total_triangles += engine.liveTriangleCount();
         }
 
         var ts_end: std.os.linux.timespec = undefined;
         _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts_end);
-        
+
         const start_ns = @as(u64, @intCast(ts_start.sec)) * 1_000_000_000 + @as(u64, @intCast(ts_start.nsec));
         const end_ns = @as(u64, @intCast(ts_end.sec)) * 1_000_000_000 + @as(u64, @intCast(ts_end.nsec));
 
@@ -112,21 +117,23 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
         defer arena.deinit(allocator);
 
         engine.initSuperTriangle(vertices) catch unreachable;
-        
+
         const sorted_indices = spatial.sortVerticesByMorton(allocator, vertices) catch unreachable;
         defer allocator.free(sorted_indices);
-        
+        const mesh_ids = allocator.alloc(i32, vertices.len) catch unreachable;
+        defer allocator.free(mesh_ids);
+
         for (sorted_indices) |idx| {
-            engine.insertPoint(&arena, vertices[idx]) catch unreachable;
+            mesh_ids[idx] = engine.insertPoint(&arena, vertices[idx]) catch unreachable;
         }
 
         var corridor = corridor_module.Corridor{};
         defer corridor.deinit(allocator);
 
         for (0..vertices.len) |i| {
-            const start_idx = @as(i32, @intCast(i));
-            const end_idx = @as(i32, @intCast((i + 1) % vertices.len));
-            
+            const start_idx = mesh_ids[i];
+            const end_idx = mesh_ids[(i + 1) % vertices.len];
+
             const start_pt = engine.getVertex(start_idx);
             const end_pt = engine.getVertex(end_idx);
 
@@ -139,11 +146,13 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
             }
         }
 
+        engine.validateTopology() catch unreachable;
+        engine.validateConstraintRing(mesh_ids) catch unreachable;
+
         var stats = quality.QualityStats{};
         for (0..engine.mesh.triangles.len) |i| {
             const tri = engine.mesh.triangles.get(i);
-            // Ignore tombstoned
-            if (tri.v0 == tri.v1 and tri.v1 == tri.v2) continue;
+            if (mesh.isDeadTriangle(tri)) continue;
             // Ignore super-triangle vertices (indices 0, 1, 2)
             if (tri.v0 < 3 or tri.v1 < 3 or tri.v2 < 3) continue;
 

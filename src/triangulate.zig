@@ -14,7 +14,7 @@ pub const Engine = struct {
     mesh: mesh.GlobalMesh,
     allocator: std.mem.Allocator,
     last_valid_tri: i32,
-    
+
     pub fn init(allocator: std.mem.Allocator) Engine {
         return .{
             .mesh = mesh.GlobalMesh{},
@@ -61,11 +61,10 @@ pub const Engine = struct {
     pub fn walk(self: *Engine, start_tri: i32, target: mesh.Vertex) i32 {
         var curr = start_tri;
         var limit: usize = 10000;
-        
+
         while (curr != -1 and limit > 0) : (limit -= 1) {
             const tri = self.mesh.triangles.get(@as(usize, @intCast(curr)));
-            // Check if it's tombstoned. If we somehow hit a tombstoned tri, break.
-            if (tri.v0 == tri.v1 and tri.v1 == tri.v2) break; // simplistic check, but let's assume it's valid if adj is valid
+            if (mesh.isDeadTriangle(tri)) break;
 
             const v0 = self.mesh.vertices.get(@as(usize, @intCast(tri.v0)));
             const v1 = self.mesh.vertices.get(@as(usize, @intCast(tri.v1)));
@@ -91,13 +90,15 @@ pub const Engine = struct {
         var i: usize = 0;
         while (i < self.mesh.triangles.len) : (i += 1) {
             const tri = self.mesh.triangles.get(i);
+            if (mesh.isDeadTriangle(tri)) continue;
             const v0 = self.mesh.vertices.get(@as(usize, @intCast(tri.v0)));
             const v1 = self.mesh.vertices.get(@as(usize, @intCast(tri.v1)));
             const v2 = self.mesh.vertices.get(@as(usize, @intCast(tri.v2)));
 
             if (predicates.orient2d(v0, v1, target) >= 0.0 and
                 predicates.orient2d(v1, v2, target) >= 0.0 and
-                predicates.orient2d(v2, v0, target) >= 0.0) {
+                predicates.orient2d(v2, v0, target) >= 0.0)
+            {
                 return @as(i32, @intCast(i));
             }
         }
@@ -109,9 +110,147 @@ pub const Engine = struct {
         return self.mesh.vertices.get(@as(usize, @intCast(idx)));
     }
 
+    pub fn triangleAdj(tri: mesh.Triangle, side: usize) i32 {
+        return switch (side) {
+            0 => tri.adj0,
+            1 => tri.adj1,
+            else => tri.adj2,
+        };
+    }
+
+    pub fn setTriangleAdj(tri: *mesh.Triangle, side: usize, neighbor: i32) void {
+        switch (side) {
+            0 => tri.adj0 = neighbor,
+            1 => tri.adj1 = neighbor,
+            else => tri.adj2 = neighbor,
+        }
+    }
+
+    pub fn triangleEdge(tri: mesh.Triangle, side: usize) struct { v1: i32, v2: i32 } {
+        return switch (side) {
+            0 => .{ .v1 = tri.v0, .v2 = tri.v1 },
+            1 => .{ .v1 = tri.v1, .v2 = tri.v2 },
+            else => .{ .v1 = tri.v2, .v2 = tri.v0 },
+        };
+    }
+
+    pub fn edgeSide(tri: mesh.Triangle, a: i32, b: i32) ?usize {
+        inline for (0..3) |side| {
+            const edge = triangleEdge(tri, side);
+            if ((edge.v1 == a and edge.v2 == b) or (edge.v1 == b and edge.v2 == a)) {
+                return side;
+            }
+        }
+        return null;
+    }
+
+    pub fn liveTriangleCount(self: *Engine) usize {
+        var count: usize = 0;
+        for (0..self.mesh.triangles.len) |i| {
+            if (!mesh.isDeadTriangle(self.mesh.triangles.get(i))) count += 1;
+        }
+        return count;
+    }
+
+    pub fn hasLiveEdge(self: *Engine, a: i32, b: i32) bool {
+        for (0..self.mesh.triangles.len) |i| {
+            const tri = self.mesh.triangles.get(i);
+            if (mesh.isDeadTriangle(tri)) continue;
+            if (edgeSide(tri, a, b) != null) return true;
+        }
+        return false;
+    }
+
+    pub fn validateTopology(self: *Engine) !void {
+        for (0..self.mesh.triangles.len) |i| {
+            const tri = self.mesh.triangles.get(i);
+            if (mesh.isDeadTriangle(tri)) continue;
+
+            if (tri.v0 < 0 or tri.v1 < 0 or tri.v2 < 0) return error.InvalidTriangleVertex;
+            if (tri.v0 == tri.v1 or tri.v1 == tri.v2 or tri.v2 == tri.v0) return error.DegenerateTriangle;
+            if (@as(usize, @intCast(tri.v0)) >= self.mesh.vertices.len or
+                @as(usize, @intCast(tri.v1)) >= self.mesh.vertices.len or
+                @as(usize, @intCast(tri.v2)) >= self.mesh.vertices.len) return error.InvalidTriangleVertex;
+
+            const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
+            for (neighbors, 0..) |neighbor_idx, side| {
+                if (neighbor_idx == -1) continue;
+                if (neighbor_idx < 0 or @as(usize, @intCast(neighbor_idx)) >= self.mesh.triangles.len) {
+                    return error.InvalidTriangleAdjacency;
+                }
+
+                const neighbor = self.mesh.triangles.get(@as(usize, @intCast(neighbor_idx)));
+                if (mesh.isDeadTriangle(neighbor)) return error.InvalidTriangleAdjacency;
+
+                const edge = triangleEdge(tri, side);
+                const neighbor_side = edgeSide(neighbor, edge.v1, edge.v2) orelse return error.InvalidTriangleAdjacency;
+                if (triangleAdj(neighbor, neighbor_side) != @as(i32, @intCast(i))) return error.InvalidTriangleAdjacency;
+            }
+        }
+    }
+
+    pub fn validateConstraintRing(self: *Engine, mesh_ids: []const i32) !void {
+        if (mesh_ids.len < 2) return;
+        for (0..mesh_ids.len) |i| {
+            const a = mesh_ids[i];
+            const b = mesh_ids[(i + 1) % mesh_ids.len];
+            if (!self.hasLiveEdge(a, b)) return error.MissingConstraintEdge;
+        }
+    }
+
+    pub fn rebuildAdjacency(self: *Engine) !void {
+        const EdgeKey = struct {
+            a: i32,
+            b: i32,
+        };
+        const EdgeRef = struct {
+            tri: i32,
+            side: usize,
+        };
+
+        var edge_map = std.AutoHashMap(EdgeKey, EdgeRef).init(self.allocator);
+        defer edge_map.deinit();
+
+        for (0..self.mesh.triangles.len) |i| {
+            var tri = self.mesh.triangles.get(i);
+            if (mesh.isDeadTriangle(tri)) continue;
+            tri.adj0 = -1;
+            tri.adj1 = -1;
+            tri.adj2 = -1;
+            self.mesh.triangles.set(i, tri);
+        }
+
+        for (0..self.mesh.triangles.len) |i| {
+            const tri = self.mesh.triangles.get(i);
+            if (mesh.isDeadTriangle(tri)) continue;
+            for (0..3) |side| {
+                const edge = triangleEdge(tri, side);
+                const key = EdgeKey{
+                    .a = @min(edge.v1, edge.v2),
+                    .b = @max(edge.v1, edge.v2),
+                };
+
+                if (edge_map.get(key)) |other| {
+                    var tri_mut = self.mesh.triangles.get(i);
+                    var other_mut = self.mesh.triangles.get(@as(usize, @intCast(other.tri)));
+                    setTriangleAdj(&tri_mut, side, other.tri);
+                    setTriangleAdj(&other_mut, other.side, @as(i32, @intCast(i)));
+                    self.mesh.triangles.set(i, tri_mut);
+                    self.mesh.triangles.set(@as(usize, @intCast(other.tri)), other_mut);
+                } else {
+                    try edge_map.put(key, .{
+                        .tri = @as(i32, @intCast(i)),
+                        .side = side,
+                    });
+                }
+            }
+        }
+    }
+
     pub fn isInsideCircumcircle(self: *Engine, tri_idx: i32, pt: mesh.Vertex) bool {
         if (tri_idx == -1) return false;
         const tri = self.mesh.triangles.get(@as(usize, @intCast(tri_idx)));
+        if (mesh.isDeadTriangle(tri)) return false;
         const v0 = self.getVertex(tri.v0);
         const v1 = self.getVertex(tri.v1);
         const v2 = self.getVertex(tri.v2);
@@ -119,24 +258,24 @@ pub const Engine = struct {
     }
 
     // Simplified Bowyer-Watson insertion for testing
-    pub fn insertPoint(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !void {
+    pub fn insertPoint(self: *Engine, arena: *mesh.ThreadArena, pt: mesh.Vertex) !i32 {
         // Prevent duplicate or extremely close points
         var v_idx: usize = 0;
         while (v_idx < self.mesh.vertices.len) : (v_idx += 1) {
             const existing_v = self.mesh.vertices.get(v_idx);
             if (@abs(existing_v.x - pt.x) < 1e-6 and @abs(existing_v.y - pt.y) < 1e-6) {
-                return;
+                return @as(i32, @intCast(v_idx));
             }
         }
 
-        _ = @as(i32, @intCast(self.mesh.vertices.len)); // pt_idx for future retriangulation
+        const pt_idx = @as(i32, @intCast(self.mesh.vertices.len));
         try self.mesh.vertices.append(self.allocator, pt);
 
         const start_tri = self.last_valid_tri;
         const container = self.walk(start_tri, pt);
 
         if (container < 0) {
-            std.debug.print("Walk failed for point {d}, {d} with code {d}\n", .{pt.x, pt.y, container});
+            std.debug.print("Walk failed for point {d}, {d} with code {d}\n", .{ pt.x, pt.y, container });
             return error.WalkFailed;
         }
 
@@ -147,7 +286,7 @@ pub const Engine = struct {
         defer edges.deinit(self.allocator);
 
         try cavity.append(self.allocator, container);
-        
+
         var i: usize = 0;
         while (i < cavity.items.len) : (i += 1) {
             const t_idx = cavity.items[i];
@@ -155,13 +294,8 @@ pub const Engine = struct {
 
             // check neighbors
             const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
-            const edges_v = [_]struct { v1: i32, v2: i32 }{ 
-                .{ .v1 = tri.v0, .v2 = tri.v1 },
-                .{ .v1 = tri.v1, .v2 = tri.v2 },
-                .{ .v1 = tri.v2, .v2 = tri.v0 } 
-            };
 
-            for (neighbors, 0..) |n_idx, n| {
+            for (neighbors, 0..) |n_idx, side| {
                 var in_cavity = false;
                 for (cavity.items) |c_idx| {
                     if (c_idx == n_idx) {
@@ -170,21 +304,47 @@ pub const Engine = struct {
                     }
                 }
 
-                if (!in_cavity and self.isInsideCircumcircle(n_idx, pt)) {
+                const edge = triangleEdge(tri, side);
+                const point_on_edge = n_idx != -1 and predicates.pointOnSegment(
+                    self.getVertex(edge.v1),
+                    self.getVertex(edge.v2),
+                    pt,
+                );
+
+                if (!in_cavity and (point_on_edge or self.isInsideCircumcircle(n_idx, pt))) {
                     try cavity.append(self.allocator, n_idx);
-                } else if (!in_cavity) {
-                    // It's a boundary edge
-                    try edges.append(self.allocator, .{ .adj_tri = n_idx, .v1 = edges_v[n].v1, .v2 = edges_v[n].v2, .old_tri = t_idx });
+                }
+            }
+        }
+
+        for (cavity.items) |t_idx| {
+            const tri = self.mesh.triangles.get(@as(usize, @intCast(t_idx)));
+            const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
+            for (neighbors, 0..) |n_idx, side| {
+                var in_cavity = false;
+                for (cavity.items) |c_idx| {
+                    if (c_idx == n_idx) {
+                        in_cavity = true;
+                        break;
+                    }
+                }
+                if (!in_cavity) {
+                    const edge = triangleEdge(tri, side);
+                    try edges.append(self.allocator, .{
+                        .adj_tri = n_idx,
+                        .v1 = edge.v1,
+                        .v2 = edge.v2,
+                        .old_tri = t_idx,
+                    });
                 }
             }
         }
 
         // Tombstone cavity
         for (cavity.items) |t_idx| {
+            self.mesh.markDead(t_idx);
             try arena.tombstone(self.allocator, t_idx);
         }
-
-        const pt_idx = @as(i32, @intCast(self.mesh.vertices.len - 1));
 
         var new_tri_indices: std.ArrayListUnmanaged(i32) = .empty;
         defer new_tri_indices.deinit(self.allocator);
@@ -192,7 +352,7 @@ pub const Engine = struct {
         for (edges.items) |_| {
             const new_idx = arena.getFreeSlot() orelse @as(i32, @intCast(self.mesh.triangles.len));
             try new_tri_indices.append(self.allocator, new_idx);
-            
+
             if (new_idx == self.mesh.triangles.len) {
                 try self.mesh.triangles.append(self.allocator, undefined); // Placeholder
             }
@@ -202,41 +362,28 @@ pub const Engine = struct {
         for (edges.items, 0..) |e, edge_i| {
             const t_idx = new_tri_indices.items[edge_i];
             self.last_valid_tri = t_idx;
-            
-            // find internal neighbors
-            var adj1: i32 = -1; // neighbor sharing (e.v2, pt_idx)
-            var adj2: i32 = -1; // neighbor sharing (pt_idx, e.v1)
-            
-            for (edges.items, 0..) |other_e, edge_j| {
-                if (edge_i == edge_j) continue;
-                if (other_e.v1 == e.v2) adj1 = @as(i32, @intCast(new_tri_indices.items[edge_j]));
-                if (other_e.v2 == e.v1) adj2 = @as(i32, @intCast(new_tri_indices.items[edge_j]));
+
+            var a = e.v1;
+            var b = e.v2;
+            const c = pt_idx;
+            if (predicates.orient2d(self.getVertex(a), self.getVertex(b), self.getVertex(c)) < 0.0) {
+                const tmp = a;
+                a = b;
+                b = tmp;
             }
-            
+
             self.mesh.triangles.set(@as(usize, @intCast(t_idx)), .{
-                .v0 = e.v1,
-                .v1 = e.v2,
-                .v2 = pt_idx,
-                .adj0 = e.adj_tri,
-                .adj1 = adj1,
-                .adj2 = adj2,
+                .v0 = a,
+                .v1 = b,
+                .v2 = c,
+                .adj0 = -1,
+                .adj1 = -1,
+                .adj2 = -1,
                 .lock = 0,
             });
-
-            // update external neighbor to point to us
-            if (e.adj_tri != -1) {
-                const ext_idx = @as(usize, @intCast(e.adj_tri));
-                var ext_tri = self.mesh.triangles.get(ext_idx);
-                if (ext_tri.adj0 == e.old_tri) {
-                    ext_tri.adj0 = t_idx;
-                } else if (ext_tri.adj1 == e.old_tri) {
-                    ext_tri.adj1 = t_idx;
-                } else if (ext_tri.adj2 == e.old_tri) {
-                    ext_tri.adj2 = t_idx;
-                }
-                self.mesh.triangles.set(ext_idx, ext_tri);
-            }
         }
+        try self.rebuildAdjacency();
+        return pt_idx;
     }
 };
 
@@ -253,14 +400,15 @@ test "cavity building" {
     };
 
     try engine.initSuperTriangle(&vertices);
-    
+
     // Insert a point
-    try engine.insertPoint(&arena, mesh.Vertex{ .x = 15.0, .y = 15.0 });
-    
+    _ = try engine.insertPoint(&arena, mesh.Vertex{ .x = 15.0, .y = 15.0 });
+
     // The super triangle was tombstoned and replaced by 3 new triangles connecting to the new point
     try std.testing.expectEqual(0, arena.freelist.items.len);
     try std.testing.expectEqual(3, engine.mesh.triangles.len);
-    
+
     // Let's also insert another point and verify
-    try engine.insertPoint(&arena, mesh.Vertex{ .x = 14.0, .y = 16.0 });
+    _ = try engine.insertPoint(&arena, mesh.Vertex{ .x = 14.0, .y = 16.0 });
+    try engine.validateTopology();
 }

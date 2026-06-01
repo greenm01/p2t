@@ -18,8 +18,8 @@ pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) 
     const clift = cdx * cdx + cdy * cdy;
 
     return alift * (bdx * cdy - cdx * bdy) +
-           blift * (cdx * ady - adx * cdy) +
-           clift * (adx * bdy - bdx * ady);
+        blift * (cdx * ady - adx * cdy) +
+        clift * (adx * bdy - bdx * ady);
 }
 
 pub fn intersect(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) bool {
@@ -30,6 +30,13 @@ pub fn intersect(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex)
 
     if (o1 * o2 < 0.0 and o3 * o4 < 0.0) return true;
     return false;
+}
+
+pub fn pointOnSegment(a: mesh.Vertex, b: mesh.Vertex, p: mesh.Vertex) bool {
+    const eps = 1e-9;
+    if (@abs(orient2d(a, b, p)) > eps) return false;
+    return p.x >= @min(a.x, b.x) - eps and p.x <= @max(a.x, b.x) + eps and
+        p.y >= @min(a.y, b.y) - eps and p.y <= @max(a.y, b.y) + eps;
 }
 
 test "predicates" {
