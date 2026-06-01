@@ -4,6 +4,7 @@ const triangulate = @import("triangulate.zig");
 const predicates = @import("predicates.zig");
 const parser = @import("parser.zig");
 const spatial = @import("spatial.zig");
+const cavity = @import("cavity.zig");
 
 pub const Corridor = struct {
     pierced_triangles: std.ArrayListUnmanaged(i32) = .empty,
@@ -31,6 +32,11 @@ pub const Corridor = struct {
         side: i32,
         score: f64,
         vertices: std.ArrayListUnmanaged(i32) = .empty,
+    };
+
+    const LocalCavityPair = struct {
+        left: std.ArrayListUnmanaged(cavity.LocalTriangle) = .empty,
+        right: std.ArrayListUnmanaged(cavity.LocalTriangle) = .empty,
     };
 
     pub fn deinit(self: *Corridor, allocator: std.mem.Allocator) void {
@@ -364,6 +370,166 @@ pub const Corridor = struct {
         }
     }
 
+    fn buildLeftCavityVertices(
+        allocator: std.mem.Allocator,
+        start_pt_idx: i32,
+        end_pt_idx: i32,
+        wall: []const i32,
+        out: *std.ArrayListUnmanaged(i32),
+    ) !void {
+        out.clearRetainingCapacity();
+        try out.append(allocator, end_pt_idx);
+        var i = wall.len;
+        while (i > 0) {
+            i -= 1;
+            try out.append(allocator, wall[i]);
+        }
+        try out.append(allocator, start_pt_idx);
+    }
+
+    fn buildRightCavityVertices(
+        allocator: std.mem.Allocator,
+        start_pt_idx: i32,
+        end_pt_idx: i32,
+        wall: []const i32,
+        out: *std.ArrayListUnmanaged(i32),
+    ) !void {
+        out.clearRetainingCapacity();
+        try out.append(allocator, start_pt_idx);
+        for (wall) |vertex_idx| {
+            try out.append(allocator, vertex_idx);
+        }
+        try out.append(allocator, end_pt_idx);
+    }
+
+    fn localOuterEdgeNeedsFlip(engine: *triangulate.Engine, local_tri: cavity.LocalTriangle, local_side: usize, outer_tri_idx: i32) !bool {
+        if (outer_tri_idx < 0) return false;
+        const outer_tri = engine.mesh.triangles.get(@as(usize, @intCast(outer_tri_idx)));
+        if (mesh.isDeadTriangle(outer_tri)) return false;
+
+        const edge = switch (local_side) {
+            0 => EdgeRecord{ .v1 = local_tri.v0, .v2 = local_tri.v1 },
+            1 => EdgeRecord{ .v1 = local_tri.v1, .v2 = local_tri.v2 },
+            else => EdgeRecord{ .v1 = local_tri.v2, .v2 = local_tri.v0 },
+        };
+        const outer_side = triangulate.Engine.edgeSide(outer_tri, edge.v1, edge.v2) orelse return error.InvalidCavity;
+        if (engine.isConstrainedSide(outer_tri_idx, outer_side)) return false;
+
+        const local_opposite = cavity.localOppositeVertex(local_tri, local_side);
+        const outer_opposite = triangulate.Engine.oppositeVertex(outer_tri, outer_side);
+        if (local_opposite == outer_opposite or local_opposite == edge.v1 or local_opposite == edge.v2 or outer_opposite == edge.v1 or outer_opposite == edge.v2) return false;
+
+        const local_side_orient = predicates.orient2d(engine.getVertex(edge.v1), engine.getVertex(edge.v2), engine.getVertex(local_opposite));
+        const outer_side_orient = predicates.orient2d(engine.getVertex(edge.v1), engine.getVertex(edge.v2), engine.getVertex(outer_opposite));
+        if (local_side_orient == 0.0 or outer_side_orient == 0.0 or local_side_orient * outer_side_orient >= 0.0) return false;
+
+        var a = edge.v1;
+        var b = edge.v2;
+        if (predicates.orient2d(engine.getVertex(a), engine.getVertex(b), engine.getVertex(local_opposite)) < 0.0) {
+            const tmp = a;
+            a = b;
+            b = tmp;
+        }
+        return predicates.incircle(engine.getVertex(a), engine.getVertex(b), engine.getVertex(local_opposite), engine.getVertex(outer_opposite)) > 0.0;
+    }
+
+    fn localTrisContainValidOuterEdge(engine: *triangulate.Engine, local_tris: []const cavity.LocalTriangle, outer_edge: BoundaryEdge) !bool {
+        for (local_tris) |local_tri| {
+            const local_side = cavity.localEdgeSide(local_tri, outer_edge.v1, outer_edge.v2) orelse continue;
+            if (try localOuterEdgeNeedsFlip(engine, local_tri, local_side, outer_edge.adj_tri)) return error.NonDelaunayLocalCavity;
+            return true;
+        }
+        return false;
+    }
+
+    fn validateLocalAgainstOuterEdges(engine: *triangulate.Engine, left_tris: []const cavity.LocalTriangle, right_tris: []const cavity.LocalTriangle, outer_edges: []const BoundaryEdge) !void {
+        for (outer_edges) |outer_edge| {
+            if (try localTrisContainValidOuterEdge(engine, left_tris, outer_edge)) continue;
+            if (try localTrisContainValidOuterEdge(engine, right_tris, outer_edge)) continue;
+            return error.InvalidCavity;
+        }
+    }
+
+    fn buildLocalCavities(
+        allocator: std.mem.Allocator,
+        engine: *triangulate.Engine,
+        start_pt_idx: i32,
+        end_pt_idx: i32,
+        left_wall: []const i32,
+        right_wall: []const i32,
+        outer_edges: []const BoundaryEdge,
+        result: *LocalCavityPair,
+    ) !void {
+        result.left.clearRetainingCapacity();
+        result.right.clearRetainingCapacity();
+
+        var left_vertices: std.ArrayListUnmanaged(i32) = .empty;
+        var right_vertices: std.ArrayListUnmanaged(i32) = .empty;
+        defer left_vertices.deinit(allocator);
+        defer right_vertices.deinit(allocator);
+
+        try buildLeftCavityVertices(allocator, start_pt_idx, end_pt_idx, left_wall, &left_vertices);
+        try buildRightCavityVertices(allocator, start_pt_idx, end_pt_idx, right_wall, &right_vertices);
+
+        try cavity.triangulateCavity(allocator, engine, left_vertices.items, &result.left);
+        try cavity.triangulateCavity(allocator, engine, right_vertices.items, &result.right);
+        try validateLocalAgainstOuterEdges(engine, result.left.items, result.right.items, outer_edges);
+    }
+
+    fn shouldUseLocalCavity(left_wall: []const i32, right_wall: []const i32, pierced_triangles: []const i32) bool {
+        const wall_vertices = left_wall.len + right_wall.len;
+        return wall_vertices >= 12 and pierced_triangles.len >= 8;
+    }
+
+    fn emitLocalTriangles(
+        allocator: std.mem.Allocator,
+        engine: *triangulate.Engine,
+        arena: *mesh.ThreadArena,
+        local_tris: []const cavity.LocalTriangle,
+        emitted: *std.ArrayListUnmanaged(i32),
+    ) !void {
+        const base = emitted.items.len;
+        const map = try allocator.alloc(i32, local_tris.len);
+        for (local_tris, 0..) |local_tri, i| {
+            _ = local_tri;
+            const new_tri_idx = arena.getFreeSlot() orelse @as(i32, @intCast(engine.mesh.triangles.len));
+            try engine.mesh.ensureTriangleSlot(allocator, new_tri_idx);
+            map[i] = new_tri_idx;
+            try emitted.append(allocator, new_tri_idx);
+        }
+
+        for (local_tris, 0..) |local_tri, i| {
+            const tri = mesh.Triangle{
+                .v0 = local_tri.v0,
+                .v1 = local_tri.v1,
+                .v2 = local_tri.v2,
+                .adj0 = if (local_tri.adj0 >= 0) map[@as(usize, @intCast(local_tri.adj0))] else -1,
+                .adj1 = if (local_tri.adj1 >= 0) map[@as(usize, @intCast(local_tri.adj1))] else -1,
+                .adj2 = if (local_tri.adj2 >= 0) map[@as(usize, @intCast(local_tri.adj2))] else -1,
+            };
+            if (predicates.orient2d(engine.getVertex(tri.v0), engine.getVertex(tri.v1), engine.getVertex(tri.v2)) < 0.0) return error.InvalidCavity;
+            engine.mesh.setTriangleFresh(emitted.items[base + i], tri);
+        }
+    }
+
+    fn linkCentralConstraint(engine: *triangulate.Engine, emitted: []const i32, start_pt_idx: i32, end_pt_idx: i32) !void {
+        var first: i32 = -1;
+        var second: i32 = -1;
+        for (emitted) |tri_idx| {
+            const tri = engine.mesh.triangles.get(@as(usize, @intCast(tri_idx)));
+            if (triangulate.Engine.edgeSide(tri, start_pt_idx, end_pt_idx) == null) continue;
+            if (first == -1) {
+                first = tri_idx;
+            } else {
+                second = tri_idx;
+                break;
+            }
+        }
+        if (first != -1 and second != -1) {
+            try engine.linkTrianglesByEdge(first, second, start_pt_idx, end_pt_idx);
+        }
+    }
+
     pub fn triangulatePseudoPolygon(
         self: *Corridor,
         allocator: std.mem.Allocator,
@@ -477,9 +643,11 @@ pub const Corridor = struct {
         var outer_edges: std.ArrayListUnmanaged(BoundaryEdge) = .empty;
         try self.collectOuterBoundaryEdges(scratch_allocator, engine, &edge_counts, &outer_edges);
 
+        var used_boundary_fallback = false;
         var left_wall = self.left_vertices.items;
         var right_wall = self.right_vertices.items;
         if (self.left_vertices.items.len == 0 or self.right_vertices.items.len == 0) {
+            used_boundary_fallback = true;
             try self.augmentPiercedBySegmentScan(allocator, engine, start_pt_idx, end_pt_idx);
             edge_counts.clearRetainingCapacity();
             try self.countPiercedEdges(engine, &edge_counts);
@@ -519,6 +687,17 @@ pub const Corridor = struct {
             if (left_chain == null or right_chain == null) return error.InvalidCorridorBoundary;
             left_wall = candidates.items[left_chain.?].vertices.items;
             right_wall = candidates.items[right_chain.?].vertices.items;
+        }
+
+        var local_cavities = LocalCavityPair{};
+        var use_local_cavity = !used_boundary_fallback and shouldUseLocalCavity(left_wall, right_wall, self.pierced_triangles.items);
+        if (use_local_cavity) {
+            buildLocalCavities(scratch_allocator, engine, start_pt_idx, end_pt_idx, left_wall, right_wall, outer_edges.items, &local_cavities) catch |err| {
+                switch (err) {
+                    error.InvalidCavity, error.NonDelaunayLocalCavity => use_local_cavity = false,
+                    else => return err,
+                }
+            };
         }
 
         var footprint: std.ArrayListUnmanaged(i32) = .empty;
@@ -566,10 +745,16 @@ pub const Corridor = struct {
 
         var emitted: std.ArrayListUnmanaged(i32) = .empty;
 
-        try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, left_wall, true, &emitted);
-        try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, right_wall, false, &emitted);
+        if (use_local_cavity) {
+            try emitLocalTriangles(scratch_allocator, engine, arena, local_cavities.left.items, &emitted);
+            try emitLocalTriangles(scratch_allocator, engine, arena, local_cavities.right.items, &emitted);
+            try linkCentralConstraint(engine, emitted.items, start_pt_idx, end_pt_idx);
+        } else {
+            try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, left_wall, true, &emitted);
+            try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, right_wall, false, &emitted);
+            try engine.linkNewTriangles(emitted.items);
+        }
 
-        try engine.linkNewTriangles(emitted.items);
         for (outer_edges.items) |edge| {
             for (emitted.items) |new_tri_idx| {
                 const new_tri = engine.mesh.triangles.get(@as(usize, @intCast(new_tri_idx)));
@@ -581,9 +766,11 @@ pub const Corridor = struct {
         }
 
         if (!try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true)) return error.MissingConstraintEdge;
-        // A concurrent worker should abort and retry if legalization needs to
-        // expand beyond the locked corridor footprint.
-        try engine.legalizeFromTrianglesInTransaction(scratch_allocator, emitted.items, &tx);
+        if (!use_local_cavity) {
+            // A concurrent worker should abort and retry if legalization needs to
+            // expand beyond the locked corridor footprint.
+            try engine.legalizeFromTrianglesInTransaction(scratch_allocator, emitted.items, &tx);
+        }
         engine.endTriangleTransaction(&tx);
     }
 
@@ -650,6 +837,20 @@ test "corridor trace" {
     for (corridor.right_vertices.items) |vertex_idx| {
         try std.testing.expect(predicates.orient2d(start_pt, end_pt, engine.getVertex(vertex_idx)) < 0.0);
     }
+}
+
+test "corridor cavity vertex ordering" {
+    var left: std.ArrayListUnmanaged(i32) = .empty;
+    var right: std.ArrayListUnmanaged(i32) = .empty;
+    defer left.deinit(std.testing.allocator);
+    defer right.deinit(std.testing.allocator);
+
+    const wall = [_]i32{ 10, 11, 12 };
+    try Corridor.buildLeftCavityVertices(std.testing.allocator, 1, 2, &wall, &left);
+    try Corridor.buildRightCavityVertices(std.testing.allocator, 1, 2, &wall, &right);
+
+    try std.testing.expectEqualSlices(i32, &[_]i32{ 2, 12, 11, 10, 1 }, left.items);
+    try std.testing.expectEqualSlices(i32, &[_]i32{ 1, 10, 11, 12, 2 }, right.items);
 }
 
 fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path: []const u8) !void {

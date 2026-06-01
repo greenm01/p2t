@@ -106,6 +106,26 @@ proc findEarcutDir(): string =
   if fileExists(siblingDir / "Cargo.toml"):
     return siblingDir
 
+proc findJuliaBin(): string =
+  let envBin = getEnv("JULIA_BIN")
+  if envBin.len > 0 and fileExists(envBin):
+    return envBin
+
+  result = findExe("julia")
+
+proc findJuliaDelaunayDir(): string =
+  let envDir = getEnv("JULIA_DELAUNAY_DIR")
+  if envDir.len > 0 and fileExists(envDir / "Project.toml"):
+    return envDir
+
+  let homeDir = getHomeDir() / "src" / "DelaunayTriangulation.jl"
+  if fileExists(homeDir / "Project.toml"):
+    return homeDir
+
+  let siblingDir = getCurrentDir().parentDir / "DelaunayTriangulation.jl"
+  if fileExists(siblingDir / "Project.toml"):
+    return siblingDir
+
 proc buildEarcutBench(outPath: string): bool =
   let earcutDir = findEarcutDir()
   if earcutDir.len == 0:
@@ -133,6 +153,31 @@ proc buildEarcutBench(outPath: string): bool =
   sh "cargo build --release --manifest-path " & quoteShell(projectDir / "Cargo.toml")
   sh "cp " & quoteShell(projectDir / "target" / "release" / "p2t_earcut_bench") &
     " " & quoteShell(outPath)
+  true
+
+proc buildJuliaDelaunayBench(outPath: string): bool =
+  let juliaBin = findJuliaBin()
+  if juliaBin.len == 0:
+    echo "skipping julia-delaunay; set JULIA_BIN=/path/to/julia"
+    return false
+
+  let juliaDir = findJuliaDelaunayDir()
+  if juliaDir.len == 0:
+    echo "skipping julia-delaunay; set JULIA_DELAUNAY_DIR=/path/to/DelaunayTriangulation.jl"
+    return false
+
+  let depot = getEnv("JULIA_DEPOT_PATH", "/tmp/p2t_julia_depot")
+  writeFile(
+    outPath,
+    "#!/usr/bin/env sh\n" &
+      "set -eu\n" &
+      "export JULIA_DEPOT_PATH=" & quoteShell(depot) & "\n" &
+      "exec " & quoteShell(juliaBin) &
+      " --project=" & quoteShell(juliaDir) &
+      " --startup-file=no --history-file=no " &
+      quoteShell(getCurrentDir() / "bench" / "bench_julia_delaunay.jl") & "\n",
+  )
+  sh "chmod +x " & quoteShell(outPath)
   true
 
 task testLibtess2, "compare dude fixture output against libtess2":
@@ -297,6 +342,10 @@ task benchEarcutFixtures, "run earcut against the p2t benchmark fixtures":
   if buildEarcutBench("/tmp/p2t_bench_earcut"):
     sh quoteShell("/tmp/p2t_bench_earcut")
 
+task benchJuliaDelaunay, "run DelaunayTriangulation.jl against the p2t benchmark fixtures":
+  if buildJuliaDelaunayBench("/tmp/p2t_bench_julia_delaunay"):
+    sh quoteShell("/tmp/p2t_bench_julia_delaunay")
+
 task benchCdtStats, "report arena CDT operation counts":
   nimCompile(
     "bench/bench_cdt_stats",
@@ -360,6 +409,9 @@ task benchCompareAll, "compare best Nim, front hash, fast-poly2tri, and libtess2
 
   if buildEarcutBench("/tmp/p2t_bench_earcut"):
     reportArgs.add "earcut-f64=/tmp/p2t_bench_earcut"
+
+  if buildJuliaDelaunayBench("/tmp/p2t_bench_julia_delaunay"):
+    reportArgs.add "julia-delaunay=/tmp/p2t_bench_julia_delaunay"
 
   let libtess2Dir = findLibtess2Dir()
   if libtess2Dir.len > 0:
