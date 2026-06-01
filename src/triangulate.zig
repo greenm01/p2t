@@ -1,6 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const mesh = @import("mesh.zig");
+const polygon_seed = @import("polygon_seed.zig");
 const spatial = @import("spatial.zig");
 const predicates = @import("predicates.zig");
 
@@ -95,7 +96,7 @@ pub const EngineStats = struct {
     polygon_culled_adjacencies: u64 = 0,
 
     pub fn any(self: EngineStats) bool {
-        return self.walk_calls != 0 or self.inserted_points != 0 or self.corridor_traces != 0 or self.find_live_edge_calls != 0 or self.cavity_relevance_samples != 0 or self.polygon_culled_triangles != 0;
+        return self.walk_calls != 0 or self.inserted_points != 0 or self.legalization_tests != 0 or self.edge_flips != 0 or self.corridor_traces != 0 or self.find_live_edge_calls != 0 or self.cavity_relevance_samples != 0 or self.polygon_culled_triangles != 0;
     }
 };
 
@@ -228,6 +229,7 @@ pub const Engine = struct {
     hint_min_y: f64,
     hint_scale_x: f64,
     hint_scale_y: f64,
+    super_vertex_count: i32,
     cavity_relevance_enabled: bool,
     cavity_relevance_samples: std.ArrayListUnmanaged(mesh.Vertex),
     stats: EngineStats,
@@ -260,6 +262,7 @@ pub const Engine = struct {
             .hint_min_y = 0.0,
             .hint_scale_x = 0.0,
             .hint_scale_y = 0.0,
+            .super_vertex_count = 0,
             .cavity_relevance_enabled = false,
             .cavity_relevance_samples = .empty,
             .stats = .{},
@@ -291,6 +294,7 @@ pub const Engine = struct {
         self.trusted_edges.clearRetainingCapacity();
         self.trusted_new_tri_indices.clearRetainingCapacity();
         self.last_valid_tri = 0;
+        self.super_vertex_count = 0;
         if (build_options.spatial_hints and self.hint_grid.items.len != 0) @memset(self.hint_grid.items, -1);
     }
 
@@ -483,6 +487,7 @@ pub const Engine = struct {
     }
 
     pub fn initSuperTriangle(self: *Engine, vertices: []const mesh.Vertex) !void {
+        self.super_vertex_count = 3;
         const bounds = spatial.BoundingBox.fromVertices(vertices);
         try self.resetHintGridForBounds(bounds, vertices.len);
         const dx = bounds.max_x - bounds.min_x;
@@ -516,6 +521,93 @@ pub const Engine = struct {
         self.noteLiveTriangleHint(0, super_tri);
         self.last_valid_tri = 0;
         self.updateHintForPoint(.{ .x = midx, .y = midy }, 0);
+    }
+
+    pub fn buildPolygonSeedMesh(self: *Engine, vertices: []const mesh.Vertex, seed_indices: []const i32) !void {
+        if (vertices.len < 3 or seed_indices.len % 3 != 0) return error.InvalidTriangleVertex;
+        self.super_vertex_count = 0;
+
+        const triangle_count = seed_indices.len / 3;
+        const bounds = spatial.BoundingBox.fromVertices(vertices);
+        try self.resetHintGridForBounds(bounds, vertices.len);
+        try self.mesh.reserve(self.allocator, vertices.len, triangle_count);
+        try self.ensureVertexMetadataCapacity(vertices.len);
+
+        for (vertices) |vertex| {
+            try self.mesh.vertices.append(self.allocator, vertex);
+        }
+
+        for (0..triangle_count) |tri_i| {
+            const base = tri_i * 3;
+            const a = seed_indices[base + 0];
+            const b = seed_indices[base + 1];
+            const c = seed_indices[base + 2];
+            if (a < 0 or b < 0 or c < 0) return error.InvalidTriangleVertex;
+            if (@as(usize, @intCast(a)) >= vertices.len or @as(usize, @intCast(b)) >= vertices.len or @as(usize, @intCast(c)) >= vertices.len) return error.InvalidTriangleVertex;
+            if (a == b or b == c or c == a) return error.DegenerateTriangle;
+
+            const tri = self.makeTriangleCcw(a, b, c);
+            if (predicates.orient2d(self.getVertex(tri.v0), self.getVertex(tri.v1), self.getVertex(tri.v2)) <= 0.0) return error.DegenerateTriangle;
+            try self.mesh.appendTriangle(self.allocator, tri);
+            const tri_idx = @as(i32, @intCast(tri_i));
+            self.updateTriangleCircumcircle(tri_idx, tri);
+            self.noteLiveTriangleHint(tri_idx, tri);
+            self.last_valid_tri = tri_idx;
+        }
+
+        const EdgeKey = struct {
+            a: i32,
+            b: i32,
+        };
+        const EdgeLink = struct {
+            tri0: i32,
+            side0: usize,
+            tri1: i32 = -1,
+            side1: usize = 0,
+            count: u8 = 1,
+        };
+
+        var edge_map = std.AutoHashMap(EdgeKey, EdgeLink).init(self.allocator);
+        defer edge_map.deinit();
+        try edge_map.ensureTotalCapacity(@intCast(triangle_count * 3));
+
+        for (0..self.mesh.triangles.len) |tri_i| {
+            const tri_idx = @as(i32, @intCast(tri_i));
+            const tri = self.mesh.triangles.get(tri_i);
+            for (0..3) |side| {
+                const edge = triangleEdge(tri, side);
+                const key = EdgeKey{ .a = @min(edge.v1, edge.v2), .b = @max(edge.v1, edge.v2) };
+                if (edge_map.getPtr(key)) |link| {
+                    if (link.count != 1) return error.NonManifoldEdge;
+                    link.tri1 = tri_idx;
+                    link.side1 = side;
+                    link.count = 2;
+                    try self.linkTriangleSidesKnownTrusted(link.tri0, link.side0, tri_idx, side);
+                } else {
+                    edge_map.putAssumeCapacity(key, .{ .tri0 = tri_idx, .side0 = side });
+                }
+            }
+        }
+
+        for (0..vertices.len) |i| {
+            const a = @as(i32, @intCast(i));
+            const b = @as(i32, @intCast((i + 1) % vertices.len));
+            const key = EdgeKey{ .a = @min(a, b), .b = @max(a, b) };
+            const link = edge_map.get(key) orelse return error.MissingConstraintEdge;
+            self.setConstrainedSideTrusted(link.tri0, link.side0, true);
+            if (link.count == 2) {
+                self.setConstrainedSideTrusted(link.tri1, link.side1, true);
+            }
+        }
+
+        if (self.mesh.triangles.len > 0) {
+            const first = self.mesh.triangles.get(0);
+            const centroid = mesh.Vertex{
+                .x = (self.getVertex(first.v0).x + self.getVertex(first.v1).x + self.getVertex(first.v2).x) / 3.0,
+                .y = (self.getVertex(first.v0).y + self.getVertex(first.v1).y + self.getVertex(first.v2).y) / 3.0,
+            };
+            self.updateHintForPoint(centroid, 0);
+        }
     }
 
     pub fn walk(self: *Engine, start_tri: i32, target: mesh.Vertex) i32 {
@@ -910,6 +1002,17 @@ pub const Engine = struct {
         }
     }
 
+    pub fn setConstraintSegmentsTrusted(self: *Engine, allocator: std.mem.Allocator, segments: []const polygon_seed.Segment, value: bool, seed_triangles: ?*std.ArrayListUnmanaged(i32)) !void {
+        for (segments) |segment| {
+            const found = self.findLiveEdge(segment.a, segment.b) orelse return error.MissingConstraintEdge;
+            self.setConstrainedFoundEdgeTrusted(found, value);
+            if (seed_triangles) |seeds| {
+                try seeds.append(allocator, found.tri);
+                if (found.neighbor != -1) try seeds.append(allocator, found.neighbor);
+            }
+        }
+    }
+
     fn liveEdgeFromTriangle(self: *Engine, tri_idx: i32, a: i32, b: i32) ?LiveEdge {
         if (tri_idx < 0) return null;
         const slot: usize = @intCast(tri_idx);
@@ -1206,7 +1309,7 @@ pub const Engine = struct {
 
         for (0..self.mesh.triangles.len) |tri_idx| {
             const tri = self.mesh.triangles.get(tri_idx);
-            if (mesh.isDeadTriangle(tri) or !triangleHasSuperVertex(tri)) continue;
+            if (mesh.isDeadTriangle(tri) or !self.triangleHasSuperVertex(tri)) continue;
             self.markExteriorTriangle(@intCast(tri_idx));
             try self.interior_triangle_queue.append(self.allocator, @intCast(tri_idx));
         }
@@ -1244,7 +1347,7 @@ pub const Engine = struct {
         var count: usize = 0;
         for (0..self.mesh.triangles.len) |tri_idx| {
             const tri = self.mesh.triangles.get(tri_idx);
-            const is_interior = !mesh.isDeadTriangle(tri) and !triangleHasSuperVertex(tri) and !self.isExteriorTriangleMarked(@intCast(tri_idx));
+            const is_interior = !mesh.isDeadTriangle(tri) and !self.triangleHasSuperVertex(tri) and !self.isExteriorTriangleMarked(@intCast(tri_idx));
             interior.items[tri_idx] = is_interior;
             if (is_interior) count += 1;
         }
@@ -1257,7 +1360,7 @@ pub const Engine = struct {
         var count: usize = 0;
         for (0..self.mesh.triangles.len) |tri_idx| {
             const tri = self.mesh.triangles.get(tri_idx);
-            if (!mesh.isDeadTriangle(tri) and !triangleHasSuperVertex(tri) and !self.isExteriorTriangleMarked(@intCast(tri_idx))) {
+            if (!mesh.isDeadTriangle(tri) and !self.triangleHasSuperVertex(tri) and !self.isExteriorTriangleMarked(@intCast(tri_idx))) {
                 count += 1;
             }
         }
@@ -1266,7 +1369,7 @@ pub const Engine = struct {
 
     fn shouldCullForPolygonOutput(self: *const Engine, tri_idx: usize) bool {
         const tri = self.mesh.triangles.get(tri_idx);
-        return mesh.isDeadTriangle(tri) or triangleHasSuperVertex(tri) or self.isExteriorTriangleMarked(@intCast(tri_idx));
+        return mesh.isDeadTriangle(tri) or self.triangleHasSuperVertex(tri) or self.isExteriorTriangleMarked(@intCast(tri_idx));
     }
 
     pub fn cullExteriorTrianglesTrusted(self: *Engine) !usize {
@@ -1582,8 +1685,8 @@ pub const Engine = struct {
         self.mesh.setCircumcircle(tri_idx, ux, uy, r2);
     }
 
-    fn triangleHasSuperVertex(tri: mesh.Triangle) bool {
-        return tri.v0 < 3 or tri.v1 < 3 or tri.v2 < 3;
+    fn triangleHasSuperVertex(self: *const Engine, tri: mesh.Triangle) bool {
+        return tri.v0 < self.super_vertex_count or tri.v1 < self.super_vertex_count or tri.v2 < self.super_vertex_count;
     }
 
     fn makeTriangleCcw(self: *Engine, a: i32, b: i32, c: i32) mesh.Triangle {
@@ -1607,13 +1710,13 @@ pub const Engine = struct {
     fn edgeIsFlipCandidate(self: *Engine, tri_idx: i32, side: usize) ?struct { neighbor: i32, neighbor_side: usize, a: i32, b: i32, c: i32, d: i32 } {
         if (tri_idx < 0) return null;
         const tri = self.mesh.triangles.get(@as(usize, @intCast(tri_idx)));
-        if (mesh.isDeadTriangle(tri) or triangleHasSuperVertex(tri)) return null;
+        if (mesh.isDeadTriangle(tri) or self.triangleHasSuperVertex(tri)) return null;
         if (self.isConstrainedSide(tri_idx, side)) return null;
 
         const neighbor_idx = triangleAdj(tri, side);
         if (neighbor_idx == -1) return null;
         const neighbor = self.mesh.triangles.get(@as(usize, @intCast(neighbor_idx)));
-        if (mesh.isDeadTriangle(neighbor) or triangleHasSuperVertex(neighbor)) return null;
+        if (mesh.isDeadTriangle(neighbor) or self.triangleHasSuperVertex(neighbor)) return null;
 
         const edge = triangleEdge(tri, side);
         const neighbor_side = edgeSide(neighbor, edge.v1, edge.v2) orelse return null;
@@ -1776,7 +1879,7 @@ pub const Engine = struct {
         for (0..self.mesh.triangles.len) |tri_idx| {
             const tri_i32 = @as(i32, @intCast(tri_idx));
             const tri = self.mesh.triangles.get(tri_idx);
-            if (mesh.isDeadTriangle(tri) or triangleHasSuperVertex(tri)) continue;
+            if (mesh.isDeadTriangle(tri) or self.triangleHasSuperVertex(tri)) continue;
 
             for (0..3) |side| {
                 const neighbor_idx = triangleAdj(tri, side);
@@ -2656,4 +2759,35 @@ test "legalizer skips constrained illegal edges" {
     try engine.validateConstraintFlags();
     try std.testing.expect(engine.hasLiveEdge(quad.a, quad.b));
     try engine.validateConstraintRingFlags(&[_]i32{ quad.a, quad.b });
+}
+
+test "polygon seed mesh preserves boundary constraints and legalizes" {
+    const vertices = [_]mesh.Vertex{
+        .{ .x = 0.0, .y = 0.0 },
+        .{ .x = 4.0, .y = 0.0 },
+        .{ .x = 4.0, .y = 3.0 },
+        .{ .x = 2.0, .y = 1.0 },
+        .{ .x = 0.0, .y = 3.0 },
+    };
+
+    var seed_indices: std.ArrayListUnmanaged(i32) = .empty;
+    defer seed_indices.deinit(std.testing.allocator);
+    try polygon_seed.triangulateSimple(std.testing.allocator, &vertices, &seed_indices);
+
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+    try engine.buildPolygonSeedMesh(&vertices, seed_indices.items);
+
+    const mesh_ids = [_]i32{ 0, 1, 2, 3, 4 };
+    try std.testing.expectEqual(vertices.len - 2, engine.liveTriangleCount());
+    try std.testing.expectEqual(vertices.len - 2, try engine.countInteriorTriangles());
+    try engine.validateTopology();
+    try engine.validateConstraintRing(&mesh_ids);
+    try engine.validateConstraintRingFlags(&mesh_ids);
+
+    const seed_tris = [_]i32{ 0, 1, 2 };
+    try engine.legalizeFromTriangles(std.testing.allocator, &seed_tris);
+    try engine.validateTopology();
+    try engine.validateConstraintRingFlags(&mesh_ids);
+    try engine.validateCdtLegality();
 }

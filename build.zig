@@ -29,6 +29,9 @@ pub fn build(b: *std.Build) void {
     const circumcircle_filter = b.option(bool, "circumcircle-filter", "Enable cached circumcircle outside filter for insertion cavity expansion") orelse false;
     const spatial_hints = b.option(bool, "spatial-hints", "Enable coarse spatial triangle start hints for insertion walks") orelse false;
     const polygon_output_mode = b.option(bool, "polygon-output-mode", "Cull exterior/super triangles after boundary recovery in polygon-output benchmark prototypes") orelse false;
+    const polygon_seed_mode = b.option(bool, "polygon-seed-mode", "Build simple polygon interiors from an Earcut-style seed, then legalize unconstrained diagonals") orelse false;
+    const trapezoid_dd_mode = b.option(bool, "trapezoid-dd-mode", "Partition simple polygons with visibility diagonals, legalize pieces, then legalize seams") orelse false;
+    const partitioned_bw_mode = b.option(bool, "partitioned-bw-mode", "Partition simple polygons, run local Bowyer-Watson per piece, merge, then legalize seams") orelse false;
     const predicate_policy: PredicatePolicy = if (std.mem.eql(u8, predicate_policy_name, "adaptive"))
         .adaptive
     else if (std.mem.eql(u8, predicate_policy_name, "strict"))
@@ -45,6 +48,9 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "circumcircle_filter", circumcircle_filter);
     build_options.addOption(bool, "spatial_hints", spatial_hints);
     build_options.addOption(bool, "polygon_output_mode", polygon_output_mode);
+    build_options.addOption(bool, "polygon_seed_mode", polygon_seed_mode);
+    build_options.addOption(bool, "trapezoid_dd_mode", trapezoid_dd_mode);
+    build_options.addOption(bool, "partitioned_bw_mode", partitioned_bw_mode);
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.

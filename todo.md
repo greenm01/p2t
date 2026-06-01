@@ -50,6 +50,44 @@ An incremental boundary-recovery prototype was tested and rejected. Recovering p
 
 In polygon-output mode, the post-cull live triangle count is already the interior output count. The benchmark should use `liveTriangleCount()` after cull instead of running a second exterior-marking pass for extraction timing.
 
+## Latest Polygon-Seed Prototype
+
+`bench-single -Dpredicate-policy=fast -Dinstrument-mesh-stats=true -Dspatial-hints=true -Dpolygon-seed-mode=true` now runs an Earcut-style simple outer-ring seed path. It builds only polygon-interior triangles, marks boundary edges constrained, and then legalizes unconstrained diagonals with the existing Cleave legalizer.
+
+This validates the construction idea but rejects the naive seed+full-legalize approach as a single-core win:
+
+- `dude/seed`: `92` interior triangles/run, `92` live mesh, about `23.0 us/run`; seed about `6.9 us/run`, legalization about `15.0 us/run`, `81` flips/run.
+- `nazca-monkey/seed`: `1202` interior triangles/run, `1202` live mesh, about `779.9 us/run`; seed about `336.7 us/run`, legalization about `442.1 us/run`, `2621` flips/run.
+- `nazca-heron/seed`: `1034` interior triangles/run, `1034` live mesh, about `543.2 us/run`; seed about `169.8 us/run`, legalization about `372.4 us/run`, `2123` flips/run.
+
+The seed avoids exterior mesh inflation, but the arbitrary ear-clipped diagonals are far from Delaunay and the full legalizer does too much work. Keep the flag as a correctness/profiling prototype, not as the next optimization path. A future polygon-only path needs either a better Delaunay-biased seed, localized legalization scheduling, or a divide-and-conquer/partitioned CDT construction rather than full legalization over all earcut triangles.
+
+## Latest Trapezoid Domain-Decomposition Prototype
+
+`bench-single -Dpredicate-policy=fast -Dinstrument-mesh-stats=true -Dspatial-hints=true -Dtrapezoid-dd-mode=true` now runs a deterministic visibility-diagonal decomposition prototype. It partitions a simple ring into subpolygons, seeds each piece, temporarily constrains partition diagonals, legalizes pieces, clears the diagonals, and legalizes seam-adjacent triangles.
+
+Current results reject this naive decomposition as a single-core optimization, but they give useful seam data:
+
+- `dude/trapezoid-dd`: `92` interior triangles/run, `92` live mesh, about `26.6 us/run`; no partition at the current 256-vertex cutoff.
+- `nazca-monkey/trapezoid-dd`: `1202` interior triangles/run, `1202` live mesh, about `2469.8 us/run`; `7` pieces, `6` diagonals, decomposition about `1880.9 us/run`, local legalization about `409.9 us/run`, seam legalization about `33.8 us/run`, seam flips `209/run`.
+- `nazca-heron/trapezoid-dd`: `1034` interior triangles/run, `1034` live mesh, about `1568.0 us/run`; `5` pieces, `4` diagonals, decomposition about `1063.8 us/run`, local legalization about `347.4 us/run`, seam legalization about `37.7 us/run`, seam flips `227/run`.
+
+The seam-fix phase can be much smaller than full Earcut legalization, especially on the large fixtures, but the current visibility splitter is too expensive and local piece legalization still does most of the global flip work. A serious version would need a much cheaper partition builder and a more Delaunay-biased per-piece seed before this domain-decomposition strategy can help.
+
+## Latest Partitioned Bowyer-Watson Prototype
+
+`bench-single -Dpredicate-policy=fast -Dinstrument-mesh-stats=true -Dspatial-hints=true -Dpartitioned-bw-mode=true` now partitions with the same visibility-diagonal scaffold, runs local Cleave Bowyer-Watson CDT inside each piece, merges live local triangles into one global polygon mesh, temporarily constrains partition diagonals, clears them, and legalizes seam-adjacent triangles. The benchmark validates topology, boundary constraint flags, and CDT legality after each case.
+
+Current macOS results:
+
+- `dude/partitioned-bw`: `92` interior triangles/run, `92` live mesh, about `28.2 us/run`; no partition at the current 256-vertex cutoff.
+- `nazca-monkey/partitioned-bw`: `1202` interior triangles/run, `1202` live mesh, about `2237.4 us/run`; decomposition about `1891.3 us/run`, total piece BW about `260.4 us/run`, max piece BW about `67.5 us/run`, assembly about `47.8 us/run`, seam legalization about `35.9 us/run`.
+- `nazca-heron/partitioned-bw`: `1034` interior triangles/run, `1034` live mesh, about `1368.8 us/run`; decomposition about `1079.0 us/run`, total piece BW about `217.1 us/run`, max piece BW about `64.0 us/run`, assembly about `32.9 us/run`, seam legalization about `37.7 us/run`.
+
+This rejects the current scaffold as a single-core win because decomposition dominates. It also makes the useful signal sharper: replacing Earcut-local seed plus local legalization with local Bowyer-Watson cuts the non-decomposition piece work substantially, and the estimated per-case critical path without decomposition is about `151 us/run` for monkey and `135 us/run` for heron. That is finally in the neighborhood of the current full-mesh BRIO path (`183 us/run` monkey, `167 us/run` heron on the same run), but only if partition construction becomes cheap enough.
+
+Next serious experiment: replace the O(n * sampled-diagonal) visibility splitter with a low-overhead partition builder. Keep the local Bowyer-Watson merge path; the bottleneck has moved to decomposition, not piece triangulation or seam repair.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.
