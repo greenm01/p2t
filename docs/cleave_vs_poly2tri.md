@@ -110,7 +110,28 @@ only if perf counters improve.
 
 ## 6. Roadmap
 
-The next work should be measurement-first.
+The next work should stay measurement-first. Current Cleave-specific benchmark
+coverage now includes:
+
+- `zig build bench-batch` for independent-job throughput across worker counts.
+- `zig build bench-single` for larger single-mesh latency with insertion versus
+  constraint-recovery timing.
+- `zig build bench-single -Dinstrument-predicates=true` for predicate call and exact
+  fallback counters.
+
+Recent larger-fixture diagnostic measurements show insertion dominates constraint
+recovery:
+
+- `dude`: about `43 us/run`, roughly `26 us` insertion and `16 us` constraints.
+- `nazca-monkey`: about `771 us/run`, roughly `591 us` insertion and `178 us`
+  constraints.
+- `nazca-heron`: about `931 us/run`, roughly `729 us` insertion and `199 us`
+  constraints.
+
+The instrumented adaptive run showed many predicate calls but very few exact
+orientation fallbacks and no exact incircle fallbacks on these fixtures. That means
+the immediate scalar bottleneck is mostly regular topology traversal, cavity work,
+and memory traffic, not exact-predicate fallback.
 
 1. Add a batch-throughput benchmark.
    Measure many independent triangulations across `1, 2, 4, 8, ...` workers. Reuse

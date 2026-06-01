@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
     // in this directory.
     const strict_predicates = b.option(bool, "strict-predicates", "Always use f128 geometric predicates") orelse false;
     const predicate_policy_name = b.option([]const u8, "predicate-policy", "Geometric predicate policy: adaptive, strict, or fast") orelse if (strict_predicates) "strict" else "adaptive";
+    const instrument_predicates = b.option(bool, "instrument-predicates", "Count predicate calls and exact fallbacks for benchmark diagnostics") orelse false;
     const predicate_policy: PredicatePolicy = if (std.mem.eql(u8, predicate_policy_name, "adaptive"))
         .adaptive
     else if (std.mem.eql(u8, predicate_policy_name, "strict"))
@@ -35,6 +36,7 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption(bool, "strict_predicates", strict_predicates);
     build_options.addOption(PredicatePolicy, "predicate_policy", predicate_policy);
+    build_options.addOption(bool, "instrument_predicates", instrument_predicates);
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -167,6 +169,23 @@ pub fn build(b: *std.Build) void {
     const batch_bench_cmd = b.addRunArtifact(batch_bench_exe);
     const batch_bench_step = b.step("bench-batch", "Run Cleave independent-job throughput benchmarks in ReleaseFast");
     batch_bench_step.dependOn(&batch_bench_cmd.step);
+
+    const single_bench_module = b.createModule(.{
+        .root_source_file = b.path("src/single_bench.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .imports = &.{
+            .{ .name = "p2t", .module = mod },
+        },
+    });
+    single_bench_module.addOptions("build_options", build_options);
+    const single_bench_exe = b.addExecutable(.{
+        .name = "p2t-single-bench",
+        .root_module = single_bench_module,
+    });
+    const single_bench_cmd = b.addRunArtifact(single_bench_exe);
+    const single_bench_step = b.step("bench-single", "Run Cleave larger single-mesh benchmarks in ReleaseFast");
+    single_bench_step.dependOn(&single_bench_cmd.step);
 
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to

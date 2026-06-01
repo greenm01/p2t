@@ -2,6 +2,38 @@ const std = @import("std");
 const mesh = @import("mesh.zig");
 const build_options = @import("build_options");
 
+pub const PredicateStats = struct {
+    orient_calls: u64 = 0,
+    orient_exact: u64 = 0,
+    incircle_calls: u64 = 0,
+    incircle_exact: u64 = 0,
+
+    pub fn any(self: PredicateStats) bool {
+        return self.orient_calls != 0 or self.incircle_calls != 0;
+    }
+};
+
+var predicate_stats = PredicateStats{};
+
+inline fn statInc(comptime field: []const u8) void {
+    if (build_options.instrument_predicates) {
+        @field(predicate_stats, field) += 1;
+    }
+}
+
+pub fn resetStats() void {
+    if (build_options.instrument_predicates) {
+        predicate_stats = .{};
+    }
+}
+
+pub fn statsSnapshot() PredicateStats {
+    if (build_options.instrument_predicates) {
+        return predicate_stats;
+    }
+    return .{};
+}
+
 fn orient2dExact(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
     const ax: f128 = @floatCast(a.x);
     const ay: f128 = @floatCast(a.y);
@@ -15,7 +47,11 @@ fn orient2dExact(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
 }
 
 pub fn orient2d(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
-    if (build_options.predicate_policy == .strict) return orient2dExact(a, b, c);
+    statInc("orient_calls");
+    if (build_options.predicate_policy == .strict) {
+        statInc("orient_exact");
+        return orient2dExact(a, b, c);
+    }
 
     const acx = a.x - c.x;
     const bcx = b.x - c.x;
@@ -26,6 +62,7 @@ pub fn orient2d(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex) f64 {
 
     const permanent = @abs(acx * bcy) + @abs(acy * bcx);
     if (@abs(det) > permanent * 1.0e-15) return det;
+    statInc("orient_exact");
     return orient2dExact(a, b, c);
 }
 
@@ -58,7 +95,11 @@ fn incircleExact(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex)
 }
 
 pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) f64 {
-    if (build_options.predicate_policy == .strict) return incircleExact(a, b, c, d);
+    statInc("incircle_calls");
+    if (build_options.predicate_policy == .strict) {
+        statInc("incircle_exact");
+        return incircleExact(a, b, c, d);
+    }
 
     const adx = a.x - d.x;
     const ady = a.y - d.y;
@@ -78,6 +119,7 @@ pub fn incircle(a: mesh.Vertex, b: mesh.Vertex, c: mesh.Vertex, d: mesh.Vertex) 
 
     const permanent = @abs(alift * abdet) + @abs(blift * bcdet) + @abs(clift * cadet);
     if (@abs(det) > permanent * 1.0e-12) return det;
+    statInc("incircle_exact");
     return incircleExact(a, b, c, d);
 }
 
