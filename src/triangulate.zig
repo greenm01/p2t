@@ -1236,7 +1236,7 @@ pub const Engine = struct {
             return error.WalkFailed;
         }
 
-        const scratch_allocator = arena.resetScratch(self.allocator);
+        const scratch_allocator = if (use_transaction) arena.resetScratch(self.allocator) else self.allocator;
         const temp_allocator = if (use_transaction) scratch_allocator else self.allocator;
         var local_cavity: std.ArrayListUnmanaged(i32) = .empty;
         var local_edges: std.ArrayListUnmanaged(Edge) = .empty;
