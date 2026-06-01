@@ -19,6 +19,12 @@ const Case = struct {
     vertices: []const mesh.Vertex,
     morton_indices: []const usize,
     brio_indices: []const usize,
+    hilbert_indices: []const usize,
+    brio_hilbert_indices: []const usize,
+    morton_order_us: u64,
+    brio_order_us: u64,
+    hilbert_order_us: u64,
+    brio_hilbert_order_us: u64,
     iterations: usize,
 };
 
@@ -765,16 +771,44 @@ fn loadCase(allocator: std.mem.Allocator, io: Io, name: []const u8, path: []cons
         vertices[i] = .{ .x = p.x, .y = p.y };
     }
 
+    const morton_start = timer.now(io);
+    const morton_indices = try spatial.sortVerticesByMorton(allocator, vertices);
+    errdefer allocator.free(morton_indices);
+    const morton_end = timer.now(io);
+
+    const brio_start = timer.now(io);
+    const brio_indices = try spatial.sortVerticesByBrioMorton(allocator, vertices, bench_brio_seed);
+    errdefer allocator.free(brio_indices);
+    const brio_end = timer.now(io);
+
+    const hilbert_start = timer.now(io);
+    const hilbert_indices = try spatial.sortVerticesByHilbert(allocator, vertices);
+    errdefer allocator.free(hilbert_indices);
+    const hilbert_end = timer.now(io);
+
+    const brio_hilbert_start = timer.now(io);
+    const brio_hilbert_indices = try spatial.sortVerticesByBrioHilbert(allocator, vertices, bench_brio_seed);
+    errdefer allocator.free(brio_hilbert_indices);
+    const brio_hilbert_end = timer.now(io);
+
     return .{
         .name = name,
         .vertices = vertices,
-        .morton_indices = try spatial.sortVerticesByMorton(allocator, vertices),
-        .brio_indices = try spatial.sortVerticesByBrioMorton(allocator, vertices, bench_brio_seed),
+        .morton_indices = morton_indices,
+        .brio_indices = brio_indices,
+        .hilbert_indices = hilbert_indices,
+        .brio_hilbert_indices = brio_hilbert_indices,
+        .morton_order_us = timer.elapsedMicros(morton_start, morton_end),
+        .brio_order_us = timer.elapsedMicros(brio_start, brio_end),
+        .hilbert_order_us = timer.elapsedMicros(hilbert_start, hilbert_end),
+        .brio_hilbert_order_us = timer.elapsedMicros(brio_hilbert_start, brio_hilbert_end),
         .iterations = iterations,
     };
 }
 
 fn deinitCase(allocator: std.mem.Allocator, case: Case) void {
+    allocator.free(case.brio_hilbert_indices);
+    allocator.free(case.hilbert_indices);
     allocator.free(case.brio_indices);
     allocator.free(case.morton_indices);
     allocator.free(case.vertices);
@@ -1038,6 +1072,14 @@ fn perRun(value: u64, iterations: usize) f64 {
     return @as(f64, @floatFromInt(value)) / @as(f64, @floatFromInt(iterations));
 }
 
+fn orderBuildMicros(case: Case, order: Order) u64 {
+    if (std.mem.eql(u8, order.name, "morton")) return case.morton_order_us;
+    if (std.mem.eql(u8, order.name, "brio-morton")) return case.brio_order_us;
+    if (std.mem.eql(u8, order.name, "hilbert")) return case.hilbert_order_us;
+    if (std.mem.eql(u8, order.name, "brio-hilbert")) return case.brio_hilbert_order_us;
+    return 0;
+}
+
 fn printCavityRelevance(case: Case, order: Order, stats: triangulate.EngineStats) void {
     if (stats.cavity_relevance_samples == 0) return;
     const classified = stats.cavity_relevance_interior + stats.cavity_relevance_exterior;
@@ -1106,6 +1148,10 @@ fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) v
             median.total_us,
         },
     );
+    const order_us = orderBuildMicros(case, order);
+    if (order_us > 0) {
+        std.debug.print("  order build: {d} us\n", .{order_us});
+    }
     if (pcdtMode()) {
         const avg_pieces = @as(f64, @floatFromInt(best.dd_pieces)) / @as(f64, @floatFromInt(case.iterations));
         const avg_diagonals = @as(f64, @floatFromInt(best.dd_diagonals)) / @as(f64, @floatFromInt(case.iterations));
@@ -1498,6 +1544,8 @@ pub fn main(init: std.process.Init) !void {
         } else {
             try benchCase(init.io, allocator, case, .{ .name = "morton", .indices = case.morton_indices });
             try benchCase(init.io, allocator, case, .{ .name = "brio-morton", .indices = case.brio_indices });
+            try benchCase(init.io, allocator, case, .{ .name = "hilbert", .indices = case.hilbert_indices });
+            try benchCase(init.io, allocator, case, .{ .name = "brio-hilbert", .indices = case.brio_hilbert_indices });
         }
     }
 }

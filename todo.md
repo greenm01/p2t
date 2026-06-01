@@ -224,6 +224,28 @@ Current 4-worker macOS results with fast predicates and spatial hints:
 
 This rejects one-shot pre-bucket speculative planning as the next speedup. BRIO bucket insertions are strongly dependent: after the first few commits, most plans are stale. The useful signal is that safe parallel planning alone is not enough; the next BRIO parallel attempt needs either smaller spatial wavefronts with commit between waves, true concurrent disjoint-cavity commits, or a different partitioned strategy where independent work is established before insertion.
 
+## NNG Applicability Review
+
+Reviewed three nearest-neighbor graph references before changing the BRIO ordering experiment.
+
+- `l2knng-0.1.0`: exact/approximate KNN graph construction for high-dimensional sparse cosine-similarity data. The L2-norm pruning idea is domain-specific and does not map directly to exact 2D CDT insertion.
+- `~/src/nngraph`: active learning of nearest-neighbor graphs from noisy distance samples. It relies on oracle sampling and `n x n` confidence matrices, so it is not appropriate for Cleave's exact coordinate input.
+- `~/src/nngd`: R/Rcpp wrapper around a KD-tree kNN query, plus graph/commute-time distance tooling. The useful takeaway is only that a future Zig-native exact 2D kNN diagnostic could test Hilbert/Morton candidate windows against KD-tree or brute-force neighbors.
+
+Do not vendor or port these packages for the current path. Keep the immediate experiment focused on Hilbert ordering versus Morton ordering in the existing BRIO benchmark.
+
+## Latest Hilbert Ordering Sweep
+
+`bench-single -Dpredicate-policy=fast -Dspatial-hints=true` now compares `morton`, `brio-morton`, `hilbert`, and `brio-hilbert` in the normal single-mesh benchmark path. Hilbert ordering is implemented directly in Zig and validated against the 4x4 table produced from `~/src/hilbert_hpp`; no C++ dependency was added.
+
+Current macOS results:
+
+- `dude`: `brio-hilbert` about `13.2 us/run`, `brio-morton` about `14.2 us/run`, `hilbert` about `14.3 us/run`, `morton` about `17.3 us/run`.
+- `nazca-monkey`: `brio-morton` about `195.3 us/run`, `brio-hilbert` about `196.8 us/run`, `hilbert` about `214.6 us/run`, `morton` about `251.1 us/run`.
+- `nazca-heron`: `brio-morton` about `168.1 us/run`, `brio-hilbert` about `171.0 us/run`, `hilbert` about `239.7 us/run`, `morton` about `242.5 us/run`.
+
+Hilbert is not the next production ordering from this sweep. BRIO-Hilbert is competitive but does not beat BRIO-Morton on the large fixtures, and Hilbert order construction is more expensive than Morton (`~227-280 us` versus `~45-85 us` for the large fixtures). Keep it as a benchmarkable diagnostic, but keep BRIO-Morton as the default baseline.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.
