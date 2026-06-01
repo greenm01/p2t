@@ -15,6 +15,11 @@ const LegalizeEdge = struct {
     side: usize,
 };
 
+pub const TriangleVersionSnapshot = struct {
+    tri: i32,
+    version: u32,
+};
+
 const CavityEdgeBucket = struct {
     generation: u32 = 0,
     entry_index: i32 = -1,
@@ -275,11 +280,31 @@ pub const Engine = struct {
 
     pub fn setConstrainedSide(self: *Engine, tri_idx: i32, side: usize, value: bool) void {
         const slot = @as(usize, @intCast(tri_idx));
+        var flags = self.mesh.edge_flags.items[slot];
         if (value) {
-            self.mesh.edge_flags.items[slot] |= edgeFlag(side);
+            flags |= edgeFlag(side);
         } else {
-            self.mesh.edge_flags.items[slot] &= ~edgeFlag(side);
+            flags &= ~edgeFlag(side);
         }
+        self.mesh.setEdgeFlags(tri_idx, flags);
+    }
+
+    pub fn triangleVersion(self: *const Engine, tri_idx: i32) u32 {
+        return self.mesh.triangle_versions.items[@as(usize, @intCast(tri_idx))];
+    }
+
+    pub fn snapshotTriangleVersion(self: *const Engine, tri_idx: i32) TriangleVersionSnapshot {
+        return .{ .tri = tri_idx, .version = self.triangleVersion(tri_idx) };
+    }
+
+    pub fn validateTriangleVersions(self: *const Engine, snapshots: []const TriangleVersionSnapshot) bool {
+        for (snapshots) |snapshot| {
+            if (snapshot.tri < 0) return false;
+            const slot = @as(usize, @intCast(snapshot.tri));
+            if (slot >= self.mesh.triangle_versions.items.len) return false;
+            if (self.mesh.triangle_versions.items[slot] != snapshot.version) return false;
+        }
+        return true;
     }
 
     pub fn setConstrainedTriangleEdge(self: *Engine, tri_idx: i32, side: usize, value: bool) !void {
@@ -326,8 +351,8 @@ pub const Engine = struct {
         const constrained = self.isConstrainedSide(tri_a_idx, side_a) or self.isConstrainedSide(tri_b_idx, side_b);
         setTriangleAdj(&tri_a, side_a, tri_b_idx);
         setTriangleAdj(&tri_b, side_b, tri_a_idx);
-        self.mesh.triangles.set(tri_a_slot, tri_a);
-        self.mesh.triangles.set(tri_b_slot, tri_b);
+        self.mesh.setTriangle(tri_a_idx, tri_a);
+        self.mesh.setTriangle(tri_b_idx, tri_b);
         self.setConstrainedSide(tri_a_idx, side_a, constrained);
         self.setConstrainedSide(tri_b_idx, side_b, constrained);
     }
@@ -373,7 +398,8 @@ pub const Engine = struct {
     }
 
     pub fn validateTopology(self: *Engine) !void {
-        if (self.mesh.triangles.len != self.mesh.edge_flags.items.len) return error.InvalidTriangleAdjacency;
+        if (self.mesh.triangles.len != self.mesh.edge_flags.items.len or
+            self.mesh.triangles.len != self.mesh.triangle_versions.items.len) return error.InvalidTriangleAdjacency;
         for (0..self.mesh.triangles.len) |i| {
             const tri = self.mesh.triangles.get(i);
             if (mesh.isDeadTriangle(tri)) continue;
@@ -411,7 +437,8 @@ pub const Engine = struct {
     }
 
     pub fn validateConstraintFlags(self: *Engine) !void {
-        if (self.mesh.triangles.len != self.mesh.edge_flags.items.len) return error.InvalidTriangleAdjacency;
+        if (self.mesh.triangles.len != self.mesh.edge_flags.items.len or
+            self.mesh.triangles.len != self.mesh.triangle_versions.items.len) return error.InvalidTriangleAdjacency;
 
         for (0..self.mesh.triangles.len) |i| {
             const tri = self.mesh.triangles.get(i);
@@ -463,7 +490,7 @@ pub const Engine = struct {
             tri.adj0 = -1;
             tri.adj1 = -1;
             tri.adj2 = -1;
-            self.mesh.triangles.set(i, tri);
+            self.mesh.setTriangle(@as(i32, @intCast(i)), tri);
         }
 
         for (0..self.mesh.triangles.len) |i| {
@@ -490,8 +517,8 @@ pub const Engine = struct {
 
                     setTriangleAdj(&tri_mut, side, other.tri);
                     setTriangleAdj(&other_mut, other.side, @as(i32, @intCast(i)));
-                    self.mesh.triangles.set(i, tri_mut);
-                    self.mesh.triangles.set(@as(usize, @intCast(other.tri)), other_mut);
+                    self.mesh.setTriangle(@as(i32, @intCast(i)), tri_mut);
+                    self.mesh.setTriangle(other.tri, other_mut);
                 } else {
                     try edge_map.put(key, .{
                         .tri = @as(i32, @intCast(i)),
@@ -1002,6 +1029,32 @@ test "edge flags are reciprocal sidecar metadata" {
     const found = engine.findLiveEdge(quad.a, quad.b).?;
     try std.testing.expect(engine.isConstrainedSide(found.tri, found.side));
     try engine.validateConstraintFlags();
+}
+
+test "triangle version snapshots detect metadata and topology mutation" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const quad = try initIllegalQuad(&engine);
+    var snapshots = [_]TriangleVersionSnapshot{
+        engine.snapshotTriangleVersion(0),
+        engine.snapshotTriangleVersion(1),
+    };
+    try std.testing.expect(engine.validateTriangleVersions(&snapshots));
+
+    try std.testing.expect(try engine.setConstrainedEdgeByVertices(quad.a, quad.b, true));
+    try std.testing.expect(!engine.validateTriangleVersions(&snapshots));
+
+    snapshots = [_]TriangleVersionSnapshot{
+        engine.snapshotTriangleVersion(0),
+        engine.snapshotTriangleVersion(1),
+    };
+    try engine.mesh.ensureTriangleSlot(std.testing.allocator, 2);
+    engine.mesh.setTriangleFresh(2, .{ .v0 = 3, .v1 = 5, .v2 = 6, .adj0 = -1, .adj1 = -1, .adj2 = -1, .lock = 0 });
+    try std.testing.expect(engine.validateTriangleVersions(&snapshots));
+
+    engine.mesh.markDead(0);
+    try std.testing.expect(!engine.validateTriangleVersions(&snapshots));
 }
 
 test "legalizer flips an illegal unconstrained quad edge" {

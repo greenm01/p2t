@@ -497,7 +497,7 @@ pub const Corridor = struct {
                 if (neighbor.adj0 == t_idx) neighbor.adj0 = -1;
                 if (neighbor.adj1 == t_idx) neighbor.adj1 = -1;
                 if (neighbor.adj2 == t_idx) neighbor.adj2 = -1;
-                engine.mesh.triangles.set(neighbor_slot, neighbor);
+                engine.mesh.setTriangle(neighbor_idx, neighbor);
             }
         }
 

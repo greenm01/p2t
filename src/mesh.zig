@@ -35,17 +35,21 @@ pub const GlobalMesh = struct {
     vertices: std.MultiArrayList(Vertex) = .empty,
     triangles: std.MultiArrayList(Triangle) = .empty,
     edge_flags: std.ArrayListUnmanaged(u8) = .empty,
+    triangle_versions: std.ArrayListUnmanaged(u32) = .empty,
 
     pub fn deinit(self: *GlobalMesh, allocator: std.mem.Allocator) void {
         self.vertices.deinit(allocator);
         self.triangles.deinit(allocator);
         self.edge_flags.deinit(allocator);
+        self.triangle_versions.deinit(allocator);
     }
 
     pub fn appendTriangle(self: *GlobalMesh, allocator: std.mem.Allocator, tri: Triangle) !void {
         try self.triangles.append(allocator, tri);
         errdefer _ = self.triangles.pop();
         try self.edge_flags.append(allocator, 0);
+        errdefer _ = self.edge_flags.pop();
+        try self.triangle_versions.append(allocator, 1);
     }
 
     pub fn ensureTriangleSlot(self: *GlobalMesh, allocator: std.mem.Allocator, triangle_index: i32) !void {
@@ -55,16 +59,39 @@ pub const GlobalMesh = struct {
         try self.appendTriangle(allocator, deadTriangle());
     }
 
+    pub fn bumpTriangleVersion(self: *GlobalMesh, triangle_index: i32) void {
+        const slot = @as(usize, @intCast(triangle_index));
+        self.triangle_versions.items[slot] +%= 1;
+        if (self.triangle_versions.items[slot] == 0) {
+            self.triangle_versions.items[slot] = 1;
+        }
+    }
+
+    pub fn setTriangle(self: *GlobalMesh, triangle_index: i32, tri: Triangle) void {
+        const slot = @as(usize, @intCast(triangle_index));
+        self.triangles.set(slot, tri);
+        self.bumpTriangleVersion(triangle_index);
+    }
+
     pub fn setTriangleFresh(self: *GlobalMesh, triangle_index: i32, tri: Triangle) void {
         const slot = @as(usize, @intCast(triangle_index));
         self.triangles.set(slot, tri);
         self.edge_flags.items[slot] = 0;
+        self.bumpTriangleVersion(triangle_index);
+    }
+
+    pub fn setEdgeFlags(self: *GlobalMesh, triangle_index: i32, flags: u8) void {
+        const slot = @as(usize, @intCast(triangle_index));
+        if (self.edge_flags.items[slot] == flags) return;
+        self.edge_flags.items[slot] = flags;
+        self.bumpTriangleVersion(triangle_index);
     }
 
     pub fn markDead(self: *GlobalMesh, triangle_index: i32) void {
         const slot = @as(usize, @intCast(triangle_index));
         self.triangles.set(slot, deadTriangle());
         self.edge_flags.items[slot] = 0;
+        self.bumpTriangleVersion(triangle_index);
     }
 };
 
@@ -94,6 +121,10 @@ test "GlobalMesh and ThreadArena" {
     try std.testing.expectEqual(1, mesh.vertices.len);
     try mesh.appendTriangle(allocator, .{ .v0 = 0, .v1 = 0, .v2 = 0, .adj0 = -1, .adj1 = -1, .adj2 = -1, .lock = 0 });
     try std.testing.expectEqual(mesh.triangles.len, mesh.edge_flags.items.len);
+    try std.testing.expectEqual(mesh.triangles.len, mesh.triangle_versions.items.len);
+    const version = mesh.triangle_versions.items[0];
+    mesh.setTriangleFresh(0, .{ .v0 = 0, .v1 = 0, .v2 = 0, .adj0 = -1, .adj1 = -1, .adj2 = -1, .lock = 0 });
+    try std.testing.expect(mesh.triangle_versions.items[0] != version);
 
     var arena = ThreadArena{};
     defer arena.deinit(allocator);
