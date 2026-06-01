@@ -99,9 +99,11 @@ pub const GlobalMesh = struct {
 
 pub const ThreadArena = struct {
     freelist: std.ArrayListUnmanaged(i32) = .empty,
+    scratch: ?std.heap.ArenaAllocator = null,
 
     pub fn deinit(self: *ThreadArena, allocator: std.mem.Allocator) void {
         self.freelist.deinit(allocator);
+        if (self.scratch) |scratch| scratch.deinit();
     }
 
     pub fn tombstone(self: *ThreadArena, allocator: std.mem.Allocator, triangle_index: i32) !void {
@@ -111,6 +113,16 @@ pub const ThreadArena = struct {
     pub fn getFreeSlot(self: *ThreadArena) ?i32 {
         if (self.freelist.items.len == 0) return null;
         return self.freelist.pop();
+    }
+
+    pub fn resetScratch(self: *ThreadArena, allocator: std.mem.Allocator) std.mem.Allocator {
+        if (self.scratch) |*scratch| {
+            _ = scratch.reset(.retain_capacity);
+            return scratch.allocator();
+        }
+
+        self.scratch = std.heap.ArenaAllocator.init(allocator);
+        return self.scratch.?.allocator();
     }
 };
 
@@ -135,4 +147,12 @@ test "GlobalMesh and ThreadArena" {
     try arena.tombstone(allocator, 42);
     try std.testing.expectEqual(42, arena.getFreeSlot().?);
     try std.testing.expectEqual(null, arena.getFreeSlot());
+
+    const scratch = arena.resetScratch(allocator);
+    const tmp = try scratch.alloc(i32, 4);
+    tmp[0] = 7;
+    const reset_scratch = arena.resetScratch(allocator);
+    const reset_tmp = try reset_scratch.alloc(i32, 4);
+    reset_tmp[0] = 9;
+    try std.testing.expectEqual(@as(i32, 9), reset_tmp[0]);
 }

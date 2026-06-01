@@ -420,20 +420,20 @@ pub const Corridor = struct {
     }
 
     pub fn clearAndRetriangulate(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
+        const scratch_allocator = arena.resetScratch(allocator);
         try self.augmentPiercedBySegmentScan(allocator, engine, start_pt_idx, end_pt_idx);
 
-        var edge_counts = std.AutoHashMap(EdgeKey, usize).init(allocator);
+        var edge_counts = std.AutoHashMap(EdgeKey, usize).init(scratch_allocator);
         defer edge_counts.deinit();
 
-        var boundary_nodes = std.AutoHashMap(i32, BoundaryNode).init(allocator);
+        var boundary_nodes = std.AutoHashMap(i32, BoundaryNode).init(scratch_allocator);
         defer boundary_nodes.deinit();
 
         try self.buildBoundaryGraph(engine, &edge_counts, &boundary_nodes);
         try validateBoundaryDegrees(&boundary_nodes, start_pt_idx, end_pt_idx);
 
         var outer_edges: std.ArrayListUnmanaged(BoundaryEdge) = .empty;
-        defer outer_edges.deinit(allocator);
-        try self.collectOuterBoundaryEdges(allocator, engine, &edge_counts, &outer_edges);
+        try self.collectOuterBoundaryEdges(scratch_allocator, engine, &edge_counts, &outer_edges);
 
         const start_node = boundary_nodes.get(start_pt_idx) orelse {
             std.debug.print("InvalidCorridorBoundary: missing start vertex {d} in boundary\n", .{start_pt_idx});
@@ -449,19 +449,14 @@ pub const Corridor = struct {
         }
 
         var candidates: std.ArrayListUnmanaged(ChainCandidate) = .empty;
-        defer {
-            for (candidates.items) |*candidate| candidate.deinit(allocator);
-            candidates.deinit(allocator);
-        }
 
         for (start_node.neighbors[0..start_node.degree]) |neighbor| {
             var chain: std.ArrayListUnmanaged(i32) = .empty;
-            traceBoundaryChain(&boundary_nodes, allocator, start_pt_idx, end_pt_idx, neighbor, &chain) catch {
-                chain.deinit(allocator);
+            traceBoundaryChain(&boundary_nodes, scratch_allocator, start_pt_idx, end_pt_idx, neighbor, &chain) catch {
                 continue;
             };
             const side_score = chainSideScore(engine, start_pt_idx, end_pt_idx, chain.items);
-            try candidates.append(allocator, .{
+            try candidates.append(scratch_allocator, .{
                 .side = side_score.side,
                 .score = side_score.score,
                 .vertices = chain,
@@ -484,16 +479,13 @@ pub const Corridor = struct {
         }
 
         var footprint: std.ArrayListUnmanaged(i32) = .empty;
-        defer footprint.deinit(allocator);
-        try self.collectTransactionFootprint(allocator, engine, outer_edges.items, &footprint);
+        try self.collectTransactionFootprint(scratch_allocator, engine, outer_edges.items, &footprint);
 
         var expected_versions: std.ArrayListUnmanaged(triangulate.TriangleVersionSnapshot) = .empty;
-        defer expected_versions.deinit(allocator);
-        if (!try engine.snapshotTransactionFootprint(allocator, footprint.items, &expected_versions)) return error.TransactionConflict;
+        if (!try engine.snapshotTransactionFootprint(scratch_allocator, footprint.items, &expected_versions)) return error.TransactionConflict;
 
         var tx = triangulate.TriangleTransaction{};
-        defer tx.deinit(allocator);
-        if (!try engine.beginTriangleTransactionWithVersions(allocator, footprint.items, expected_versions.items, &tx)) return error.TransactionConflict;
+        if (!try engine.beginTriangleTransactionWithVersions(scratch_allocator, footprint.items, expected_versions.items, &tx)) return error.TransactionConflict;
         errdefer engine.endTriangleTransaction(&tx);
 
         // 2. Detach live outer neighbors from the soon-to-be-cleared corridor.
@@ -530,10 +522,9 @@ pub const Corridor = struct {
         }
 
         var emitted: std.ArrayListUnmanaged(i32) = .empty;
-        defer emitted.deinit(allocator);
 
-        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[left_chain.?].vertices.items, true, &emitted);
-        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[right_chain.?].vertices.items, false, &emitted);
+        try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[left_chain.?].vertices.items, true, &emitted);
+        try self.triangulatePseudoPolygon(scratch_allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[right_chain.?].vertices.items, false, &emitted);
 
         try engine.linkNewTriangles(emitted.items);
         for (outer_edges.items) |edge| {
@@ -549,7 +540,7 @@ pub const Corridor = struct {
         if (!try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true)) return error.MissingConstraintEdge;
         // This is still single-thread scaffolding: legalization can currently
         // expand past the original corridor footprint as it flips edges.
-        try engine.legalizeFromTriangles(allocator, emitted.items);
+        try engine.legalizeFromTriangles(scratch_allocator, emitted.items);
         engine.endTriangleTransaction(&tx);
     }
 };

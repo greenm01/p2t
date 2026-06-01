@@ -886,7 +886,7 @@ pub const Engine = struct {
         return false;
     }
 
-    fn extractCavityBoundary(self: *Engine, cavity: []const i32, edges: *std.ArrayListUnmanaged(Edge)) !void {
+    fn extractCavityBoundary(self: *Engine, allocator: std.mem.Allocator, cavity: []const i32, edges: *std.ArrayListUnmanaged(Edge)) !void {
         try self.cavity_edge_counter.reset(self.allocator, cavity.len * 3);
 
         for (cavity) |t_idx| {
@@ -903,7 +903,7 @@ pub const Engine = struct {
             }
         }
 
-        try self.cavity_edge_counter.appendBoundaryTo(self.allocator, edges);
+        try self.cavity_edge_counter.appendBoundaryTo(allocator, edges);
 
         for (edges.items) |e| {
             if (e.adj_tri != -1 and cavityContains(cavity, e.adj_tri)) {
@@ -938,7 +938,7 @@ pub const Engine = struct {
         return false;
     }
 
-    fn completeCavityByGlobalScan(self: *Engine, cavity: *std.ArrayListUnmanaged(i32), pt: mesh.Vertex) !bool {
+    fn completeCavityByGlobalScan(self: *Engine, allocator: std.mem.Allocator, cavity: *std.ArrayListUnmanaged(i32), pt: mesh.Vertex) !bool {
         var added = false;
         for (0..self.mesh.triangles.len) |tri_idx| {
             const tri_i32 = @as(i32, @intCast(tri_idx));
@@ -948,14 +948,14 @@ pub const Engine = struct {
             if (mesh.isDeadTriangle(tri)) continue;
 
             if (self.isInsideCircumcircle(tri_i32, pt) or self.pointOnTriangleEdge(tri, pt)) {
-                try cavity.append(self.allocator, tri_i32);
+                try cavity.append(allocator, tri_i32);
                 added = true;
             }
         }
         return added;
     }
 
-    fn repairBoundaryNonManifoldEdges(self: *Engine, cavity: *std.ArrayListUnmanaged(i32), edges: []const Edge) !bool {
+    fn repairBoundaryNonManifoldEdges(self: *Engine, allocator: std.mem.Allocator, cavity: *std.ArrayListUnmanaged(i32), edges: []const Edge) !bool {
         var added = false;
         for (edges) |edge| {
             var outside_count: usize = 0;
@@ -969,7 +969,7 @@ pub const Engine = struct {
 
                 outside_count += 1;
                 if (outside_count > 1 and !cavityContains(cavity.items, tri_i32)) {
-                    try cavity.append(self.allocator, tri_i32);
+                    try cavity.append(allocator, tri_i32);
                     added = true;
                 }
             }
@@ -999,13 +999,12 @@ pub const Engine = struct {
             return error.WalkFailed;
         }
 
+        const scratch_allocator = arena.resetScratch(self.allocator);
         var cavity: std.ArrayListUnmanaged(i32) = .empty;
-        defer cavity.deinit(self.allocator);
 
         var edges: std.ArrayListUnmanaged(Edge) = .empty;
-        defer edges.deinit(self.allocator);
 
-        try cavity.append(self.allocator, container);
+        try cavity.append(scratch_allocator, container);
 
         var i: usize = 0;
         while (i < cavity.items.len) : (i += 1) {
@@ -1024,20 +1023,20 @@ pub const Engine = struct {
                 );
 
                 if (point_on_edge or self.isInsideCircumcircle(n_idx, pt)) {
-                    try cavity.append(self.allocator, n_idx);
+                    try cavity.append(scratch_allocator, n_idx);
                 }
             }
         }
 
         while (true) {
-            try self.extractCavityBoundary(cavity.items, &edges);
+            try self.extractCavityBoundary(scratch_allocator, cavity.items, &edges);
 
-            if (try self.repairBoundaryNonManifoldEdges(&cavity, edges.items)) {
+            if (try self.repairBoundaryNonManifoldEdges(scratch_allocator, &cavity, edges.items)) {
                 continue;
             }
 
             if (boundaryHasPinch(edges.items)) {
-                const repaired = try self.completeCavityByGlobalScan(&cavity, pt);
+                const repaired = try self.completeCavityByGlobalScan(scratch_allocator, &cavity, pt);
                 if (!repaired) {
                     std.debug.print("InvalidCavityBoundary: pinched boundary could not be repaired for point {d},{d}\n", .{ pt.x, pt.y });
                     return error.InvalidCavityBoundary;
@@ -1049,16 +1048,13 @@ pub const Engine = struct {
         }
 
         var footprint: std.ArrayListUnmanaged(i32) = .empty;
-        defer footprint.deinit(self.allocator);
-        try self.collectCavityTransactionFootprint(self.allocator, cavity.items, edges.items, &footprint);
+        try self.collectCavityTransactionFootprint(scratch_allocator, cavity.items, edges.items, &footprint);
 
         var expected_versions: std.ArrayListUnmanaged(TriangleVersionSnapshot) = .empty;
-        defer expected_versions.deinit(self.allocator);
-        if (!try self.snapshotTransactionFootprint(self.allocator, footprint.items, &expected_versions)) return error.TransactionConflict;
+        if (!try self.snapshotTransactionFootprint(scratch_allocator, footprint.items, &expected_versions)) return error.TransactionConflict;
 
         var tx = TriangleTransaction{};
-        defer tx.deinit(self.allocator);
-        if (!try self.beginTriangleTransactionWithVersions(self.allocator, footprint.items, expected_versions.items, &tx)) return error.TransactionConflict;
+        if (!try self.beginTriangleTransactionWithVersions(scratch_allocator, footprint.items, expected_versions.items, &tx)) return error.TransactionConflict;
         errdefer self.endTriangleTransaction(&tx);
 
         // Tombstone cavity
@@ -1068,11 +1064,10 @@ pub const Engine = struct {
         }
 
         var new_tri_indices: std.ArrayListUnmanaged(i32) = .empty;
-        defer new_tri_indices.deinit(self.allocator);
 
         for (edges.items) |_| {
             const new_idx = arena.getFreeSlot() orelse @as(i32, @intCast(self.mesh.triangles.len));
-            try new_tri_indices.append(self.allocator, new_idx);
+            try new_tri_indices.append(scratch_allocator, new_idx);
 
             try self.mesh.ensureTriangleSlot(self.allocator, new_idx);
         }
