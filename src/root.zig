@@ -5,6 +5,7 @@ pub const mesh = @import("mesh.zig");
 pub const spatial = @import("spatial.zig");
 pub const predicates = @import("predicates.zig");
 pub const triangulate = @import("triangulate.zig");
+pub const corridor = @import("corridor.zig");
 
 test {
     std.testing.refAllDecls(@This());

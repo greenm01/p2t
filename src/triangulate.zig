@@ -7,6 +7,7 @@ pub const Edge = struct {
     adj_tri: i32,
     v1: i32,
     v2: i32,
+    old_tri: i32,
 };
 
 pub const Engine = struct {
@@ -136,7 +137,7 @@ pub const Engine = struct {
                     try cavity.append(self.allocator, n_idx);
                 } else if (!in_cavity) {
                     // It's a boundary edge
-                    try edges.append(self.allocator, .{ .adj_tri = n_idx, .v1 = edges_v[n].v1, .v2 = edges_v[n].v2 });
+                    try edges.append(self.allocator, .{ .adj_tri = n_idx, .v1 = edges_v[n].v1, .v2 = edges_v[n].v2, .old_tri = t_idx });
                 }
             }
         }
@@ -146,8 +147,58 @@ pub const Engine = struct {
             try arena.tombstone(self.allocator, t_idx);
         }
 
-        // We skip retriangulation and hooking up adjacencies for now 
-        // to keep this incremental and verify cavity expansion works.
+        const pt_idx = @as(i32, @intCast(self.mesh.vertices.len - 1));
+
+        var new_tri_indices: std.ArrayListUnmanaged(i32) = .empty;
+        defer new_tri_indices.deinit(self.allocator);
+
+        for (edges.items) |_| {
+            const new_idx = arena.getFreeSlot() orelse @as(i32, @intCast(self.mesh.triangles.len));
+            try new_tri_indices.append(self.allocator, new_idx);
+            
+            if (new_idx == self.mesh.triangles.len) {
+                try self.mesh.triangles.append(self.allocator, undefined); // Placeholder
+            }
+        }
+
+        // Setup the new triangles and link them
+        for (edges.items, 0..) |e, edge_i| {
+            const t_idx = new_tri_indices.items[edge_i];
+            
+            // find internal neighbors
+            var adj1: i32 = -1; // neighbor sharing (e.v2, pt_idx)
+            var adj2: i32 = -1; // neighbor sharing (pt_idx, e.v1)
+            
+            for (edges.items, 0..) |other_e, edge_j| {
+                if (edge_i == edge_j) continue;
+                if (other_e.v1 == e.v2) adj1 = @as(i32, @intCast(new_tri_indices.items[edge_j]));
+                if (other_e.v2 == e.v1) adj2 = @as(i32, @intCast(new_tri_indices.items[edge_j]));
+            }
+            
+            self.mesh.triangles.set(@as(usize, @intCast(t_idx)), .{
+                .v0 = e.v1,
+                .v1 = e.v2,
+                .v2 = pt_idx,
+                .adj0 = e.adj_tri,
+                .adj1 = adj1,
+                .adj2 = adj2,
+                .lock = 0,
+            });
+
+            // update external neighbor to point to us
+            if (e.adj_tri != -1) {
+                const ext_idx = @as(usize, @intCast(e.adj_tri));
+                var ext_tri = self.mesh.triangles.get(ext_idx);
+                if (ext_tri.adj0 == e.old_tri) {
+                    ext_tri.adj0 = t_idx;
+                } else if (ext_tri.adj1 == e.old_tri) {
+                    ext_tri.adj1 = t_idx;
+                } else if (ext_tri.adj2 == e.old_tri) {
+                    ext_tri.adj2 = t_idx;
+                }
+                self.mesh.triangles.set(ext_idx, ext_tri);
+            }
+        }
     }
 };
 
@@ -168,6 +219,10 @@ test "cavity building" {
     // Insert a point
     try engine.insertPoint(&arena, mesh.Vertex{ .x = 15.0, .y = 15.0 });
     
-    // 0 should be tombstoned
-    try std.testing.expect(arena.freelist.items.len > 0);
+    // The super triangle was tombstoned and replaced by 3 new triangles connecting to the new point
+    try std.testing.expectEqual(0, arena.freelist.items.len);
+    try std.testing.expectEqual(3, engine.mesh.triangles.len);
+    
+    // Let's also insert another point and verify
+    try engine.insertPoint(&arena, mesh.Vertex{ .x = 14.0, .y = 16.0 });
 }
