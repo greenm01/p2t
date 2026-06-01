@@ -46,6 +46,10 @@ Current BRIO results:
 
 The post-hoc cull proves the output mode and gives clean polygon-only live meshes, but it adds time rather than closing the gap. The next optimization should move polygon awareness earlier so exterior regions avoid some insertion, hint, adjacency, or legalization work instead of only being removed after the full mesh is built.
 
+An incremental boundary-recovery prototype was tested and rejected. Recovering polygon edges as soon as both endpoints were inserted preserved output counts, but it moved recovery work into insertion and caused many more global edge lookup fallbacks. On the large BRIO fixtures it regressed badly (`nazca-monkey` about `369 us/run`, `nazca-heron` about `257 us/run`). The next polygon-aware attempt should not interleave full corridor recovery with point insertion unless edge lookup and recovery locality are redesigned first.
+
+In polygon-output mode, the post-cull live triangle count is already the interior output count. The benchmark should use `liveTriangleCount()` after cull instead of running a second exterior-marking pass for extraction timing.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.

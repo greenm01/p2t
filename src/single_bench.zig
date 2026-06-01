@@ -119,7 +119,10 @@ fn runRound(
         const cull_end = timer.now(io);
 
         const extraction_start = cull_end;
-        const interior_triangles = try engine.countInteriorTriangles();
+        const interior_triangles = if (build_options.polygon_output_mode)
+            engine.liveTriangleCount()
+        else
+            try engine.countInteriorTriangles();
         const extraction_end = timer.now(io);
 
         timing.insertion_us += timer.elapsedMicros(insertion_start, insertion_end);
