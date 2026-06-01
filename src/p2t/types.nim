@@ -63,6 +63,7 @@ when defined(p2tArenaCdt):
       edgeEvents*, edgeWalkSteps*, flipEvents*, flipScans*: uint64
       indexCalls*, edgeIndexCalls*, mapTriangleToNodesCalls*: uint64
       incircleCalls*, inScanAreaCalls*, meshCleanVisits*: uint64
+      locateNodeSteps*, swapNeighborScans*, slotRotations*: uint64
 
   when defined(p2tFloat32Cdt):
     type ArenaReal* = float32
@@ -83,6 +84,8 @@ when defined(p2tArenaCdt):
     ArenaTriangle* = object
       neighbors*: array[3, ptr ArenaTriangle]
       points*: array[3, ptr ArenaPoint]
+      when defined(p2tSlotCdt):
+        neighborSlots*: array[3, uint8]
       flags*: uint32
 
     ArenaNode* = object

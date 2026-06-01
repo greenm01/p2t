@@ -19,6 +19,9 @@ const
   NextEdgeIndex = [1, 2, 0]
   PrevEdgeIndex = [2, 0, 1]
 
+when defined(p2tSlotCdt):
+  const NilNeighborSlot = 255'u8
+
 type
   Orientation = enum
     cw
@@ -199,6 +202,10 @@ proc newTriangle(
   result.neighbors[0] = nil
   result.neighbors[1] = nil
   result.neighbors[2] = nil
+  when defined(p2tSlotCdt):
+    result.neighborSlots[0] = NilNeighborSlot
+    result.neighborSlots[1] = NilNeighborSlot
+    result.neighborSlots[2] = NilNeighborSlot
   result.flags = 0
   inc ws.triangleCount
 
@@ -208,26 +215,63 @@ proc contains(t: ptr ArenaTriangle, p: ptr ArenaPoint): bool {.inline.} =
 proc contains(t: ptr ArenaTriangle, p, q: ptr ArenaPoint): bool {.inline.} =
   t.contains(p) and t.contains(q)
 
+proc edgeIndexPlain(t: ptr ArenaTriangle, p1, p2: ptr ArenaPoint): int {.inline.} =
+  if t.points[0] == p1:
+    if t.points[1] == p2:
+      return 2
+    if t.points[2] == p2:
+      return 1
+  elif t.points[1] == p1:
+    if t.points[2] == p2:
+      return 0
+    if t.points[0] == p2:
+      return 2
+  elif t.points[2] == p1:
+    if t.points[0] == p2:
+      return 1
+    if t.points[1] == p2:
+      return 0
+  -1
+
 proc markNeighbor(
     t: ptr ArenaTriangle, p1, p2: ptr ArenaPoint, other: ptr ArenaTriangle
 ) {.inline.} =
   if (p1 == t.points[2] and p2 == t.points[1]) or
       (p1 == t.points[1] and p2 == t.points[2]):
     t.neighbors[0] = other
+    when defined(p2tSlotCdt):
+      t.neighborSlots[0] = other.edgeIndexPlain(p1, p2).uint8
   elif (p1 == t.points[0] and p2 == t.points[2]) or
       (p1 == t.points[2] and p2 == t.points[0]):
     t.neighbors[1] = other
+    when defined(p2tSlotCdt):
+      t.neighborSlots[1] = other.edgeIndexPlain(p1, p2).uint8
   elif (p1 == t.points[0] and p2 == t.points[1]) or
       (p1 == t.points[1] and p2 == t.points[0]):
     t.neighbors[2] = other
+    when defined(p2tSlotCdt):
+      t.neighborSlots[2] = other.edgeIndexPlain(p1, p2).uint8
 
 proc swapNeighbor(
     t: ptr ArenaTriangle, oldNeighbor, newNeighbor: ptr ArenaTriangle
 ) {.inline.} =
   for i in 0 .. 2:
+    statIncGlobal(swapNeighborScans)
     if t.neighbors[i] == oldNeighbor:
       t.neighbors[i] = newNeighbor
+      when defined(p2tSlotCdt):
+        let oldSide = t.neighborSlots[i].int
+        if oldSide >= 0 and oldSide < 3:
+          t.neighborSlots[i] = newNeighbor.neighborSlots[oldSide]
       return
+
+proc neighborIndexPlain(
+    t: ptr ArenaTriangle, neighbor: ptr ArenaTriangle
+): int {.inline, used.} =
+  for i in 0 .. 2:
+    if t.neighbors[i] == neighbor:
+      return i
+  -1
 
 proc clearDelaunayEdges(t: ptr ArenaTriangle) {.inline.} =
   t.flags = t.flags and not DelaunayEdgeMask
@@ -351,22 +395,7 @@ proc index(t: ptr ArenaTriangle, p: ptr ArenaPoint): int {.inline.} =
 
 proc edgeIndex(t: ptr ArenaTriangle, p1, p2: ptr ArenaPoint): int {.inline.} =
   t.statInc(edgeIndexCalls)
-  if t.points[0] == p1:
-    if t.points[1] == p2:
-      return 2
-    if t.points[2] == p2:
-      return 1
-  elif t.points[1] == p1:
-    if t.points[2] == p2:
-      return 0
-    if t.points[0] == p2:
-      return 2
-  elif t.points[2] == p1:
-    if t.points[0] == p2:
-      return 1
-    if t.points[1] == p2:
-      return 0
-  -1
+  t.edgeIndexPlain(p1, p2)
 
 proc markConstrainedEdge(t: ptr ArenaTriangle, edgeIndex: int) {.inline.} =
   t.setFlag(constrainedFlag(edgeIndex), true)
@@ -399,12 +428,14 @@ proc locateNode(ws: var ArenaWorkspace, x: ArenaReal): ptr ArenaNode =
   var node = ws.front.searchNode
   if x < node.value:
     while not node.isNil:
+      ws.statInc(locateNodeSteps)
       node = node.prev
       if not node.isNil and x >= node.value:
         ws.front.searchNode = node
         return node
   else:
     while not node.isNil:
+      ws.statInc(locateNodeSteps)
       node = node.next
       if not node.isNil and x < node.value:
         ws.front.searchNode = node.prev
@@ -613,13 +644,115 @@ proc incircle(pa, pb, pc, pd: ptr ArenaPoint): bool {.inline.} =
 
 proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool
 
+when defined(p2tSlotCdt):
+  proc setNeighborSlot(
+      t: ptr ArenaTriangle, side: int, other: ptr ArenaTriangle, otherSide: int
+  ) {.inline.} =
+    t.neighbors[side] = other
+    t.neighborSlots[side] =
+      if other.isNil or otherSide < 0: NilNeighborSlot else: otherSide.uint8
+
+  proc rotateTrianglePairIndexed(
+      ws: var ArenaWorkspace,
+      t: ptr ArenaTriangle,
+      p: ptr ArenaPoint,
+      pIdx: int,
+      ot: ptr ArenaTriangle,
+      op: ptr ArenaPoint,
+      opIdx: int,
+  ) {.inline.} =
+    ws.statInc(rotations)
+    ws.statInc(slotRotations)
+    let
+      rotateAmount = NextEdgeIndex[pIdx]
+      otherRotateAmount = NextEdgeIndex[opIdx]
+      tPrev = PrevEdgeIndex[pIdx]
+      tNext = NextEdgeIndex[pIdx]
+      otPrev = PrevEdgeIndex[opIdx]
+      otNext = NextEdgeIndex[opIdx]
+      n1 = t.neighbors[tPrev]
+      n2 = t.neighbors[tNext]
+      n3 = ot.neighbors[otPrev]
+      n4 = ot.neighbors[otNext]
+      ce1 = t.hasFlag(constrainedFlag(tPrev))
+      ce2 = t.hasFlag(constrainedFlag(tNext))
+      ce3 = ot.hasFlag(constrainedFlag(otPrev))
+      ce4 = ot.hasFlag(constrainedFlag(otNext))
+      de1 = t.hasFlag(delaunayFlag(tPrev))
+      de2 = t.hasFlag(delaunayFlag(tNext))
+      de3 = ot.hasFlag(delaunayFlag(otPrev))
+      de4 = ot.hasFlag(delaunayFlag(otNext))
+    var
+      n1Side =
+        if n1.isNil:
+          -1
+        else:
+          n1.edgeIndexPlain(
+            t.points[NextEdgeIndex[tPrev]], t.points[PrevEdgeIndex[tPrev]]
+          )
+      n2Side =
+        if n2.isNil:
+          -1
+        else:
+          n2.edgeIndexPlain(
+            t.points[NextEdgeIndex[tNext]], t.points[PrevEdgeIndex[tNext]]
+          )
+      n3Side =
+        if n3.isNil:
+          -1
+        else:
+          n3.edgeIndexPlain(
+            ot.points[NextEdgeIndex[otPrev]], ot.points[PrevEdgeIndex[otPrev]]
+          )
+      n4Side =
+        if n4.isNil:
+          -1
+        else:
+          n4.edgeIndexPlain(
+            ot.points[NextEdgeIndex[otNext]], ot.points[PrevEdgeIndex[otNext]]
+          )
+
+    if n1Side < 0 and not n1.isNil:
+      n1Side = n1.neighborIndexPlain(t)
+    if n2Side < 0 and not n2.isNil:
+      n2Side = n2.neighborIndexPlain(t)
+    if n3Side < 0 and not n3.isNil:
+      n3Side = n3.neighborIndexPlain(ot)
+    if n4Side < 0 and not n4.isNil:
+      n4Side = n4.neighborIndexPlain(ot)
+
+    t.setNeighborSlot(rotateAmount, n3, n3Side)
+    t.setNeighborSlot(NextEdgeIndex[rotateAmount], n2, n2Side)
+    t.setNeighborSlot(PrevEdgeIndex[rotateAmount], ot, PrevEdgeIndex[otherRotateAmount])
+    ot.setNeighborSlot(otherRotateAmount, n1, n1Side)
+    ot.setNeighborSlot(NextEdgeIndex[otherRotateAmount], n4, n4Side)
+    ot.setNeighborSlot(PrevEdgeIndex[otherRotateAmount], t, PrevEdgeIndex[rotateAmount])
+
+    if not n1.isNil:
+      n1.setNeighborSlot(n1Side, ot, otherRotateAmount)
+    if not n3.isNil:
+      n3.setNeighborSlot(n3Side, t, rotateAmount)
+
+    t.legalize(p, op)
+    ot.legalize(op, p)
+
+    ot.setDelaunayEdgeCCW(p, de1)
+    t.setDelaunayEdgeCW(p, de2)
+    t.setDelaunayEdgeCCW(op, de3)
+    ot.setDelaunayEdgeCW(op, de4)
+
+    ot.setConstrainedEdgeCCW(p, ce1)
+    t.setConstrainedEdgeCW(p, ce2)
+    t.setConstrainedEdgeCCW(op, ce3)
+    ot.setConstrainedEdgeCW(op, ce4)
+
 proc rotateTrianglePair(
     ws: var ArenaWorkspace,
     t: ptr ArenaTriangle,
     p: ptr ArenaPoint,
     ot: ptr ArenaTriangle,
     op: ptr ArenaPoint,
-) {.inline.} =
+) {.inline, used.} =
   ws.statInc(rotations)
   let
     pIdx = t.index(p)
@@ -688,7 +821,10 @@ proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
         t.setFlag(delaunayFlag(i), true)
         ot.setFlag(delaunayFlag(oi), true)
 
-        ws.rotateTrianglePair(t, p, ot, op)
+        when defined(p2tSlotCdt):
+          ws.rotateTrianglePairIndexed(t, p, i, ot, op, oi)
+        else:
+          ws.rotateTrianglePair(t, p, ot, op)
 
         var notLegalized = not ws.legalize(t)
         if notLegalized:
@@ -707,9 +843,15 @@ proc fill(ws: var ArenaWorkspace, n: ptr ArenaNode) {.inline.} =
   ws.statInc(fills)
   let t = ws.newTriangle(n.prev.point, n.point, n.next.point)
   t.neighbors[2] = n.prev.triangle
+  when defined(p2tSlotCdt):
+    if not n.prev.triangle.isNil:
+      t.neighborSlots[2] = n.prev.triangle.edgeIndexPlain(n.prev.point, n.point).uint8
   if not n.prev.triangle.isNil:
     n.prev.triangle.markNeighbor(n.prev.point, n.point, t)
   t.neighbors[0] = n.triangle
+  when defined(p2tSlotCdt):
+    if not n.triangle.isNil:
+      t.neighborSlots[0] = n.triangle.edgeIndexPlain(n.point, n.next.point).uint8
   if not n.triangle.isNil:
     n.triangle.markNeighbor(n.point, n.next.point, t)
 
@@ -866,6 +1008,9 @@ proc newFrontTriangle(
 ): ptr ArenaNode {.inline.} =
   let t = ws.newTriangle(p, n.point, n.next.point)
   t.neighbors[0] = n.triangle
+  when defined(p2tSlotCdt):
+    if not n.triangle.isNil:
+      t.neighborSlots[0] = n.triangle.edgeIndexPlain(n.point, n.next.point).uint8
   if not n.triangle.isNil:
     n.triangle.markNeighbor(n.point, n.next.point, t)
 
@@ -1090,7 +1235,10 @@ proc flipEdgeEvent(
     opIdx = opposite.index
 
   if inScanArea(p, pccw, pcw, op):
-    ws.rotateTrianglePair(t, p, ot, op)
+    when defined(p2tSlotCdt):
+      ws.rotateTrianglePairIndexed(t, p, pIdx, ot, op, opIdx)
+    else:
+      ws.rotateTrianglePair(t, p, ot, op)
     ws.mapTriangleToNodes(t)
     ws.mapTriangleToNodes(ot)
 
