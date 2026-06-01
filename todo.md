@@ -246,6 +246,18 @@ Current macOS results:
 
 Hilbert is not the next production ordering from this sweep. BRIO-Hilbert is competitive but does not beat BRIO-Morton on the large fixtures, and Hilbert order construction is more expensive than Morton (`~227-280 us` versus `~45-85 us` for the large fixtures). Keep it as a benchmarkable diagnostic, but keep BRIO-Morton as the default baseline.
 
+## Latest LFQT Diagnostic
+
+After reviewing `delaunayhpg.pdf`, `bench-single -Dpredicate-policy=fast -Dspatial-hints=true -Dlfqt-diagnostic-mode=true -Dlfqt-bin-vertices=N` now builds a linear floating-point quadtree diagnostic. It uses monotone IEEE-754 `f64` bit transforms, 128-bit 2D Morton codes, recursive first/last XOR splitting, and existing local point insertion inside each independent bin. It does not implement the Dwyer merge phase or CDT constraint recovery.
+
+Current macOS results:
+
+- Bin target `64`: monkey `40` bins, max `62`, sort `162 us`, split `2 us`, local serial `386 us`, estimated 4-worker wall `261 us`; heron `29` bins, max `62`, sort `161 us`, split `3 us`, local serial `482 us`, estimated 4-worker wall `286 us`.
+- Bin target `128`: monkey `19` bins, max `124`, sort `219 us`, split `2 us`, local serial `600 us`, estimated 4-worker wall `373 us`; heron `16` bins, max `116`, sort `204 us`, split `1 us`, local serial `529 us`, estimated 4-worker wall `348 us`.
+- Bin target `256`: monkey `10` bins, max `235`, sort `161 us`, split `1 us`, local serial `445 us`, estimated 4-worker wall `285 us`; heron `7` bins, max `252`, sort `189 us`, split `0 us`, local serial `518 us`, estimated 4-worker wall `337 us`.
+
+The diagnostic supports the paper's broad direction but rejects an immediate LFQT pivot for the current small polygon fixtures. The split builder is cheap, but the current comparison sort plus 128-bit code construction dominates, and the estimated critical path is slower than the current BRIO baseline. LFQT is only worth revisiting with a radix sort and a real bottom-up merge prototype, or on substantially larger unconstrained point sets.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.

@@ -15,6 +15,29 @@ pub fn morton2D(x: u32, y: u32) u64 {
     return expandBits(x) | (expandBits(y) << 1);
 }
 
+pub fn orderedF64Bits(value: f64) u64 {
+    const bits: u64 = @bitCast(value);
+    const sign_mask: u64 = 1 << 63;
+    if ((bits & sign_mask) != 0) return ~bits;
+    return bits | sign_mask;
+}
+
+pub fn floatingMorton2D(x: f64, y: f64) u128 {
+    return morton2D128(orderedF64Bits(x), orderedF64Bits(y));
+}
+
+pub fn morton2D128(x: u64, y: u64) u128 {
+    var code: u128 = 0;
+    for (0..64) |bit| {
+        const shift: u6 = @intCast(bit);
+        const out_shift_x: u7 = @intCast(bit * 2);
+        const out_shift_y: u7 = @intCast(bit * 2 + 1);
+        code |= (@as(u128, (x >> shift) & 1) << out_shift_x);
+        code |= (@as(u128, (y >> shift) & 1) << out_shift_y);
+    }
+    return code;
+}
+
 pub fn hilbert2D(x: u32, y: u32) u64 {
     var hx: i64 = x;
     var hy: i64 = y;
@@ -107,6 +130,52 @@ pub fn computeHilbertCodes(allocator: std.mem.Allocator, vertices: []const mesh.
     }
 
     return codes;
+}
+
+pub const FloatingMortonOrder = struct {
+    indices: []usize,
+    codes: []u128,
+
+    pub fn deinit(self: FloatingMortonOrder, allocator: std.mem.Allocator) void {
+        allocator.free(self.codes);
+        allocator.free(self.indices);
+    }
+};
+
+pub fn sortVerticesByFloatingMorton(allocator: std.mem.Allocator, vertices: []const mesh.Vertex) !FloatingMortonOrder {
+    const Item = struct {
+        index: usize,
+        code: u128,
+    };
+
+    const items = try allocator.alloc(Item, vertices.len);
+    defer allocator.free(items);
+    for (vertices, 0..) |vertex, i| {
+        items[i] = .{
+            .index = i,
+            .code = floatingMorton2D(vertex.x, vertex.y),
+        };
+    }
+
+    const Context = struct {
+        pub fn lessThan(_: @This(), a: Item, b: Item) bool {
+            if (a.code != b.code) return a.code < b.code;
+            return a.index < b.index;
+        }
+    };
+    std.mem.sortUnstable(Item, items, Context{}, Context.lessThan);
+
+    const indices = try allocator.alloc(usize, vertices.len);
+    errdefer allocator.free(indices);
+    const codes = try allocator.alloc(u128, vertices.len);
+    errdefer allocator.free(codes);
+
+    for (items, 0..) |item, i| {
+        indices[i] = item.index;
+        codes[i] = item.code;
+    }
+
+    return .{ .indices = indices, .codes = codes };
 }
 
 pub fn sortVerticesByMorton(allocator: std.mem.Allocator, vertices: []const mesh.Vertex) ![]usize {
@@ -254,6 +323,33 @@ test "morton sorting" {
     try std.testing.expect(sorted_indices[0] == 1); // 0.0, 0.0
     try std.testing.expect(sorted_indices[1] == 2); // 50.0, 50.0
     try std.testing.expect(sorted_indices[2] == 0); // 100.0, 100.0
+}
+
+test "ordered f64 bits preserve numeric order" {
+    try std.testing.expect(orderedF64Bits(-std.math.inf(f64)) < orderedF64Bits(-1.0));
+    try std.testing.expect(orderedF64Bits(-1.0) < orderedF64Bits(-0.0));
+    try std.testing.expect(orderedF64Bits(-0.0) < orderedF64Bits(0.0));
+    try std.testing.expect(orderedF64Bits(0.0) < orderedF64Bits(1.0));
+    try std.testing.expect(orderedF64Bits(1.0) < orderedF64Bits(std.math.inf(f64)));
+}
+
+test "floating morton sorting breaks equal-code ties by index" {
+    const vertices = [_]mesh.Vertex{
+        .{ .x = 1.0, .y = 1.0 },
+        .{ .x = 1.0, .y = 1.0 },
+        .{ .x = -1.0, .y = -1.0 },
+    };
+
+    const allocator = std.testing.allocator;
+    const order = try sortVerticesByFloatingMorton(allocator, &vertices);
+    defer order.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), order.indices.len);
+    try std.testing.expectEqual(@as(usize, 2), order.indices[0]);
+    try std.testing.expectEqual(@as(usize, 0), order.indices[1]);
+    try std.testing.expectEqual(@as(usize, 1), order.indices[2]);
+    try std.testing.expect(order.codes[0] < order.codes[1]);
+    try std.testing.expectEqual(order.codes[1], order.codes[2]);
 }
 
 test "hilbert 4x4 ordering" {

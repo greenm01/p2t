@@ -39,6 +39,14 @@ fn brioParallelMode() bool {
     return build_options.brio_parallel_mode;
 }
 
+fn lfqtDiagnosticMode() bool {
+    return build_options.lfqt_diagnostic_mode;
+}
+
+fn lfqtBinVertices() usize {
+    return @max(@as(usize, 1), build_options.lfqt_bin_vertices);
+}
+
 fn decompositionMaxPieceVertices() usize {
     return @max(@as(usize, 3), build_options.decomposition_max_piece_vertices);
 }
@@ -367,6 +375,26 @@ const PieceBuildStats = struct {
     dispatch_us: u64 = 0,
     merge_us: u64 = 0,
     threads: usize = 1,
+};
+
+const LfqtBin = struct {
+    start: usize,
+    len: usize,
+    depth: usize,
+};
+
+const LfqtBuildStats = struct {
+    sort_us: u64 = 0,
+    split_us: u64 = 0,
+    local_serial_us: u64 = 0,
+    local_max_us: u64 = 0,
+    est_2_us: u64 = 0,
+    est_4_us: u64 = 0,
+    est_8_us: u64 = 0,
+    bins: usize = 0,
+    max_bin_vertices: usize = 0,
+    total_bin_vertices: usize = 0,
+    max_depth: usize = 0,
 };
 
 const PcdtWorkerContext = struct {
@@ -710,6 +738,167 @@ fn appendPcdtPiecesParallel(
     }
     stats.merge_us = timer.elapsedMicros(merge_start, timer.now(executor.io));
     return stats;
+}
+
+fn appendLfqtBins(
+    allocator: std.mem.Allocator,
+    codes: []const u128,
+    start: usize,
+    end: usize,
+    target_bin_vertices: usize,
+    depth: usize,
+    bins: *std.ArrayListUnmanaged(LfqtBin),
+    stats: *LfqtBuildStats,
+) !void {
+    const len = end - start;
+    if (len == 0) return;
+    if (len <= target_bin_vertices or codes[start] == codes[end - 1]) {
+        try bins.append(allocator, .{ .start = start, .len = len, .depth = depth });
+        stats.bins += 1;
+        stats.total_bin_vertices += len;
+        stats.max_bin_vertices = @max(stats.max_bin_vertices, len);
+        stats.max_depth = @max(stats.max_depth, depth);
+        return;
+    }
+
+    const diff = codes[start] ^ codes[end - 1];
+    const level: u7 = @intCast(127 - @clz(diff));
+    const mask = @as(u128, 1) << level;
+
+    var lo = start + 1;
+    var hi = end - 1;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if ((codes[mid] & mask) == 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    const split = lo;
+    if (split <= start or split >= end) {
+        try bins.append(allocator, .{ .start = start, .len = len, .depth = depth });
+        stats.bins += 1;
+        stats.total_bin_vertices += len;
+        stats.max_bin_vertices = @max(stats.max_bin_vertices, len);
+        stats.max_depth = @max(stats.max_depth, depth);
+        return;
+    }
+
+    try appendLfqtBins(allocator, codes, start, split, target_bin_vertices, depth + 1, bins, stats);
+    try appendLfqtBins(allocator, codes, split, end, target_bin_vertices, depth + 1, bins, stats);
+}
+
+fn runLfqtBin(
+    io: Io,
+    allocator: std.mem.Allocator,
+    vertices: []const mesh.Vertex,
+    order: spatial.FloatingMortonOrder,
+    bin: LfqtBin,
+) !u64 {
+    const start = timer.now(io);
+    const local_vertices = try allocator.alloc(mesh.Vertex, bin.len);
+    defer allocator.free(local_vertices);
+
+    for (local_vertices, 0..) |*vertex, i| {
+        vertex.* = vertices[order.indices[bin.start + i]];
+    }
+
+    var local_engine = triangulate.Engine.init(allocator);
+    defer local_engine.deinit();
+    try local_engine.reserveForPointCount(local_vertices.len);
+    try local_engine.initSuperTriangle(local_vertices);
+
+    var local_arena = mesh.ThreadArena{};
+    defer local_arena.deinit(allocator);
+    for (local_vertices) |vertex| {
+        _ = try local_engine.insertUniquePointTrusted(&local_arena, vertex);
+    }
+
+    return timer.elapsedMicros(start, timer.now(io));
+}
+
+fn greaterU64(_: void, a: u64, b: u64) bool {
+    return a > b;
+}
+
+fn estimateLfqtCriticalPath(allocator: std.mem.Allocator, times: []const u64, worker_count: usize) !u64 {
+    if (times.len == 0) return 0;
+    const workers = @max(@as(usize, 1), worker_count);
+    const sorted = try allocator.dupe(u64, times);
+    defer allocator.free(sorted);
+    std.mem.sortUnstable(u64, sorted, {}, greaterU64);
+
+    var loads = try allocator.alloc(u64, workers);
+    defer allocator.free(loads);
+    @memset(loads, 0);
+
+    for (sorted) |elapsed| {
+        var min_worker: usize = 0;
+        for (loads[1..], 1..) |load, i| {
+            if (load < loads[min_worker]) min_worker = i;
+        }
+        loads[min_worker] += elapsed;
+    }
+
+    var max_load: u64 = 0;
+    for (loads) |load| max_load = @max(max_load, load);
+    return max_load;
+}
+
+fn runLfqtDiagnostic(io: Io, allocator: std.mem.Allocator, case: Case) !LfqtBuildStats {
+    var stats = LfqtBuildStats{};
+    const sort_start = timer.now(io);
+    const order = try spatial.sortVerticesByFloatingMorton(allocator, case.vertices);
+    defer order.deinit(allocator);
+    stats.sort_us = timer.elapsedMicros(sort_start, timer.now(io));
+
+    var bins: std.ArrayListUnmanaged(LfqtBin) = .empty;
+    defer bins.deinit(allocator);
+    const split_start = timer.now(io);
+    try appendLfqtBins(allocator, order.codes, 0, order.codes.len, lfqtBinVertices(), 0, &bins, &stats);
+    stats.split_us = timer.elapsedMicros(split_start, timer.now(io));
+
+    const bin_times = try allocator.alloc(u64, bins.items.len);
+    defer allocator.free(bin_times);
+    for (bins.items, 0..) |bin, i| {
+        const elapsed = try runLfqtBin(io, allocator, case.vertices, order, bin);
+        bin_times[i] = elapsed;
+        stats.local_serial_us += elapsed;
+        stats.local_max_us = @max(stats.local_max_us, elapsed);
+    }
+
+    stats.est_2_us = stats.sort_us + stats.split_us + try estimateLfqtCriticalPath(allocator, bin_times, 2);
+    stats.est_4_us = stats.sort_us + stats.split_us + try estimateLfqtCriticalPath(allocator, bin_times, 4);
+    stats.est_8_us = stats.sort_us + stats.split_us + try estimateLfqtCriticalPath(allocator, bin_times, 8);
+    return stats;
+}
+
+fn printLfqtDiagnostic(case: Case, stats: LfqtBuildStats) void {
+    const mean_bin = if (stats.bins == 0)
+        0.0
+    else
+        @as(f64, @floatFromInt(stats.total_bin_vertices)) / @as(f64, @floatFromInt(stats.bins));
+    std.debug.print(
+        "{s}/lfqt-{d}: {d} vertices, bins {d}, max bin {d}, mean bin {d:>.1}, max depth {d}\n",
+        .{
+            case.name,
+            lfqtBinVertices(),
+            case.vertices.len,
+            stats.bins,
+            stats.max_bin_vertices,
+            mean_bin,
+            stats.max_depth,
+        },
+    );
+    std.debug.print(
+        "  lfqt timing: sort {d} us, split {d} us, local serial {d} us, local max {d} us\n",
+        .{ stats.sort_us, stats.split_us, stats.local_serial_us, stats.local_max_us },
+    );
+    std.debug.print(
+        "  lfqt estimated wall: 2 workers {d} us, 4 workers {d} us, 8 workers {d} us\n",
+        .{ stats.est_2_us, stats.est_4_us, stats.est_8_us },
+    );
 }
 
 fn runBrioParallelInsertion(
@@ -1515,7 +1704,9 @@ pub fn main(init: std.process.Init) !void {
     cases[2] = try loadCase(allocator, init.io, "nazca-heron", "tests/fixtures/nazca_heron.dat", 30);
     defer for (cases) |case| deinitCase(allocator, case);
 
-    if (build_options.brio_parallel_mode) {
+    if (lfqtDiagnosticMode()) {
+        std.debug.print("Cleave LFQT diagnostic benchmark (ReleaseFast, no merge)\n", .{});
+    } else if (build_options.brio_parallel_mode) {
         std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, parallel BRIO prototype)\n", .{});
     } else if (build_options.partitioned_cdt_parallel_mode) {
         std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, parallel PCDT prototype)\n", .{});
@@ -1531,7 +1722,10 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, validation skipped)\n", .{});
     }
     for (cases) |case| {
-        if (build_options.brio_parallel_mode) {
+        if (lfqtDiagnosticMode()) {
+            const stats = try runLfqtDiagnostic(init.io, allocator, case);
+            printLfqtDiagnostic(case, stats);
+        } else if (build_options.brio_parallel_mode) {
             try benchCase(init.io, allocator, case, .{ .name = "brio-parallel", .indices = case.brio_indices });
         } else if (build_options.partitioned_cdt_parallel_mode) {
             try benchCase(init.io, allocator, case, .{ .name = "pcdt-parallel", .indices = case.morton_indices });

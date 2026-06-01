@@ -31,6 +31,8 @@ pub fn build(b: *std.Build) void {
     const spatial_hints = b.option(bool, "spatial-hints", "Enable coarse spatial triangle start hints for insertion walks") orelse false;
     const brio_parallel_mode = b.option(bool, "brio-parallel-mode", "Run BRIO insertion through the experimental threaded benchmark path") orelse false;
     const brio_threads = b.option(usize, "brio-threads", "Worker count for experimental BRIO parallel benchmark mode; 0 uses detected CPU count") orelse 0;
+    const lfqt_diagnostic_mode = b.option(bool, "lfqt-diagnostic-mode", "Run linear floating-point quadtree bin diagnostics in bench-single") orelse false;
+    const lfqt_bin_vertices = b.option(usize, "lfqt-bin-vertices", "Target maximum vertices per LFQT diagnostic bin") orelse 128;
     const polygon_output_mode = b.option(bool, "polygon-output-mode", "Cull exterior/super triangles after boundary recovery in polygon-output benchmark prototypes") orelse false;
     const polygon_seed_mode = b.option(bool, "polygon-seed-mode", "Build simple polygon interiors from an Earcut-style seed, then legalize unconstrained diagonals") orelse false;
     const trapezoid_dd_mode = b.option(bool, "trapezoid-dd-mode", "Partition simple polygons with visibility diagonals, legalize pieces, then legalize seams") orelse false;
@@ -70,6 +72,8 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "spatial_hints", spatial_hints);
     build_options.addOption(bool, "brio_parallel_mode", brio_parallel_mode);
     build_options.addOption(usize, "brio_threads", brio_threads);
+    build_options.addOption(bool, "lfqt_diagnostic_mode", lfqt_diagnostic_mode);
+    build_options.addOption(usize, "lfqt_bin_vertices", lfqt_bin_vertices);
     build_options.addOption(bool, "polygon_output_mode", polygon_output_mode);
     build_options.addOption(bool, "polygon_seed_mode", polygon_seed_mode);
     build_options.addOption(bool, "trapezoid_dd_mode", trapezoid_dd_mode);
