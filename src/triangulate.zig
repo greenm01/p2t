@@ -20,6 +20,16 @@ pub const TriangleVersionSnapshot = struct {
     version: u32,
 };
 
+pub const TriangleTransaction = struct {
+    locked: std.ArrayListUnmanaged(i32) = .empty,
+    versions: std.ArrayListUnmanaged(TriangleVersionSnapshot) = .empty,
+
+    pub fn deinit(self: *TriangleTransaction, allocator: std.mem.Allocator) void {
+        self.locked.deinit(allocator);
+        self.versions.deinit(allocator);
+    }
+};
+
 const CavityEdgeBucket = struct {
     generation: u32 = 0,
     entry_index: i32 = -1,
@@ -305,6 +315,99 @@ pub const Engine = struct {
             if (self.mesh.triangle_versions.items[slot] != snapshot.version) return false;
         }
         return true;
+    }
+
+    fn isTriangleLocked(self: *const Engine, tri_idx: i32) bool {
+        if (tri_idx < 0) return false;
+        const slot = @as(usize, @intCast(tri_idx));
+        if (slot >= self.mesh.triangles.len) return false;
+        return self.mesh.triangles.items(.lock)[slot] != 0;
+    }
+
+    fn setTriangleLock(self: *Engine, tri_idx: i32, locked: bool) void {
+        const slot = @as(usize, @intCast(tri_idx));
+        self.mesh.triangles.items(.lock)[slot] = if (locked) 1 else 0;
+    }
+
+    fn containsTriangle(list: []const i32, tri_idx: i32) bool {
+        for (list) |item| {
+            if (item == tri_idx) return true;
+        }
+        return false;
+    }
+
+    fn sortTriangleIds(ids: []i32) void {
+        std.mem.sortUnstable(i32, ids, {}, std.sort.asc(i32));
+    }
+
+    pub fn beginTriangleTransaction(self: *Engine, allocator: std.mem.Allocator, requested_triangles: []const i32, tx: *TriangleTransaction) !bool {
+        tx.locked.clearRetainingCapacity();
+        tx.versions.clearRetainingCapacity();
+
+        for (requested_triangles) |tri_idx| {
+            if (tri_idx < 0) continue;
+            const slot = @as(usize, @intCast(tri_idx));
+            if (slot >= self.mesh.triangles.len) return false;
+            if (mesh.isDeadTriangle(self.mesh.triangles.get(slot))) return false;
+            if (containsTriangle(tx.locked.items, tri_idx)) continue;
+            try tx.locked.append(allocator, tri_idx);
+        }
+
+        sortTriangleIds(tx.locked.items);
+
+        var acquired: usize = 0;
+        for (tx.locked.items) |tri_idx| {
+            if (self.isTriangleLocked(tri_idx)) {
+                for (tx.locked.items[0..acquired]) |locked_tri| {
+                    self.setTriangleLock(locked_tri, false);
+                }
+                tx.locked.clearRetainingCapacity();
+                tx.versions.clearRetainingCapacity();
+                return false;
+            }
+            self.setTriangleLock(tri_idx, true);
+            acquired += 1;
+            tx.versions.append(allocator, self.snapshotTriangleVersion(tri_idx)) catch |err| {
+                for (tx.locked.items[0..acquired]) |locked_tri| {
+                    self.setTriangleLock(locked_tri, false);
+                }
+                tx.locked.clearRetainingCapacity();
+                tx.versions.clearRetainingCapacity();
+                return err;
+            };
+        }
+
+        if (!self.revalidateTriangleTransaction(tx)) {
+            for (tx.locked.items[0..acquired]) |locked_tri| {
+                self.setTriangleLock(locked_tri, false);
+            }
+            tx.locked.clearRetainingCapacity();
+            tx.versions.clearRetainingCapacity();
+            return false;
+        }
+
+        return true;
+    }
+
+    pub fn revalidateTriangleTransaction(self: *const Engine, tx: *const TriangleTransaction) bool {
+        if (!self.validateTriangleVersions(tx.versions.items)) return false;
+        for (tx.locked.items) |tri_idx| {
+            const slot = @as(usize, @intCast(tri_idx));
+            if (slot >= self.mesh.triangles.len) return false;
+            if (mesh.isDeadTriangle(self.mesh.triangles.get(slot))) return false;
+        }
+        return true;
+    }
+
+    pub fn endTriangleTransaction(self: *Engine, tx: *TriangleTransaction) void {
+        for (tx.locked.items) |tri_idx| {
+            if (tri_idx < 0) continue;
+            const slot = @as(usize, @intCast(tri_idx));
+            if (slot >= self.mesh.triangles.len) continue;
+            self.setTriangleLock(tri_idx, false);
+        }
+        tx.locked.clearRetainingCapacity();
+        tx.versions.clearRetainingCapacity();
     }
 
     pub fn setConstrainedTriangleEdge(self: *Engine, tri_idx: i32, side: usize, value: bool) !void {
@@ -1055,6 +1158,71 @@ test "triangle version snapshots detect metadata and topology mutation" {
 
     engine.mesh.markDead(0);
     try std.testing.expect(!engine.validateTriangleVersions(&snapshots));
+}
+
+test "triangle transactions lock in sorted unique order" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    _ = try initIllegalQuad(&engine);
+
+    var tx = TriangleTransaction{};
+    defer tx.deinit(std.testing.allocator);
+
+    const requested = [_]i32{ 1, 0, 1 };
+    try std.testing.expect(try engine.beginTriangleTransaction(std.testing.allocator, &requested, &tx));
+    defer engine.endTriangleTransaction(&tx);
+
+    try std.testing.expectEqual(@as(usize, 2), tx.locked.items.len);
+    try std.testing.expectEqual(@as(i32, 0), tx.locked.items[0]);
+    try std.testing.expectEqual(@as(i32, 1), tx.locked.items[1]);
+    try std.testing.expect(engine.isTriangleLocked(0));
+    try std.testing.expect(engine.isTriangleLocked(1));
+    try std.testing.expect(engine.revalidateTriangleTransaction(&tx));
+}
+
+test "triangle transactions fail cleanly on lock conflict" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    _ = try initIllegalQuad(&engine);
+
+    var tx1 = TriangleTransaction{};
+    defer tx1.deinit(std.testing.allocator);
+    var tx2 = TriangleTransaction{};
+    defer tx2.deinit(std.testing.allocator);
+
+    const requested = [_]i32{ 0, 1 };
+    try std.testing.expect(try engine.beginTriangleTransaction(std.testing.allocator, &requested, &tx1));
+    try std.testing.expect(!try engine.beginTriangleTransaction(std.testing.allocator, &requested, &tx2));
+    try std.testing.expectEqual(@as(usize, 0), tx2.locked.items.len);
+    try std.testing.expect(engine.isTriangleLocked(0));
+    try std.testing.expect(engine.isTriangleLocked(1));
+
+    engine.endTriangleTransaction(&tx1);
+    try std.testing.expect(!engine.isTriangleLocked(0));
+    try std.testing.expect(!engine.isTriangleLocked(1));
+}
+
+test "triangle transaction revalidation detects mutation" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    const quad = try initIllegalQuad(&engine);
+
+    var tx = TriangleTransaction{};
+    defer tx.deinit(std.testing.allocator);
+
+    const requested = [_]i32{ 0, 1 };
+    try std.testing.expect(try engine.beginTriangleTransaction(std.testing.allocator, &requested, &tx));
+
+    try std.testing.expect(engine.revalidateTriangleTransaction(&tx));
+    try std.testing.expect(try engine.setConstrainedEdgeByVertices(quad.a, quad.b, true));
+    try std.testing.expect(!engine.revalidateTriangleTransaction(&tx));
+
+    engine.endTriangleTransaction(&tx);
+    try std.testing.expect(!engine.isTriangleLocked(0));
+    try std.testing.expect(!engine.isTriangleLocked(1));
 }
 
 test "legalizer flips an illegal unconstrained quad edge" {
