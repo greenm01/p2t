@@ -2212,12 +2212,9 @@ pub const Engine = struct {
             if (use_transaction) {
                 self.mesh.setTriangleFresh(t_idx, new_tri);
             } else {
-                self.mesh.setTriangleFreshTrusted(t_idx, new_tri);
+                self.mesh.setDeadTriangleFreshTrusted(t_idx, new_tri);
             }
             self.updateTriangleCircumcircle(t_idx, new_tri);
-            if (@as(usize, @intCast(pt_idx)) < self.vertex_hint_tri.items.len) {
-                self.vertex_hint_tri.items[@as(usize, @intCast(pt_idx))] = t_idx;
-            }
             if (e.adj_tri != -1) {
                 if (use_transaction) {
                     try self.linkTrianglesByEdge(t_idx, e.adj_tri, e.v1, e.v2);
@@ -2232,6 +2229,9 @@ pub const Engine = struct {
         }
         if (use_transaction) {
             try self.linkNewTriangles(new_tri_indices.items);
+        }
+        if (@as(usize, @intCast(pt_idx)) < self.vertex_hint_tri.items.len) {
+            self.vertex_hint_tri.items[@as(usize, @intCast(pt_idx))] = self.last_valid_tri;
         }
         self.updateHintForPoint(pt, self.last_valid_tri);
         if (tx_started) {

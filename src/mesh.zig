@@ -184,6 +184,13 @@ pub const GlobalMesh = struct {
         self.edge_flags.items[slot] = 0;
     }
 
+    pub fn setDeadTriangleFreshTrusted(self: *GlobalMesh, triangle_index: i32, tri: Triangle) void {
+        const slot = @as(usize, @intCast(triangle_index));
+        self.triangles.set(slot, tri);
+        self.edge_flags.items[slot] = 0;
+        if (!isDeadTriangle(tri)) self.live_triangle_count += 1;
+    }
+
     pub fn setEdgeFlagsTrusted(self: *GlobalMesh, triangle_index: i32, flags: u8) void {
         const slot = @as(usize, @intCast(triangle_index));
         self.edge_flags.items[slot] = flags;
