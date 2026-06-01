@@ -4,8 +4,6 @@
 ## stores the hot mesh/front objects as direct pointers into reusable arena
 ## buffers. It is selected with -d:p2tArenaCdt.
 
-import std/math
-
 import ../types
 
 when defined(p2tUnsafeCdt):
@@ -13,7 +11,6 @@ when defined(p2tUnsafeCdt):
 
 const
   Epsilon = ArenaReal(1e-12)
-  Pi3Div4 = ArenaReal(3.0 * PI / 4.0)
   Alpha = ArenaReal(0.3)
   DelaunayEdge0 = 1'u32 shl 0
   ConstrainedEdge0 = 1'u32 shl 3
@@ -735,11 +732,11 @@ proc largeHoleDontFill(n: ptr ArenaNode): bool =
     return false
   true
 
-proc basinAngle(n: ptr ArenaNode): ArenaReal {.inline.} =
+proc shouldFillBasin(n: ptr ArenaNode): bool {.inline.} =
   let
     ax = n.point.x - n.next.next.point.x
     ay = n.point.y - n.next.next.point.y
-  arctan2(ay.float64, ax.float64).asArenaReal
+  ax >= 0 or ay < -ax
 
 proc isShallow(ws: var ArenaWorkspace, n: ptr ArenaNode): bool =
   let height =
@@ -811,7 +808,7 @@ proc fillAdvancingFront(ws: var ArenaWorkspace, n: ptr ArenaNode) =
     ws.fill(prevNode)
     prevNode = prevNode.prev
 
-  if not n.next.isNil and not n.next.next.isNil and n.basinAngle < Pi3Div4:
+  if not n.next.isNil and not n.next.next.isNil and n.shouldFillBasin:
     ws.fillBasin(n)
 
 proc isEdgeSideOfTriangle(
@@ -1080,46 +1077,50 @@ proc edgeEvent(
 ) =
   var t = t
   var pIdx = pIdx
-  if t.isEdgeSideOfTriangle(ep, eq):
-    return
+  while true:
+    if t.isEdgeSideOfTriangle(ep, eq):
+      return
 
-  let p1 = t.points[NextEdgeIndex[pIdx]]
-  let o1 = orient2d(eq, p1, ep)
-  if o1 == collinear:
-    if t.contains(eq, p1):
-      t.markConstrainedEdge(eq, p1)
-      ws.edgeEvent.constrainedEdge.q = p1
-      let nt = t.neighbors[pIdx]
-      ws.edgeEvent(ep, p1, nt, p1, nt.index(p1))
-    else:
-      raise
-        newException(ValueError, "collinear constrained edge points are not supported")
-    return
+    let p1 = t.points[NextEdgeIndex[pIdx]]
+    let o1 = orient2d(eq, p1, ep)
+    if o1 == collinear:
+      if t.contains(eq, p1):
+        t.markConstrainedEdge(eq, p1)
+        ws.edgeEvent.constrainedEdge.q = p1
+        let nt = t.neighbors[pIdx]
+        ws.edgeEvent(ep, p1, nt, p1, nt.index(p1))
+      else:
+        raise newException(
+          ValueError, "collinear constrained edge points are not supported"
+        )
+      return
 
-  let p2 = t.points[PrevEdgeIndex[pIdx]]
-  let o2 = orient2d(eq, p2, ep)
-  if o2 == collinear:
-    if t.contains(eq, p2):
-      t.markConstrainedEdge(eq, p2)
-      ws.edgeEvent.constrainedEdge.q = p2
-      let nt = t.neighbors[pIdx]
-      ws.edgeEvent(ep, p2, nt, p2, nt.index(p2))
-    else:
-      raise
-        newException(ValueError, "collinear constrained edge points are not supported")
-    return
+    let p2 = t.points[PrevEdgeIndex[pIdx]]
+    let o2 = orient2d(eq, p2, ep)
+    if o2 == collinear:
+      if t.contains(eq, p2):
+        t.markConstrainedEdge(eq, p2)
+        ws.edgeEvent.constrainedEdge.q = p2
+        let nt = t.neighbors[pIdx]
+        ws.edgeEvent(ep, p2, nt, p2, nt.index(p2))
+      else:
+        raise newException(
+          ValueError, "collinear constrained edge points are not supported"
+        )
+      return
 
-  if o1 == o2:
-    if o1 == cw:
-      t = t.neighbors[PrevEdgeIndex[pIdx]]
-    else:
-      t = t.neighbors[NextEdgeIndex[pIdx]]
+    if o1 != o2:
+      ws.flipEdgeEvent(ep, eq, t, p, pIdx)
+      return
+
+    t =
+      if o1 == cw:
+        t.neighbors[PrevEdgeIndex[pIdx]]
+      else:
+        t.neighbors[NextEdgeIndex[pIdx]]
     if t.isNil:
       raise newException(ValueError, "missing neighbor while walking constrained edge")
     pIdx = t.index(p)
-    ws.edgeEvent(ep, eq, t, p, pIdx)
-  else:
-    ws.flipEdgeEvent(ep, eq, t, p, pIdx)
 
 proc edgeEvent(ws: var ArenaWorkspace, edge: ptr ArenaEdge, n: ptr ArenaNode) =
   ws.edgeEvent.constrainedEdge = edge
