@@ -340,6 +340,26 @@ pub const Engine = struct {
         return false;
     }
 
+    pub fn appendTransactionTriangle(self: *const Engine, allocator: std.mem.Allocator, list: *std.ArrayListUnmanaged(i32), tri_idx: i32) !void {
+        if (tri_idx < 0) return;
+        const slot = @as(usize, @intCast(tri_idx));
+        if (slot >= self.mesh.triangles.len) return;
+        if (mesh.isDeadTriangle(self.mesh.triangles.get(slot))) return;
+        if (containsTriangle(list.items, tri_idx)) return;
+        try list.append(allocator, tri_idx);
+    }
+
+    pub fn collectCavityTransactionFootprint(self: *const Engine, allocator: std.mem.Allocator, cavity: []const i32, edges: []const Edge, footprint: *std.ArrayListUnmanaged(i32)) !void {
+        footprint.clearRetainingCapacity();
+
+        for (cavity) |tri_idx| {
+            try self.appendTransactionTriangle(allocator, footprint, tri_idx);
+        }
+        for (edges) |edge| {
+            try self.appendTransactionTriangle(allocator, footprint, edge.adj_tri);
+        }
+    }
+
     fn sortTriangleIds(ids: []i32) void {
         std.mem.sortUnstable(i32, ids, {}, std.sort.asc(i32));
     }
@@ -1000,6 +1020,15 @@ pub const Engine = struct {
             break;
         }
 
+        var footprint: std.ArrayListUnmanaged(i32) = .empty;
+        defer footprint.deinit(self.allocator);
+        try self.collectCavityTransactionFootprint(self.allocator, cavity.items, edges.items, &footprint);
+
+        var tx = TriangleTransaction{};
+        defer tx.deinit(self.allocator);
+        if (!try self.beginTriangleTransaction(self.allocator, footprint.items, &tx)) return error.TransactionConflict;
+        errdefer self.endTriangleTransaction(&tx);
+
         // Tombstone cavity
         for (cavity.items) |t_idx| {
             self.mesh.markDead(t_idx);
@@ -1044,6 +1073,7 @@ pub const Engine = struct {
             }
         }
         try self.linkNewTriangles(new_tri_indices.items);
+        self.endTriangleTransaction(&tx);
         return pt_idx;
     }
 };
@@ -1120,6 +1150,30 @@ fn initIllegalQuad(engine: *Engine) !struct { a: i32, b: i32, c: i32, d: i32 } {
         .adj2 = -1,
     });
     return .{ .a = 3, .b = 4, .c = 5, .d = 6 };
+}
+
+test "cavity transaction footprint includes cavity and live boundary neighbors" {
+    var engine = Engine.init(std.testing.allocator);
+    defer engine.deinit();
+
+    _ = try initIllegalQuad(&engine);
+
+    var footprint: std.ArrayListUnmanaged(i32) = .empty;
+    defer footprint.deinit(std.testing.allocator);
+
+    const cavity = [_]i32{0};
+    const edges = [_]Edge{
+        .{ .adj_tri = 1, .v1 = 3, .v2 = 4, .old_tri = 0 },
+        .{ .adj_tri = -1, .v1 = 4, .v2 = 5, .old_tri = 0 },
+        .{ .adj_tri = 1, .v1 = 5, .v2 = 3, .old_tri = 0 },
+        .{ .adj_tri = 99, .v1 = 5, .v2 = 6, .old_tri = 0 },
+    };
+
+    try engine.collectCavityTransactionFootprint(std.testing.allocator, &cavity, &edges, &footprint);
+
+    try std.testing.expectEqual(@as(usize, 2), footprint.items.len);
+    try std.testing.expectEqual(@as(i32, 0), footprint.items[0]);
+    try std.testing.expectEqual(@as(i32, 1), footprint.items[1]);
 }
 
 test "edge flags are reciprocal sidecar metadata" {

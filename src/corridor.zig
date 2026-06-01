@@ -46,6 +46,17 @@ pub const Corridor = struct {
         return false;
     }
 
+    fn collectTransactionFootprint(self: *const Corridor, allocator: std.mem.Allocator, engine: *const triangulate.Engine, outer_edges: []const BoundaryEdge, footprint: *std.ArrayListUnmanaged(i32)) !void {
+        footprint.clearRetainingCapacity();
+
+        for (self.pierced_triangles.items) |tri_idx| {
+            try engine.appendTransactionTriangle(allocator, footprint, tri_idx);
+        }
+        for (outer_edges) |edge| {
+            try engine.appendTransactionTriangle(allocator, footprint, edge.adj_tri);
+        }
+    }
+
     fn triangleHasVertex(tri: mesh.Triangle, vertex_idx: i32) bool {
         return tri.v0 == vertex_idx or tri.v1 == vertex_idx or tri.v2 == vertex_idx;
     }
@@ -472,6 +483,15 @@ pub const Corridor = struct {
             return error.InvalidCorridorBoundary;
         }
 
+        var footprint: std.ArrayListUnmanaged(i32) = .empty;
+        defer footprint.deinit(allocator);
+        try self.collectTransactionFootprint(allocator, engine, outer_edges.items, &footprint);
+
+        var tx = triangulate.TriangleTransaction{};
+        defer tx.deinit(allocator);
+        if (!try engine.beginTriangleTransaction(allocator, footprint.items, &tx)) return error.TransactionConflict;
+        errdefer engine.endTriangleTransaction(&tx);
+
         // 2. Detach live outer neighbors from the soon-to-be-cleared corridor.
         for (self.pierced_triangles.items) |t_idx| {
             const tri = engine.mesh.triangles.get(@as(usize, @intCast(t_idx)));
@@ -523,7 +543,10 @@ pub const Corridor = struct {
         }
 
         if (!try engine.setConstrainedEdgeByVertices(start_pt_idx, end_pt_idx, true)) return error.MissingConstraintEdge;
+        // This is still single-thread scaffolding: legalization can currently
+        // expand past the original corridor footprint as it flips edges.
         try engine.legalizeFromTriangles(allocator, emitted.items);
+        engine.endTriangleTransaction(&tx);
     }
 };
 
