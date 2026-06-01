@@ -17,7 +17,7 @@ Sweep-line algorithms are inherently fragile when dealing with floating-point pr
 **Cleave (Hybrid Bowyer-Watson):**
 Cleave is built purely on exact geometric predicates (such as robust `orient2d` and `incircle` checks). The Bowyer-Watson insertion method guarantees a mathematically perfect Delaunay mesh at every step. Because point insertion only evaluates and mutates its immediate local cavity, the algorithm is virtually immune to the cascading, systemic failures that plague sweep-line approaches.
 
-## 2. The Concurrency Ceiling
+## 3. The Concurrency Ceiling
 
 **Poly2tri (Sequential Constraint):**
 A sweep-line algorithm is unavoidably sequential. The algorithm cannot safely process point $N$ until it knows the exact state of the advancing front after processing point $N-1$. This sequential dependency makes it practically impossible to efficiently multi-thread a single sweep-line instance across a single mesh.
@@ -28,7 +28,7 @@ The Cleave architecture is designed specifically to shatter this concurrency cei
 - **Phase 2 (Concurrent Insertion):** Because a Bowyer-Watson insertion only affects a highly localized neighborhood, multiple threads can safely execute insertions simultaneously in different spatial chunks using isolated, fine-grained atomic spin-locks.
 - **Phase 3 (Parallel Corridor Clearing):** Enforcing constraint edges is also fully parallelizable. Threads independently grab line segments, march across the mesh, lock the bounding triangles, and execute isolated retriangulations.
 
-## 3. Single-Threaded Performance Analysis: The Tradeoff
+## 4. Single-Threaded Performance Analysis: The Tradeoff
 
 It is highly likely that **Cleave will never beat a highly-optimized Poly2tri implementation on a single, scalar thread.**
 
@@ -41,7 +41,7 @@ Cleave fundamentally performs a heavier "tax" of work per point inserted:
 
 Our pure-Zig benchmark confirms this reality. Cleave is not designed to win a single-threaded scalar race. It explicitly trades this raw single-threaded speed for absolute mathematical robustness and the ability to scale.
 
-## 4. The Roadmap to Beating Poly2tri
+## 5. The Roadmap to Beating Poly2tri
 
 To realize the high-throughput performance envisioned in the Cleave blueprint and surpass Poly2tri, the implementation must be advanced to utilize hardware-level concurrency and vectorization:
 
