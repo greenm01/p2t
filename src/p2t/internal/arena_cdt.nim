@@ -254,6 +254,7 @@ proc edgeIndexPlain(t: ptr ArenaTriangle, p1, p2: ptr ArenaPoint): int {.inline.
 proc markNeighbor(
     t: ptr ArenaTriangle, p1, p2: ptr ArenaPoint, other: ptr ArenaTriangle
 ) {.inline.} =
+  statIncGlobal(markNeighborCalls)
   if (p1 == t.points[2] and p2 == t.points[1]) or
       (p1 == t.points[1] and p2 == t.points[2]):
     t.neighbors[0] = other
@@ -272,7 +273,7 @@ proc markNeighbor(
 
 proc swapNeighbor(
     t: ptr ArenaTriangle, oldNeighbor, newNeighbor: ptr ArenaTriangle
-) {.inline.} =
+) {.inline, used.} =
   for i in 0 .. 2:
     statIncGlobal(swapNeighborScans)
     if t.neighbors[i] == oldNeighbor:
@@ -294,7 +295,9 @@ proc neighborIndexPlain(
 proc clearDelaunayEdges(t: ptr ArenaTriangle) {.inline.} =
   t.flags = t.flags and not DelaunayEdgeMask
 
-proc neighborCW(t: ptr ArenaTriangle, p: ptr ArenaPoint): ptr ArenaTriangle {.inline.} =
+proc neighborCW(
+    t: ptr ArenaTriangle, p: ptr ArenaPoint
+): ptr ArenaTriangle {.inline, used.} =
   if p == t.points[0]:
     t.neighbors[1]
   elif p == t.points[1]:
@@ -312,7 +315,9 @@ proc neighborCCW(
   else:
     t.neighbors[1]
 
-proc getConstrainedEdgeCCW(t: ptr ArenaTriangle, p: ptr ArenaPoint): bool {.inline.} =
+proc getConstrainedEdgeCCW(
+    t: ptr ArenaTriangle, p: ptr ArenaPoint
+): bool {.inline, used.} =
   if p == t.points[0]:
     t.hasFlag(constrainedFlag(2))
   elif p == t.points[1]:
@@ -344,7 +349,9 @@ proc setConstrainedEdgeCW(t: ptr ArenaTriangle, p: ptr ArenaPoint, ce: bool) =
   else:
     t.setFlag(constrainedFlag(0), ce)
 
-proc getDelaunayEdgeCCW(t: ptr ArenaTriangle, p: ptr ArenaPoint): bool {.inline.} =
+proc getDelaunayEdgeCCW(
+    t: ptr ArenaTriangle, p: ptr ArenaPoint
+): bool {.inline, used.} =
   if p == t.points[0]:
     t.hasFlag(delaunayFlag(2))
   elif p == t.points[1]:
@@ -352,7 +359,7 @@ proc getDelaunayEdgeCCW(t: ptr ArenaTriangle, p: ptr ArenaPoint): bool {.inline.
   else:
     t.hasFlag(delaunayFlag(1))
 
-proc getDelaunayEdgeCW(t: ptr ArenaTriangle, p: ptr ArenaPoint): bool {.inline.} =
+proc getDelaunayEdgeCW(t: ptr ArenaTriangle, p: ptr ArenaPoint): bool {.inline, used.} =
   if p == t.points[0]:
     t.hasFlag(delaunayFlag(1))
   elif p == t.points[1]:
@@ -706,6 +713,7 @@ proc mapTriangleToNodes(ws: var ArenaWorkspace, t: ptr ArenaTriangle) {.inline.}
     if t.neighbors[i].isNil:
       let n = t.points[PrevEdgeIndex[i]].node
       if not n.isNil:
+        ws.statInc(mapTriangleNodeUpdates)
         n.triangle = t
 
 proc validRawTriangle(t: ptr ArenaTriangle): bool {.inline.} =
@@ -879,60 +887,66 @@ when defined(p2tSlotCdt):
     t.setConstrainedEdgeCCW(op, ce3)
     ot.setConstrainedEdgeCW(op, ce4)
 
-proc rotateTrianglePair(
-    ws: var ArenaWorkspace,
-    t: ptr ArenaTriangle,
-    p: ptr ArenaPoint,
-    ot: ptr ArenaTriangle,
-    op: ptr ArenaPoint,
-) {.inline, used.} =
-  ws.statInc(rotations)
-  let
-    pIdx = t.index(p)
-    opIdx = ot.index(op)
-    rotateAmount = NextEdgeIndex[pIdx]
-    otherRotateAmount = NextEdgeIndex[opIdx]
-    n1 = t.neighborCCW(p)
-    n2 = t.neighborCW(p)
-    n3 = ot.neighborCCW(op)
-    n4 = ot.neighborCW(op)
-    ce1 = t.getConstrainedEdgeCCW(p)
-    ce2 = t.getConstrainedEdgeCW(p)
-    ce3 = ot.getConstrainedEdgeCCW(op)
-    ce4 = ot.getConstrainedEdgeCW(op)
-    de1 = t.getDelaunayEdgeCCW(p)
-    de2 = t.getDelaunayEdgeCW(p)
-    de3 = ot.getDelaunayEdgeCCW(op)
-    de4 = ot.getDelaunayEdgeCW(op)
+when not defined(p2tSlotCdt):
+  proc rotateTrianglePairIndexed(
+      ws: var ArenaWorkspace,
+      t: ptr ArenaTriangle,
+      p: ptr ArenaPoint,
+      pIdx: int,
+      ot: ptr ArenaTriangle,
+      op: ptr ArenaPoint,
+      opIdx: int,
+  ) {.inline.} =
+    ws.statInc(rotations)
+    let
+      rotateAmount = NextEdgeIndex[pIdx]
+      otherRotateAmount = NextEdgeIndex[opIdx]
+      tPrev = PrevEdgeIndex[pIdx]
+      tNext = NextEdgeIndex[pIdx]
+      otPrev = PrevEdgeIndex[opIdx]
+      otNext = NextEdgeIndex[opIdx]
+      n1 = t.neighbors[tPrev]
+      n2 = t.neighbors[tNext]
+      n3 = ot.neighbors[otPrev]
+      n4 = ot.neighbors[otNext]
+      ce1 = t.hasFlag(constrainedFlag(tPrev))
+      ce2 = t.hasFlag(constrainedFlag(tNext))
+      ce3 = ot.hasFlag(constrainedFlag(otPrev))
+      ce4 = ot.hasFlag(constrainedFlag(otNext))
+      de1 = t.hasFlag(delaunayFlag(tPrev))
+      de2 = t.hasFlag(delaunayFlag(tNext))
+      de3 = ot.hasFlag(delaunayFlag(otPrev))
+      de4 = ot.hasFlag(delaunayFlag(otNext))
 
-  t.neighbors[rotateAmount] = n3
-  t.neighbors[NextEdgeIndex[rotateAmount]] = n2
-  t.neighbors[PrevEdgeIndex[rotateAmount]] = ot
-  ot.neighbors[otherRotateAmount] = n1
-  ot.neighbors[NextEdgeIndex[otherRotateAmount]] = n4
-  ot.neighbors[PrevEdgeIndex[otherRotateAmount]] = t
+    t.neighbors[rotateAmount] = n3
+    t.neighbors[NextEdgeIndex[rotateAmount]] = n2
+    t.neighbors[PrevEdgeIndex[rotateAmount]] = ot
+    ot.neighbors[otherRotateAmount] = n1
+    ot.neighbors[NextEdgeIndex[otherRotateAmount]] = n4
+    ot.neighbors[PrevEdgeIndex[otherRotateAmount]] = t
 
-  if not n1.isNil:
-    n1.swapNeighbor(t, ot)
-  if not n3.isNil:
-    n3.swapNeighbor(ot, t)
+    if not n1.isNil:
+      n1.swapNeighbor(t, ot)
+    if not n3.isNil:
+      n3.swapNeighbor(ot, t)
 
-  t.legalize(p, op)
-  ot.legalize(op, p)
+    t.legalize(p, op)
+    ot.legalize(op, p)
 
-  ot.setDelaunayEdgeCCW(p, de1)
-  t.setDelaunayEdgeCW(p, de2)
-  t.setDelaunayEdgeCCW(op, de3)
-  ot.setDelaunayEdgeCW(op, de4)
+    ot.setDelaunayEdgeCCW(p, de1)
+    t.setDelaunayEdgeCW(p, de2)
+    t.setDelaunayEdgeCCW(op, de3)
+    ot.setDelaunayEdgeCW(op, de4)
 
-  ot.setConstrainedEdgeCCW(p, ce1)
-  t.setConstrainedEdgeCW(p, ce2)
-  t.setConstrainedEdgeCCW(op, ce3)
-  ot.setConstrainedEdgeCW(op, ce4)
+    ot.setConstrainedEdgeCCW(p, ce1)
+    t.setConstrainedEdgeCW(p, ce2)
+    t.setConstrainedEdgeCCW(op, ce3)
+    ot.setConstrainedEdgeCW(op, ce4)
 
 proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
   ws.statInc(legalizeCalls)
   for i in 0 .. 2:
+    ws.statInc(legalizeEdges)
     if t.hasFlag(delaunayFlag(i)):
       continue
 
@@ -951,13 +965,11 @@ proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
         continue
 
       if incircle(p, pccw, pcw, op):
+        ws.statInc(incircleSuccesses)
         t.setFlag(delaunayFlag(i), true)
         ot.setFlag(delaunayFlag(oi), true)
 
-        when defined(p2tSlotCdt):
-          ws.rotateTrianglePairIndexed(t, p, i, ot, op, oi)
-        else:
-          ws.rotateTrianglePair(t, p, ot, op)
+        ws.rotateTrianglePairIndexed(t, p, i, ot, op, oi)
 
         var notLegalized = not ws.legalize(t)
         if notLegalized:
@@ -1370,10 +1382,7 @@ proc flipEdgeEvent(
     opIdx = opposite.index
 
   if inScanArea(p, pccw, pcw, op):
-    when defined(p2tSlotCdt):
-      ws.rotateTrianglePairIndexed(t, p, pIdx, ot, op, opIdx)
-    else:
-      ws.rotateTrianglePair(t, p, ot, op)
+    ws.rotateTrianglePairIndexed(t, p, pIdx, ot, op, opIdx)
     ws.mapTriangleToNodes(t)
     ws.mapTriangleToNodes(ot)
 
