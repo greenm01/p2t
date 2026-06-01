@@ -2218,10 +2218,6 @@ pub const Engine = struct {
             if (@as(usize, @intCast(pt_idx)) < self.vertex_hint_tri.items.len) {
                 self.vertex_hint_tri.items[@as(usize, @intCast(pt_idx))] = t_idx;
             }
-            self.updateHintForPoint(.{ .x = emit_xs[@as(usize, @intCast(a))], .y = emit_ys[@as(usize, @intCast(a))] }, t_idx);
-            self.updateHintForPoint(.{ .x = emit_xs[@as(usize, @intCast(b))], .y = emit_ys[@as(usize, @intCast(b))] }, t_idx);
-            self.updateHintForPoint(pt, t_idx);
-
             if (e.adj_tri != -1) {
                 if (use_transaction) {
                     try self.linkTrianglesByEdge(t_idx, e.adj_tri, e.v1, e.v2);
@@ -2237,6 +2233,7 @@ pub const Engine = struct {
         if (use_transaction) {
             try self.linkNewTriangles(new_tri_indices.items);
         }
+        self.updateHintForPoint(pt, self.last_valid_tri);
         if (tx_started) {
             self.endTriangleTransaction(&tx);
             tx_started = false;

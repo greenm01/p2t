@@ -11,11 +11,16 @@ The old live-triangle count made Cleave look like it was producing about twice t
 
 ## Latest Single-Core Gap
 
-Fast-predicate BRIO Cleave remains roughly `4x` slower than fast-poly2tri on the large Nazca fixtures.
+Fast-predicate BRIO Cleave remains roughly `2.2x` slower than fast-poly2tri on the large Nazca fixtures after reducing coarse hint-grid writes in trusted insertion.
 
-- Cleave fast BRIO: about `340-353 us/run`.
+- Cleave fast BRIO: about `173-191 us/run`.
 - fast-poly2tri float/double: about `76-88 us/run`.
 - Interior extraction costs only about `10-14 us/run`, so optimizing extraction alone will not close the gap.
+
+The latest single-core insertion cleanup updates the spatial hint grid once per inserted point rather than once for every emitted triangle/edge endpoint. This keeps walk fallback counts at zero on the large fixtures while cutting insertion time substantially:
+
+- `nazca-monkey/brio-morton`: about `191 us/run`, insertion about `146 us/run`.
+- `nazca-heron/brio-morton`: about `173 us/run`, insertion about `128 us/run`.
 
 ## Latest Cavity-Relevance Diagnostic
 
