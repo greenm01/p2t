@@ -2165,15 +2165,17 @@ pub const Engine = struct {
         try self.mesh.vertices.append(self.allocator, pt);
 
         // Tombstone cavity slots after all allocations that can fail have succeeded.
-        for (cavity.items, 0..) |t_idx, cavity_i| {
-            if (use_transaction) {
+        if (use_transaction) {
+            for (cavity.items) |t_idx| {
                 self.mesh.markDead(t_idx);
-            } else {
+            }
+        } else {
+            for (cavity.items[0..leftover_cavity_count]) |t_idx| {
                 self.mesh.markDeadTrusted(t_idx);
             }
-            if (cavity_i < leftover_cavity_count) {
-                try arena.tombstone(self.allocator, t_idx);
-            }
+        }
+        for (cavity.items[0..leftover_cavity_count]) |t_idx| {
+            try arena.tombstone(self.allocator, t_idx);
         }
         for (0..reused_freelist_count) |_| {
             _ = arena.getFreeSlot().?;
@@ -2211,6 +2213,8 @@ pub const Engine = struct {
             };
             if (use_transaction) {
                 self.mesh.setTriangleFresh(t_idx, new_tri);
+            } else if (edge_i < reused_cavity_count) {
+                self.mesh.setLiveTriangleFreshTrusted(t_idx, new_tri);
             } else {
                 self.mesh.setDeadTriangleFreshTrusted(t_idx, new_tri);
             }

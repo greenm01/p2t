@@ -11,16 +11,16 @@ The old live-triangle count made Cleave look like it was producing about twice t
 
 ## Latest Single-Core Gap
 
-Fast-predicate BRIO Cleave remains roughly `2.0-2.2x` slower than fast-poly2tri on the large Nazca fixtures after reducing trusted insertion writes.
+Fast-predicate BRIO Cleave remains roughly `1.9-2.4x` slower than fast-poly2tri on the large Nazca fixtures after reducing trusted insertion writes.
 
-- Cleave fast BRIO: about `170-189 us/run`.
+- Cleave fast BRIO: about `166-179 us/run` on the current macOS benchmark run.
 - fast-poly2tri float/double: about `76-88 us/run`.
 - Interior extraction costs only about `10-14 us/run`, so optimizing extraction alone will not close the gap.
 
-The latest single-core insertion cleanups update the spatial hint grid once per inserted point, write each inserted-point vertex hint once, and use a trusted dead-slot triangle write after cavity slots are tombstoned. This keeps walk fallback counts at zero on the large fixtures while cutting insertion time:
+The latest single-core insertion cleanups update the spatial hint grid once per inserted point, write each inserted-point vertex hint once, use a trusted dead-slot triangle write after cavity slots are tombstoned, and avoid tombstone-then-refill churn for cavity slots immediately reused as live triangles. This keeps walk fallback counts at zero on the large fixtures while cutting insertion time:
 
-- `nazca-monkey/brio-morton`: about `189 us/run`, insertion about `145 us/run`.
-- `nazca-heron/brio-morton`: about `170 us/run`, insertion about `125 us/run`.
+- `nazca-monkey/brio-morton`: about `179 us/run`, insertion about `135 us/run`.
+- `nazca-heron/brio-morton`: about `166 us/run`, insertion about `122 us/run`.
 
 The current pass preserves Linux/macOS portability: tests pass on macOS, and `zig build -Dtarget=x86_64-linux` still cross-compiles successfully.
 

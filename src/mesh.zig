@@ -184,6 +184,12 @@ pub const GlobalMesh = struct {
         self.edge_flags.items[slot] = 0;
     }
 
+    pub fn setLiveTriangleFreshTrusted(self: *GlobalMesh, triangle_index: i32, tri: Triangle) void {
+        const slot = @as(usize, @intCast(triangle_index));
+        self.triangles.set(slot, tri);
+        self.edge_flags.items[slot] = 0;
+    }
+
     pub fn setDeadTriangleFreshTrusted(self: *GlobalMesh, triangle_index: i32, tri: Triangle) void {
         const slot = @as(usize, @intCast(triangle_index));
         self.triangles.set(slot, tri);
@@ -274,6 +280,8 @@ test "GlobalMesh and ThreadArena" {
     const trusted_version = mesh.triangle_versions.items[0].load(.acquire);
     mesh.setTriangleFreshTrusted(0, .{ .v0 = 0, .v1 = 0, .v2 = 0, .adj0 = -1, .adj1 = -1, .adj2 = -1 });
     try std.testing.expectEqual(trusted_version, mesh.triangle_versions.items[0].load(.acquire));
+    mesh.setLiveTriangleFreshTrusted(0, .{ .v0 = 0, .v1 = 0, .v2 = 0, .adj0 = -1, .adj1 = -1, .adj2 = -1 });
+    try std.testing.expectEqual(@as(usize, 1), mesh.live_triangle_count);
     mesh.markDeadTrusted(0);
     try std.testing.expectEqual(@as(usize, 0), mesh.live_triangle_count);
 
