@@ -4,10 +4,10 @@ const mesh = @import("mesh.zig");
 fn expandBits(v: u32) u64 {
     var x: u64 = v;
     x = (x | (x << 16)) & 0x0000FFFF0000FFFF;
-    x = (x | (x <<  8)) & 0x00FF00FF00FF00FF;
-    x = (x | (x <<  4)) & 0x0F0F0F0F0F0F0F0F;
-    x = (x | (x <<  2)) & 0x3333333333333333;
-    x = (x | (x <<  1)) & 0x5555555555555555;
+    x = (x | (x << 8)) & 0x00FF00FF00FF00FF;
+    x = (x | (x << 4)) & 0x0F0F0F0F0F0F0F0F;
+    x = (x | (x << 2)) & 0x3333333333333333;
+    x = (x | (x << 1)) & 0x5555555555555555;
     return x;
 }
 
@@ -82,11 +82,60 @@ pub fn sortVerticesByMorton(allocator: std.mem.Allocator, vertices: []const mesh
     return indices;
 }
 
+fn hash64(value: u64) u64 {
+    var x = value +% 0x9E3779B97F4A7C15;
+    x = (x ^ (x >> 30)) *% 0xBF58476D1CE4E5B9;
+    x = (x ^ (x >> 27)) *% 0x94D049BB133111EB;
+    return x ^ (x >> 31);
+}
+
+fn brioRound(hash: u64) u8 {
+    const nonzero = if (hash == 0) @as(u64, 1) else hash;
+    const round = @ctz(nonzero);
+    return @intCast(@min(round, 63));
+}
+
+pub fn sortVerticesByBrioMorton(allocator: std.mem.Allocator, vertices: []const mesh.Vertex, seed: u64) ![]usize {
+    const codes = try computeMortonCodes(allocator, vertices);
+    defer allocator.free(codes);
+
+    const Item = struct {
+        index: usize,
+        code: u64,
+        round: u8,
+    };
+
+    const items = try allocator.alloc(Item, vertices.len);
+    defer allocator.free(items);
+    for (items, 0..) |*item, i| {
+        item.* = .{
+            .index = i,
+            .code = codes[i],
+            .round = brioRound(hash64(@as(u64, @intCast(i)) ^ seed)),
+        };
+    }
+
+    const Context = struct {
+        pub fn lessThan(_: @This(), a: Item, b: Item) bool {
+            if (a.round != b.round) return a.round > b.round;
+            if (a.code != b.code) return a.code < b.code;
+            return a.index < b.index;
+        }
+    };
+    std.mem.sortUnstable(Item, items, Context{}, Context.lessThan);
+
+    const indices = try allocator.alloc(usize, vertices.len);
+    for (items, 0..) |item, i| {
+        indices[i] = item.index;
+    }
+    return indices;
+}
+
 test "morton sorting" {
     const vertices = [_]mesh.Vertex{
         .{ .x = 100.0, .y = 100.0 }, // highest morton code
-        .{ .x = 0.0, .y = 0.0 },     // lowest morton code
-        .{ .x = 50.0, .y = 50.0 },   // middle
+        .{ .x = 0.0, .y = 0.0 }, // lowest morton code
+        .{ .x = 50.0, .y = 50.0 }, // middle
     };
 
     const allocator = std.testing.allocator;

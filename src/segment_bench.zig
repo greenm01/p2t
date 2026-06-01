@@ -17,6 +17,11 @@ const Case = struct {
     iterations: usize,
 };
 
+const Order = struct {
+    name: []const u8,
+    indices: []const usize,
+};
+
 const RoundTiming = struct {
     total_us: u64 = 0,
     insertion_us: u64 = 0,
@@ -141,6 +146,13 @@ fn addStats(a: triangulate.EngineStats, b: triangulate.EngineStats) triangulate.
     out.find_live_edge_scan_tris += b.find_live_edge_scan_tris;
     out.find_live_edge_fast_calls += b.find_live_edge_fast_calls;
     out.find_live_edge_fast_fallbacks += b.find_live_edge_fast_fallbacks;
+    out.walk_hint_hits += b.walk_hint_hits;
+    out.walk_hint_misses += b.walk_hint_misses;
+    out.walk_max_steps = @max(out.walk_max_steps, b.walk_max_steps);
+    out.cavity_max_triangles = @max(out.cavity_max_triangles, b.cavity_max_triangles);
+    out.cavity_max_edges = @max(out.cavity_max_edges, b.cavity_max_edges);
+    out.circumcircle_filter_rejects += b.circumcircle_filter_rejects;
+    out.circumcircle_filter_fallbacks += b.circumcircle_filter_fallbacks;
     return out;
 }
 
@@ -148,13 +160,14 @@ fn perRun(value: u64, iterations: usize) f64 {
     return @as(f64, @floatFromInt(value)) / @as(f64, @floatFromInt(iterations));
 }
 
-fn printCase(case: Case, timing: RoundTiming) void {
+fn printCase(case: Case, order: Order, timing: RoundTiming) void {
     const iterations_f64 = @as(f64, @floatFromInt(case.iterations));
     const traces_f64 = @max(@as(f64, @floatFromInt(timing.engine_stats.corridor_traces)), 1.0);
     std.debug.print(
-        "{s}: {d} vertices, {d} runs, {d} triangles/run, total {d} us ({d:>.3} us/run)\n",
+        "{s}/{s}: {d} vertices, {d} runs, {d} triangles/run, total {d} us ({d:>.3} us/run)\n",
         .{
             case.name,
+            order.name,
             case.width * case.height,
             case.iterations,
             timing.triangles / case.iterations,
@@ -178,6 +191,20 @@ fn printCase(case: Case, timing: RoundTiming) void {
         );
     }
     if (timing.engine_stats.any()) {
+        std.debug.print(
+            "  insertion detail: walks/run {d:>.1}, steps/run {d:>.1}, hint hits/misses {d:>.1}/{d:>.1}, max walk {d}, max cavity {d} tris/{d} edges, circle reject/fallback {d:>.1}/{d:>.1}\n",
+            .{
+                @as(f64, @floatFromInt(timing.engine_stats.walk_calls)) / iterations_f64,
+                @as(f64, @floatFromInt(timing.engine_stats.walk_steps)) / iterations_f64,
+                @as(f64, @floatFromInt(timing.engine_stats.walk_hint_hits)) / iterations_f64,
+                @as(f64, @floatFromInt(timing.engine_stats.walk_hint_misses)) / iterations_f64,
+                timing.engine_stats.walk_max_steps,
+                timing.engine_stats.cavity_max_triangles,
+                timing.engine_stats.cavity_max_edges,
+                @as(f64, @floatFromInt(timing.engine_stats.circumcircle_filter_rejects)) / iterations_f64,
+                @as(f64, @floatFromInt(timing.engine_stats.circumcircle_filter_fallbacks)) / iterations_f64,
+            },
+        );
         std.debug.print(
             "  corridor: traces/run {d:>.1}, traced tris/trace {d:>.2}, augmented/run {d:>.1}, augmented tris/aug {d:>.2}, max tris {d}\n",
             .{
@@ -217,10 +244,14 @@ pub fn main(_: std.process.Init) !void {
         const vertices = try makeGrid(allocator, case);
         defer allocator.free(vertices);
 
-        const sorted_indices = try spatial.sortVerticesByMorton(allocator, vertices);
-        defer allocator.free(sorted_indices);
+        const morton_indices = try spatial.sortVerticesByMorton(allocator, vertices);
+        defer allocator.free(morton_indices);
+        const brio_indices = try spatial.sortVerticesByBrioMorton(allocator, vertices, 0x5E67C1EA);
+        defer allocator.free(brio_indices);
 
-        const timing = try runRound(allocator, case, vertices, sorted_indices);
-        printCase(case, timing);
+        const morton_timing = try runRound(allocator, case, vertices, morton_indices);
+        printCase(case, .{ .name = "morton", .indices = morton_indices }, morton_timing);
+        const brio_timing = try runRound(allocator, case, vertices, brio_indices);
+        printCase(case, .{ .name = "brio-morton", .indices = brio_indices }, brio_timing);
     }
 }

@@ -80,6 +80,13 @@ pub const EngineStats = struct {
     find_live_edge_scan_tris: u64 = 0,
     find_live_edge_fast_calls: u64 = 0,
     find_live_edge_fast_fallbacks: u64 = 0,
+    walk_hint_hits: u64 = 0,
+    walk_hint_misses: u64 = 0,
+    walk_max_steps: u64 = 0,
+    cavity_max_triangles: u64 = 0,
+    cavity_max_edges: u64 = 0,
+    circumcircle_filter_rejects: u64 = 0,
+    circumcircle_filter_fallbacks: u64 = 0,
 
     pub fn any(self: EngineStats) bool {
         return self.walk_calls != 0 or self.inserted_points != 0 or self.corridor_traces != 0 or self.find_live_edge_calls != 0;
@@ -206,6 +213,12 @@ pub const Engine = struct {
     cavity_triangle_marks: std.ArrayListUnmanaged(u32),
     cavity_triangle_generation: u32,
     vertex_hint_tri: std.ArrayListUnmanaged(i32),
+    hint_grid: std.ArrayListUnmanaged(i32),
+    hint_grid_side: usize,
+    hint_min_x: f64,
+    hint_min_y: f64,
+    hint_scale_x: f64,
+    hint_scale_y: f64,
     stats: EngineStats,
 
     pub fn init(allocator: std.mem.Allocator) Engine {
@@ -227,11 +240,18 @@ pub const Engine = struct {
             .cavity_triangle_marks = .empty,
             .cavity_triangle_generation = 1,
             .vertex_hint_tri = .empty,
+            .hint_grid = .empty,
+            .hint_grid_side = 0,
+            .hint_min_x = 0.0,
+            .hint_min_y = 0.0,
+            .hint_scale_x = 0.0,
+            .hint_scale_y = 0.0,
             .stats = .{},
         };
     }
 
     pub fn deinit(self: *Engine) void {
+        self.hint_grid.deinit(self.allocator);
         self.vertex_hint_tri.deinit(self.allocator);
         self.cavity_triangle_marks.deinit(self.allocator);
         self.trusted_spoke_sides.deinit(self.allocator);
@@ -252,6 +272,7 @@ pub const Engine = struct {
         self.trusted_edges.clearRetainingCapacity();
         self.trusted_new_tri_indices.clearRetainingCapacity();
         self.last_valid_tri = 0;
+        if (build_options.spatial_hints and self.hint_grid.items.len != 0) @memset(self.hint_grid.items, -1);
     }
 
     pub inline fn statInc(self: *Engine, comptime field: []const u8) void {
@@ -288,6 +309,118 @@ pub const Engine = struct {
     pub fn reserveForPointCount(self: *Engine, point_count: usize) !void {
         try self.mesh.reserve(self.allocator, point_count + 3, point_count * 3 + 8);
         try self.ensureVertexMetadataCapacity(point_count + 3);
+        try self.trusted_cavity.ensureTotalCapacity(self.allocator, 32);
+        try self.trusted_edges.ensureTotalCapacity(self.allocator, 48);
+        try self.trusted_new_tri_indices.ensureTotalCapacity(self.allocator, 48);
+        try self.cavity_edge_counter.reset(self.allocator, 48);
+        if (build_options.spatial_hints) try self.ensureHintGridCapacity(point_count);
+    }
+
+    fn hintGridSideForPointCount(point_count: usize) usize {
+        var side: usize = 8;
+        const target = @max(point_count / 4, 64);
+        while (side * side < target and side < 64) : (side *= 2) {}
+        return side;
+    }
+
+    fn ensureHintGridCapacity(self: *Engine, point_count: usize) !void {
+        const side = hintGridSideForPointCount(point_count);
+        const count = side * side;
+        if (self.hint_grid.items.len == count) {
+            self.hint_grid_side = side;
+            return;
+        }
+
+        self.hint_grid.clearRetainingCapacity();
+        try self.hint_grid.ensureTotalCapacity(self.allocator, count);
+        while (self.hint_grid.items.len < count) {
+            try self.hint_grid.append(self.allocator, -1);
+        }
+        self.hint_grid_side = side;
+    }
+
+    fn resetHintGridForBounds(self: *Engine, bounds: spatial.BoundingBox, point_count: usize) !void {
+        if (!build_options.spatial_hints) return;
+        try self.ensureHintGridCapacity(point_count);
+        @memset(self.hint_grid.items, -1);
+        self.hint_min_x = bounds.min_x;
+        self.hint_min_y = bounds.min_y;
+        const width = bounds.max_x - bounds.min_x;
+        const height = bounds.max_y - bounds.min_y;
+        const max_cell = if (self.hint_grid_side > 1) @as(f64, @floatFromInt(self.hint_grid_side - 1)) else 0.0;
+        self.hint_scale_x = if (width > 0.0) max_cell / width else 0.0;
+        self.hint_scale_y = if (height > 0.0) max_cell / height else 0.0;
+    }
+
+    fn hintCellUnchecked(self: *const Engine, pt: mesh.Vertex) struct { x: usize, y: usize } {
+        if (self.hint_grid_side == 0) return .{ .x = 0, .y = 0 };
+        const max_cell = self.hint_grid_side - 1;
+        const raw_x = if (self.hint_scale_x > 0.0) @as(isize, @intFromFloat((pt.x - self.hint_min_x) * self.hint_scale_x)) else 0;
+        const raw_y = if (self.hint_scale_y > 0.0) @as(isize, @intFromFloat((pt.y - self.hint_min_y) * self.hint_scale_y)) else 0;
+        return .{
+            .x = @intCast(@min(@max(raw_x, 0), @as(isize, @intCast(max_cell)))),
+            .y = @intCast(@min(@max(raw_y, 0), @as(isize, @intCast(max_cell)))),
+        };
+    }
+
+    fn hintIndex(self: *const Engine, x: usize, y: usize) usize {
+        return y * self.hint_grid_side + x;
+    }
+
+    fn isValidStartTriangle(self: *const Engine, tri_idx: i32) bool {
+        if (tri_idx < 0) return false;
+        const slot: usize = @intCast(tri_idx);
+        return slot < self.mesh.triangles.len and !mesh.isDeadTriangle(self.mesh.triangles.get(slot));
+    }
+
+    fn hintedStartTriangle(self: *Engine, pt: mesh.Vertex) i32 {
+        if (!build_options.spatial_hints) return self.last_valid_tri;
+        if (self.hint_grid.items.len == 0) {
+            self.statInc("walk_hint_misses");
+            return self.last_valid_tri;
+        }
+        const cell = self.hintCellUnchecked(pt);
+        const direct = self.hint_grid.items[self.hintIndex(cell.x, cell.y)];
+        if (self.isValidStartTriangle(direct)) {
+            self.statInc("walk_hint_hits");
+            return direct;
+        }
+
+        const min_x = if (cell.x == 0) 0 else cell.x - 1;
+        const min_y = if (cell.y == 0) 0 else cell.y - 1;
+        const max_x = @min(cell.x + 1, self.hint_grid_side - 1);
+        const max_y = @min(cell.y + 1, self.hint_grid_side - 1);
+        var y = min_y;
+        while (y <= max_y) : (y += 1) {
+            var x = min_x;
+            while (x <= max_x) : (x += 1) {
+                const candidate = self.hint_grid.items[self.hintIndex(x, y)];
+                if (self.isValidStartTriangle(candidate)) {
+                    self.statInc("walk_hint_hits");
+                    return candidate;
+                }
+            }
+        }
+
+        self.statInc("walk_hint_misses");
+        return self.last_valid_tri;
+    }
+
+    fn updateHintForPoint(self: *Engine, pt: mesh.Vertex, tri_idx: i32) void {
+        if (!build_options.spatial_hints) return;
+        if (self.hint_grid.items.len == 0 or !self.isValidStartTriangle(tri_idx)) return;
+        const cell = self.hintCellUnchecked(pt);
+        const min_x = if (cell.x == 0) 0 else cell.x - 1;
+        const min_y = if (cell.y == 0) 0 else cell.y - 1;
+        const max_x = @min(cell.x + 1, self.hint_grid_side - 1);
+        const max_y = @min(cell.y + 1, self.hint_grid_side - 1);
+        var y = min_y;
+        while (y <= max_y) : (y += 1) {
+            var x = min_x;
+            while (x <= max_x) : (x += 1) {
+                self.hint_grid.items[self.hintIndex(x, y)] = tri_idx;
+            }
+        }
     }
 
     fn ensureVertexMetadataCapacity(self: *Engine, vertex_count: usize) !void {
@@ -315,6 +448,7 @@ pub const Engine = struct {
 
     pub fn initSuperTriangle(self: *Engine, vertices: []const mesh.Vertex) !void {
         const bounds = spatial.BoundingBox.fromVertices(vertices);
+        try self.resetHintGridForBounds(bounds, vertices.len);
         const dx = bounds.max_x - bounds.min_x;
         const dy = bounds.max_y - bounds.min_y;
         const dmax = @max(dx, dy);
@@ -342,8 +476,10 @@ pub const Engine = struct {
             .adj2 = -1,
         };
         try self.mesh.appendTriangle(self.allocator, super_tri);
+        self.updateTriangleCircumcircle(0, super_tri);
         self.noteLiveTriangleHint(0, super_tri);
         self.last_valid_tri = 0;
+        self.updateHintForPoint(.{ .x = midx, .y = midy }, 0);
     }
 
     pub fn walk(self: *Engine, start_tri: i32, target: mesh.Vertex) i32 {
@@ -380,10 +516,12 @@ pub const Engine = struct {
             }
 
             self.statAdd("walk_steps", steps);
+            self.statMax("walk_max_steps", steps);
             return curr;
         }
 
         self.statAdd("walk_steps", steps);
+        self.statMax("walk_max_steps", steps);
         self.statInc("walk_fallbacks");
 
         // Linear scan fallback
@@ -1143,10 +1281,72 @@ pub const Engine = struct {
         if (tri_idx == -1) return false;
         const tri = self.mesh.triangles.get(@as(usize, @intCast(tri_idx)));
         if (mesh.isDeadTriangle(tri)) return false;
+        if (build_options.circumcircle_filter and self.cachedCircumcircleRejects(tri_idx, pt)) return false;
         const v0: usize = @intCast(tri.v0);
         const v1: usize = @intCast(tri.v1);
         const v2: usize = @intCast(tri.v2);
+        if (build_options.circumcircle_filter) self.statInc("circumcircle_filter_fallbacks");
         return predicates.incircleCoords(xs[v0], ys[v0], xs[v1], ys[v1], xs[v2], ys[v2], pt.x, pt.y) > 0.0;
+    }
+
+    fn cachedCircumcircleRejects(self: *Engine, tri_idx: i32, pt: mesh.Vertex) bool {
+        const slot: usize = @intCast(tri_idx);
+        if (slot >= self.mesh.circum_r2.items.len) return false;
+        const r2 = self.mesh.circum_r2.items[slot];
+        if (!(r2 >= 0.0) or !std.math.isFinite(r2)) return false;
+        const cx = self.mesh.circum_x.items[slot];
+        const cy = self.mesh.circum_y.items[slot];
+        if (!std.math.isFinite(cx) or !std.math.isFinite(cy)) return false;
+
+        const dx = pt.x - cx;
+        const dy = pt.y - cy;
+        const dist2 = dx * dx + dy * dy;
+        const tol = @max(1e-12, @abs(r2) * 1e-12);
+        if (dist2 > r2 + tol) {
+            self.statInc("circumcircle_filter_rejects");
+            return true;
+        }
+        return false;
+    }
+
+    fn updateTriangleCircumcircle(self: *Engine, tri_idx: i32, tri: mesh.Triangle) void {
+        if (!build_options.circumcircle_filter) return;
+        if (tri_idx < 0 or mesh.isDeadTriangle(tri)) return;
+        const xs = self.mesh.vertices.items(.x);
+        const ys = self.mesh.vertices.items(.y);
+        const a: usize = @intCast(tri.v0);
+        const b: usize = @intCast(tri.v1);
+        const c: usize = @intCast(tri.v2);
+        if (a >= xs.len or b >= xs.len or c >= xs.len) return;
+
+        const ax = xs[a];
+        const ay = ys[a];
+        const bx = xs[b];
+        const by = ys[b];
+        const cx = xs[c];
+        const cy = ys[c];
+        const bax = bx - ax;
+        const bay = by - ay;
+        const cax = cx - ax;
+        const cay = cy - ay;
+        const det = 2.0 * (bax * cay - bay * cax);
+        if (@abs(det) <= 1e-30 or !std.math.isFinite(det)) {
+            self.mesh.clearCircumcircle(tri_idx);
+            return;
+        }
+
+        const b_len = bax * bax + bay * bay;
+        const c_len = cax * cax + cay * cay;
+        const ux = ax + (cay * b_len - bay * c_len) / det;
+        const uy = ay + (bax * c_len - cax * b_len) / det;
+        const dx = ax - ux;
+        const dy = ay - uy;
+        const r2 = dx * dx + dy * dy;
+        if (!std.math.isFinite(ux) or !std.math.isFinite(uy) or !std.math.isFinite(r2)) {
+            self.mesh.clearCircumcircle(tri_idx);
+            return;
+        }
+        self.mesh.setCircumcircle(tri_idx, ux, uy, r2);
     }
 
     fn triangleHasSuperVertex(tri: mesh.Triangle) bool {
@@ -1591,7 +1791,7 @@ pub const Engine = struct {
 
         const pt_idx = @as(i32, @intCast(self.mesh.vertices.len));
 
-        const start_tri = self.last_valid_tri;
+        const start_tri = self.hintedStartTriangle(pt);
         const container = self.walk(start_tri, pt);
 
         if (container < 0) {
@@ -1620,19 +1820,18 @@ pub const Engine = struct {
         while (i < cavity.items.len) : (i += 1) {
             const t_idx = cavity.items[i];
             const tri = self.mesh.triangles.get(@as(usize, @intCast(t_idx)));
-            const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
+            inline for (0..3) |side| {
+                const n_idx = triangleAdjAt(side, tri);
+                if (!self.isCavityMarked(n_idx)) {
+                    const edge = triangleEdgeAt(side, tri);
+                    const inside_circumcircle = self.isInsideCircumcircleWithCoords(cavity_xs, cavity_ys, n_idx, pt);
+                    const v1: usize = @intCast(edge.v1);
+                    const v2: usize = @intCast(edge.v2);
+                    const point_on_edge = !inside_circumcircle and n_idx != -1 and predicates.pointOnSegmentCoords(cavity_xs[v1], cavity_ys[v1], cavity_xs[v2], cavity_ys[v2], pt.x, pt.y);
 
-            for (neighbors, 0..) |n_idx, side| {
-                if (self.isCavityMarked(n_idx)) continue;
-
-                const edge = triangleEdge(tri, side);
-                const inside_circumcircle = self.isInsideCircumcircleWithCoords(cavity_xs, cavity_ys, n_idx, pt);
-                const v1: usize = @intCast(edge.v1);
-                const v2: usize = @intCast(edge.v2);
-                const point_on_edge = !inside_circumcircle and n_idx != -1 and predicates.pointOnSegmentCoords(cavity_xs[v1], cavity_ys[v1], cavity_xs[v2], cavity_ys[v2], pt.x, pt.y);
-
-                if (inside_circumcircle or point_on_edge) {
-                    try self.appendCavityTriangle(temp_allocator, cavity, n_idx);
+                    if (inside_circumcircle or point_on_edge) {
+                        try self.appendCavityTriangle(temp_allocator, cavity, n_idx);
+                    }
                 }
             }
         }
@@ -1676,6 +1875,8 @@ pub const Engine = struct {
         self.statInc("inserted_points");
         self.statAdd("cavity_triangles", @intCast(cavity.items.len));
         self.statAdd("cavity_edges", @intCast(edges.items.len));
+        self.statMax("cavity_max_triangles", @intCast(cavity.items.len));
+        self.statMax("cavity_max_edges", @intCast(edges.items.len));
 
         var tx = TriangleTransaction{};
         var tx_started = false;
@@ -1779,9 +1980,13 @@ pub const Engine = struct {
             } else {
                 self.mesh.setTriangleFreshTrusted(t_idx, new_tri);
             }
+            self.updateTriangleCircumcircle(t_idx, new_tri);
             if (@as(usize, @intCast(pt_idx)) < self.vertex_hint_tri.items.len) {
                 self.vertex_hint_tri.items[@as(usize, @intCast(pt_idx))] = t_idx;
             }
+            self.updateHintForPoint(.{ .x = emit_xs[@as(usize, @intCast(a))], .y = emit_ys[@as(usize, @intCast(a))] }, t_idx);
+            self.updateHintForPoint(.{ .x = emit_xs[@as(usize, @intCast(b))], .y = emit_ys[@as(usize, @intCast(b))] }, t_idx);
+            self.updateHintForPoint(pt, t_idx);
 
             if (e.adj_tri != -1) {
                 if (use_transaction) {

@@ -13,8 +13,14 @@ const triangulate = p2t.triangulate;
 const Case = struct {
     name: []const u8,
     vertices: []const mesh.Vertex,
-    sorted_indices: []const usize,
+    morton_indices: []const usize,
+    brio_indices: []const usize,
     iterations: usize,
+};
+
+const Order = struct {
+    name: []const u8,
+    indices: []const usize,
 };
 
 const RoundTiming = struct {
@@ -55,13 +61,15 @@ fn loadCase(allocator: std.mem.Allocator, io: Io, name: []const u8, path: []cons
     return .{
         .name = name,
         .vertices = vertices,
-        .sorted_indices = try spatial.sortVerticesByMorton(allocator, vertices),
+        .morton_indices = try spatial.sortVerticesByMorton(allocator, vertices),
+        .brio_indices = try spatial.sortVerticesByBrioMorton(allocator, vertices, 0xC1EAFEED),
         .iterations = iterations,
     };
 }
 
 fn deinitCase(allocator: std.mem.Allocator, case: Case) void {
-    allocator.free(case.sorted_indices);
+    allocator.free(case.brio_indices);
+    allocator.free(case.morton_indices);
     allocator.free(case.vertices);
 }
 
@@ -84,6 +92,7 @@ fn runRound(
     corridor: *corridor_module.Corridor,
     mesh_ids: []i32,
     case: Case,
+    order: Order,
 ) !RoundTiming {
     var timing = RoundTiming{};
     predicates.resetStats();
@@ -97,7 +106,7 @@ fn runRound(
         try engine.initSuperTriangle(case.vertices);
 
         const insertion_start = now();
-        for (case.sorted_indices) |idx| {
+        for (order.indices) |idx| {
             mesh_ids[idx] = try engine.insertUniquePointTrusted(arena, case.vertices[idx]);
         }
         const insertion_end = now();
@@ -128,7 +137,7 @@ fn perRun(value: u64, iterations: usize) f64 {
     return @as(f64, @floatFromInt(value)) / @as(f64, @floatFromInt(iterations));
 }
 
-fn printCase(case: Case, best: RoundTiming, median: RoundTiming) void {
+fn printCase(case: Case, order: Order, best: RoundTiming, median: RoundTiming) void {
     const other_us = if (best.total_us > best.insertion_us + best.constraint_us)
         best.total_us - best.insertion_us - best.constraint_us
     else
@@ -136,9 +145,10 @@ fn printCase(case: Case, best: RoundTiming, median: RoundTiming) void {
     const triangles_per_run = best.triangles / case.iterations;
 
     std.debug.print(
-        "{s}: {d} vertices, {d} runs, {d} triangles/run, best {d} us ({d:>.3} us/run), median {d} us\n",
+        "{s}/{s}: {d} vertices, {d} runs, {d} triangles/run, best {d} us ({d:>.3} us/run), median {d} us\n",
         .{
             case.name,
+            order.name,
             case.vertices.len,
             case.iterations,
             triangles_per_run,
@@ -180,6 +190,18 @@ fn printCase(case: Case, best: RoundTiming, median: RoundTiming) void {
             },
         );
         std.debug.print(
+            "  insertion detail: hint hits {d:>.1}, misses {d:>.1}, max walk {d}, max cavity {d} tris/{d} edges; circle reject/fallback {d:>.1}/{d:>.1}\n",
+            .{
+                @as(f64, @floatFromInt(best.engine_stats.walk_hint_hits)) / iterations_f64,
+                @as(f64, @floatFromInt(best.engine_stats.walk_hint_misses)) / iterations_f64,
+                best.engine_stats.walk_max_steps,
+                best.engine_stats.cavity_max_triangles,
+                best.engine_stats.cavity_max_edges,
+                @as(f64, @floatFromInt(best.engine_stats.circumcircle_filter_rejects)) / iterations_f64,
+                @as(f64, @floatFromInt(best.engine_stats.circumcircle_filter_fallbacks)) / iterations_f64,
+            },
+        );
+        std.debug.print(
             "  topology/insert: cavity tris {d:>.2}, cavity edges {d:>.2}; legalization/run: tests {d:>.1}, flips {d:>.1}; corridor tris/trace {d:>.2}, max {d}\n",
             .{
                 @as(f64, @floatFromInt(best.engine_stats.cavity_triangles)) / inserted_f64,
@@ -214,7 +236,7 @@ fn printCase(case: Case, best: RoundTiming, median: RoundTiming) void {
     }
 }
 
-fn benchCase(allocator: std.mem.Allocator, case: Case) !void {
+fn benchCase(allocator: std.mem.Allocator, case: Case, order: Order) !void {
     const rounds = 3;
     var timings: [rounds]RoundTiming = undefined;
 
@@ -232,11 +254,11 @@ fn benchCase(allocator: std.mem.Allocator, case: Case) !void {
     defer corridor.deinit(allocator);
 
     for (0..rounds) |round| {
-        timings[round] = try runRound(allocator, &engine, &arena, &corridor, mesh_ids, case);
+        timings[round] = try runRound(allocator, &engine, &arena, &corridor, mesh_ids, case, order);
     }
 
     std.mem.sortUnstable(RoundTiming, &timings, {}, lessTotal);
-    printCase(case, timings[0], timings[rounds / 2]);
+    printCase(case, order, timings[0], timings[rounds / 2]);
 
     var stats = quality.QualityStats{};
     for (0..engine.mesh.triangles.len) |i| {
@@ -267,6 +289,7 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("Cleave larger single-mesh benchmark (ReleaseFast, validation skipped)\n", .{});
     for (cases) |case| {
-        try benchCase(allocator, case);
+        try benchCase(allocator, case, .{ .name = "morton", .indices = case.morton_indices });
+        try benchCase(allocator, case, .{ .name = "brio-morton", .indices = case.brio_indices });
     }
 }

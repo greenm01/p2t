@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 
 pub const Vertex = struct {
     x: f64,
@@ -33,6 +34,9 @@ pub const GlobalMesh = struct {
     vertices: std.MultiArrayList(Vertex) = .empty,
     triangles: std.MultiArrayList(Triangle) = .empty,
     edge_flags: std.ArrayListUnmanaged(u8) = .empty,
+    circum_x: std.ArrayListUnmanaged(f64) = .empty,
+    circum_y: std.ArrayListUnmanaged(f64) = .empty,
+    circum_r2: std.ArrayListUnmanaged(f64) = .empty,
     triangle_versions: std.ArrayListUnmanaged(std.atomic.Value(u32)) = .empty,
     triangle_locks: std.ArrayListUnmanaged(std.atomic.Value(u8)) = .empty,
     live_triangle_count: usize = 0,
@@ -41,6 +45,9 @@ pub const GlobalMesh = struct {
         self.vertices.deinit(allocator);
         self.triangles.deinit(allocator);
         self.edge_flags.deinit(allocator);
+        self.circum_x.deinit(allocator);
+        self.circum_y.deinit(allocator);
+        self.circum_r2.deinit(allocator);
         self.triangle_versions.deinit(allocator);
         self.triangle_locks.deinit(allocator);
     }
@@ -49,6 +56,9 @@ pub const GlobalMesh = struct {
         self.vertices.clearRetainingCapacity();
         self.triangles.clearRetainingCapacity();
         self.edge_flags.clearRetainingCapacity();
+        self.circum_x.clearRetainingCapacity();
+        self.circum_y.clearRetainingCapacity();
+        self.circum_r2.clearRetainingCapacity();
         self.triangle_versions.clearRetainingCapacity();
         self.triangle_locks.clearRetainingCapacity();
         self.live_triangle_count = 0;
@@ -64,6 +74,14 @@ pub const GlobalMesh = struct {
         errdefer _ = self.triangles.pop();
         try self.edge_flags.append(allocator, 0);
         errdefer _ = self.edge_flags.pop();
+        if (build_options.circumcircle_filter) {
+            try self.circum_x.append(allocator, std.math.nan(f64));
+            errdefer _ = self.circum_x.pop();
+            try self.circum_y.append(allocator, std.math.nan(f64));
+            errdefer _ = self.circum_y.pop();
+            try self.circum_r2.append(allocator, -1.0);
+            errdefer _ = self.circum_r2.pop();
+        }
         try self.triangle_versions.append(allocator, std.atomic.Value(u32).init(1));
         errdefer _ = self.triangle_versions.pop();
         try self.triangle_locks.append(allocator, std.atomic.Value(u8).init(0));
@@ -83,6 +101,11 @@ pub const GlobalMesh = struct {
         for (0..count) |_| {
             self.triangles.appendAssumeCapacity(deadTriangle());
             self.edge_flags.appendAssumeCapacity(0);
+            if (build_options.circumcircle_filter) {
+                self.circum_x.appendAssumeCapacity(std.math.nan(f64));
+                self.circum_y.appendAssumeCapacity(std.math.nan(f64));
+                self.circum_r2.appendAssumeCapacity(-1.0);
+            }
             self.triangle_versions.appendAssumeCapacity(std.atomic.Value(u32).init(1));
             self.triangle_locks.appendAssumeCapacity(std.atomic.Value(u8).init(0));
         }
@@ -91,6 +114,11 @@ pub const GlobalMesh = struct {
     pub fn ensureTriangleCapacity(self: *GlobalMesh, allocator: std.mem.Allocator, capacity: usize) !void {
         try self.triangles.ensureTotalCapacity(allocator, capacity);
         try self.edge_flags.ensureTotalCapacity(allocator, capacity);
+        if (build_options.circumcircle_filter) {
+            try self.circum_x.ensureTotalCapacity(allocator, capacity);
+            try self.circum_y.ensureTotalCapacity(allocator, capacity);
+            try self.circum_r2.ensureTotalCapacity(allocator, capacity);
+        }
         try self.triangle_versions.ensureTotalCapacity(allocator, capacity);
         try self.triangle_locks.ensureTotalCapacity(allocator, capacity);
     }
@@ -166,6 +194,22 @@ pub const GlobalMesh = struct {
         self.adjustLiveCount(self.triangles.get(slot), deadTriangle());
         self.triangles.set(slot, deadTriangle());
         self.edge_flags.items[slot] = 0;
+    }
+
+    pub fn setCircumcircle(self: *GlobalMesh, triangle_index: i32, x: f64, y: f64, r2: f64) void {
+        const slot = @as(usize, @intCast(triangle_index));
+        if (!build_options.circumcircle_filter or slot >= self.circum_r2.items.len) return;
+        self.circum_x.items[slot] = x;
+        self.circum_y.items[slot] = y;
+        self.circum_r2.items[slot] = r2;
+    }
+
+    pub fn clearCircumcircle(self: *GlobalMesh, triangle_index: i32) void {
+        const slot = @as(usize, @intCast(triangle_index));
+        if (!build_options.circumcircle_filter or slot >= self.circum_r2.items.len) return;
+        self.circum_x.items[slot] = std.math.nan(f64);
+        self.circum_y.items[slot] = std.math.nan(f64);
+        self.circum_r2.items[slot] = -1.0;
     }
 };
 
