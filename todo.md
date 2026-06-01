@@ -139,6 +139,19 @@ Current 4-worker partitioned BW results:
 
 This validates that the midpoint scan was the main decomposition tax. The remaining gap to BRIO is now mostly piece construction overhead, seam legalization, and thread/assembly overhead. The next experiment should either reuse local worker state to cut piece BW overhead or reduce seam/assembly work; a full replacement partition builder is less urgent for the current fixtures than it was before cone-visible.
 
+## Latest Seam Seed Lookup Cleanup
+
+Partitioned BW no longer marks partition diagonals constrained and immediately unmarks them only to collect seam seed triangles. The partitioned path now collects adjacent seam triangles with a single edge lookup pass and leaves partition diagonals unconstrained before seam legalization.
+
+With `-Ddecomposition-cone-visible=true`:
+
+- Serial `nazca-monkey/partitioned-bw`: about `482.7 us/run`; edge lookup calls down to `6/run`, scanned triangles down to `2841/run`.
+- Serial `nazca-heron/partitioned-bw`: about `343.5 us/run`; edge lookup calls down to `4/run`, scanned triangles down to `1565/run`.
+- 4-worker `nazca-monkey/partitioned-bw-parallel`: about `406.9 us/run`; assembly about `30.0 us/run`, seam about `31.6 us/run`.
+- 4-worker `nazca-heron/partitioned-bw-parallel`: about `259.8 us/run`; assembly about `24.2 us/run`, seam about `35.1 us/run`.
+
+This is a small cleanup, not a strategic shift. The remaining large cost is still local piece BW wall time plus seam legalization.
+
 ## Next Structural Work
 
 1. Add a polygon-output construction mode.

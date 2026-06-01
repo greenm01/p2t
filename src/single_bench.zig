@@ -128,6 +128,19 @@ fn appendLiveLocalTrianglesAsGlobal(
     return appended;
 }
 
+fn collectSegmentSeedTriangles(
+    allocator: std.mem.Allocator,
+    engine: *triangulate.Engine,
+    segments: []const polygon_seed.Segment,
+    seed_triangles: *std.ArrayListUnmanaged(i32),
+) !void {
+    for (segments) |segment| {
+        const found = engine.findLiveEdge(segment.a, segment.b) orelse return error.MissingConstraintEdge;
+        try seed_triangles.append(allocator, found.tri);
+        if (found.neighbor != -1) try seed_triangles.append(allocator, found.neighbor);
+    }
+}
+
 fn appendPieceBowyerWatsonSeed(
     allocator: std.mem.Allocator,
     vertices: []const mesh.Vertex,
@@ -411,11 +424,10 @@ fn runRound(
 
             assembly_start = timer.now(io);
             try engine.buildPolygonSeedMesh(case.vertices, seed_indices.items);
-            try engine.setConstraintSegmentsTrusted(allocator, decomposition.diagonals.items, true, null);
             assembly_end = timer.now(io);
 
             seed_triangles.clearRetainingCapacity();
-            try engine.setConstraintSegmentsTrusted(allocator, decomposition.diagonals.items, false, &seed_triangles);
+            try collectSegmentSeedTriangles(allocator, engine, decomposition.diagonals.items, &seed_triangles);
             const seam_stats_start = engine.statsSnapshot();
             try engine.legalizeFromTriangles(allocator, seed_triangles.items);
             seam_legalization_end = timer.now(io);
