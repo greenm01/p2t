@@ -10,6 +10,7 @@ pub const Corridor = struct {
 
     const EdgeKey = struct { v1: i32, v2: i32 };
     const EdgeRecord = struct { v1: i32, v2: i32 };
+    const BoundaryEdge = struct { v1: i32, v2: i32, adj_tri: i32 };
     const BoundaryNode = struct {
         neighbors: [8]i32 = [_]i32{-1} ** 8,
         degree: u8 = 0,
@@ -277,7 +278,45 @@ pub const Corridor = struct {
         return .{ .side = side, .score = score };
     }
 
-    pub fn triangulatePseudoPolygon(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32, wall: []const i32, is_left: bool) !void {
+    fn collectOuterBoundaryEdges(
+        self: *Corridor,
+        allocator: std.mem.Allocator,
+        engine: *triangulate.Engine,
+        edge_counts: *std.AutoHashMap(EdgeKey, usize),
+        edges: *std.ArrayListUnmanaged(BoundaryEdge),
+    ) !void {
+        edges.clearRetainingCapacity();
+        for (self.pierced_triangles.items) |t_idx| {
+            const tri = engine.mesh.triangles.get(@as(usize, @intCast(t_idx)));
+            const tri_edges = [_]struct { v1: i32, v2: i32, adj: i32 }{
+                .{ .v1 = tri.v0, .v2 = tri.v1, .adj = tri.adj0 },
+                .{ .v1 = tri.v1, .v2 = tri.v2, .adj = tri.adj1 },
+                .{ .v1 = tri.v2, .v2 = tri.v0, .adj = tri.adj2 },
+            };
+
+            for (tri_edges) |edge| {
+                if ((edge_counts.get(canonicalEdge(edge.v1, edge.v2)) orelse 0) != 1) continue;
+                if (edge.adj == -1 or self.containsPierced(edge.adj)) continue;
+                try edges.append(allocator, .{
+                    .v1 = edge.v1,
+                    .v2 = edge.v2,
+                    .adj_tri = edge.adj,
+                });
+            }
+        }
+    }
+
+    pub fn triangulatePseudoPolygon(
+        self: *Corridor,
+        allocator: std.mem.Allocator,
+        engine: *triangulate.Engine,
+        arena: *mesh.ThreadArena,
+        start_pt_idx: i32,
+        end_pt_idx: i32,
+        wall: []const i32,
+        is_left: bool,
+        emitted: *std.ArrayListUnmanaged(i32),
+    ) !void {
         _ = self;
         if (wall.len == 0) return;
 
@@ -308,6 +347,7 @@ pub const Corridor = struct {
                     if (new_tri_idx == engine.mesh.triangles.len) {
                         try engine.mesh.triangles.append(allocator, undefined);
                     }
+                    try emitted.append(allocator, new_tri_idx);
 
                     const t0 = prev_idx;
                     var t1 = p_idx;
@@ -348,6 +388,7 @@ pub const Corridor = struct {
             if (new_tri_idx == engine.mesh.triangles.len) {
                 try engine.mesh.triangles.append(allocator, undefined);
             }
+            try emitted.append(allocator, new_tri_idx);
 
             const t0 = prev_idx;
             var t1 = p_idx;
@@ -384,6 +425,10 @@ pub const Corridor = struct {
 
         try self.buildBoundaryGraph(engine, &edge_counts, &boundary_nodes);
         try validateBoundaryDegrees(&boundary_nodes, start_pt_idx, end_pt_idx);
+
+        var outer_edges: std.ArrayListUnmanaged(BoundaryEdge) = .empty;
+        defer outer_edges.deinit(allocator);
+        try self.collectOuterBoundaryEdges(allocator, engine, &edge_counts, &outer_edges);
 
         const start_node = boundary_nodes.get(start_pt_idx) orelse {
             std.debug.print("InvalidCorridorBoundary: missing start vertex {d} in boundary\n", .{start_pt_idx});
@@ -466,9 +511,22 @@ pub const Corridor = struct {
             try arena.tombstone(allocator, t_idx);
         }
 
-        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[left_chain.?].vertices.items, true);
-        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[right_chain.?].vertices.items, false);
-        try engine.rebuildAdjacency();
+        var emitted: std.ArrayListUnmanaged(i32) = .empty;
+        defer emitted.deinit(allocator);
+
+        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[left_chain.?].vertices.items, true, &emitted);
+        try self.triangulatePseudoPolygon(allocator, engine, arena, start_pt_idx, end_pt_idx, candidates.items[right_chain.?].vertices.items, false, &emitted);
+
+        try engine.linkNewTriangles(emitted.items);
+        for (outer_edges.items) |edge| {
+            for (emitted.items) |new_tri_idx| {
+                const new_tri = engine.mesh.triangles.get(@as(usize, @intCast(new_tri_idx)));
+                if (triangulate.Engine.edgeSide(new_tri, edge.v1, edge.v2) != null) {
+                    try engine.linkTrianglesByEdge(new_tri_idx, edge.adj_tri, edge.v1, edge.v2);
+                    break;
+                }
+            }
+        }
     }
 };
 
@@ -503,9 +561,8 @@ test "corridor trace" {
     try std.testing.expect(corridor.pierced_triangles.items.len > 0);
 }
 
-test "dude fixture constraint recovery remains manifold" {
-    const allocator = std.testing.allocator;
-    const fixture = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, "tests/fixtures/dude.dat", allocator, .limited(1024 * 1024));
+fn validateFixtureConstraintRecovery(allocator: std.mem.Allocator, fixture_path: []const u8) !void {
+    const fixture = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, fixture_path, allocator, .limited(1024 * 1024));
     defer allocator.free(fixture);
 
     const points = try parser.parseDatString(allocator, fixture);
@@ -558,4 +615,12 @@ test "dude fixture constraint recovery remains manifold" {
     }
 
     try engine.validateConstraintRing(mesh_ids);
+}
+
+test "fixture constraint recovery remains manifold" {
+    const allocator = std.testing.allocator;
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/test.dat");
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/diamond.dat");
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/star.dat");
+    try validateFixtureConstraintRecovery(allocator, "tests/fixtures/dude.dat");
 }

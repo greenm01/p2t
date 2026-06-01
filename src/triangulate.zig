@@ -249,6 +249,50 @@ pub const Engine = struct {
         return null;
     }
 
+    pub fn linkTriangleSides(self: *Engine, tri_a_idx: i32, side_a: usize, tri_b_idx: i32, side_b: usize) !void {
+        if (tri_a_idx < 0 or tri_b_idx < 0) return;
+        const tri_a_slot = @as(usize, @intCast(tri_a_idx));
+        const tri_b_slot = @as(usize, @intCast(tri_b_idx));
+        if (tri_a_slot >= self.mesh.triangles.len or tri_b_slot >= self.mesh.triangles.len) return error.InvalidTriangleAdjacency;
+
+        var tri_a = self.mesh.triangles.get(tri_a_slot);
+        var tri_b = self.mesh.triangles.get(tri_b_slot);
+        if (mesh.isDeadTriangle(tri_a) or mesh.isDeadTriangle(tri_b)) return error.InvalidTriangleAdjacency;
+
+        setTriangleAdj(&tri_a, side_a, tri_b_idx);
+        setTriangleAdj(&tri_b, side_b, tri_a_idx);
+        self.mesh.triangles.set(tri_a_slot, tri_a);
+        self.mesh.triangles.set(tri_b_slot, tri_b);
+    }
+
+    pub fn linkTrianglesByEdge(self: *Engine, tri_a_idx: i32, tri_b_idx: i32, edge_v1: i32, edge_v2: i32) !void {
+        if (tri_a_idx < 0 or tri_b_idx < 0) return;
+        const tri_a = self.mesh.triangles.get(@as(usize, @intCast(tri_a_idx)));
+        const tri_b = self.mesh.triangles.get(@as(usize, @intCast(tri_b_idx)));
+        const side_a = edgeSide(tri_a, edge_v1, edge_v2) orelse return error.InvalidTriangleAdjacency;
+        const side_b = edgeSide(tri_b, edge_v1, edge_v2) orelse return error.InvalidTriangleAdjacency;
+        try self.linkTriangleSides(tri_a_idx, side_a, tri_b_idx, side_b);
+    }
+
+    pub fn linkNewTriangles(self: *Engine, new_tri_indices: []const i32) !void {
+        for (new_tri_indices, 0..) |tri_a_idx, i| {
+            const tri_a = self.mesh.triangles.get(@as(usize, @intCast(tri_a_idx)));
+            if (mesh.isDeadTriangle(tri_a)) continue;
+
+            for (new_tri_indices[i + 1 ..]) |tri_b_idx| {
+                const tri_b = self.mesh.triangles.get(@as(usize, @intCast(tri_b_idx)));
+                if (mesh.isDeadTriangle(tri_b)) continue;
+
+                inline for (0..3) |side_a| {
+                    const edge = triangleEdge(tri_a, side_a);
+                    if (edgeSide(tri_b, edge.v1, edge.v2)) |side_b| {
+                        try self.linkTriangleSides(tri_a_idx, side_a, tri_b_idx, side_b);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn liveTriangleCount(self: *Engine) usize {
         var count: usize = 0;
         for (0..self.mesh.triangles.len) |i| {
@@ -581,8 +625,12 @@ pub const Engine = struct {
                 .adj2 = -1,
                 .lock = 0,
             });
+
+            if (e.adj_tri != -1) {
+                try self.linkTrianglesByEdge(t_idx, e.adj_tri, e.v1, e.v2);
+            }
         }
-        try self.rebuildAdjacency();
+        try self.linkNewTriangles(new_tri_indices.items);
         return pt_idx;
     }
 };

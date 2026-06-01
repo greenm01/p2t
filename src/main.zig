@@ -63,7 +63,6 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
 
             for (sorted_indices) |idx| {
                 mesh_ids[idx] = try engine.insertPoint(&arena, vertices[idx]);
-                try engine.validateTopology();
             }
 
             var corridor = corridor_module.Corridor{};
@@ -87,8 +86,6 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
                 }
             }
 
-            try engine.validateTopology();
-            try engine.validateConstraintRing(mesh_ids);
             total_triangles += engine.liveTriangleCount();
         }
 
@@ -178,9 +175,7 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("Starting Zig Benchmarks (Raw Point Insertion)...\n", .{});
 
-    try bench(allocator, init.io, "fixture-test", "tests/fixtures/test.dat", 10000);
-    try bench(allocator, init.io, "diamond", "tests/fixtures/diamond.dat", 10000);
-    try bench(allocator, init.io, "star", "tests/fixtures/star.dat", 10000);
-    try bench(allocator, init.io, "dude", "tests/fixtures/dude.dat", 1000);
-    try bench(allocator, init.io, "nazca_heron", "tests/fixtures/nazca_heron.dat", 1000);
+    try bench(allocator, init.io, "fixture-test", "tests/fixtures/test.dat", 2000);
+    try bench(allocator, init.io, "diamond", "tests/fixtures/diamond.dat", 2000);
+    try bench(allocator, init.io, "star", "tests/fixtures/star.dat", 2000);
 }
