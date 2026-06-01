@@ -28,14 +28,18 @@ The Cleave architecture is designed specifically to shatter this concurrency cei
 - **Phase 2 (Concurrent Insertion):** Because a Bowyer-Watson insertion only affects a highly localized neighborhood, multiple threads can safely execute insertions simultaneously in different spatial chunks using isolated, fine-grained atomic spin-locks.
 - **Phase 3 (Parallel Corridor Clearing):** Enforcing constraint edges is also fully parallelizable. Threads independently grab line segments, march across the mesh, lock the bounding triangles, and execute isolated retriangulations.
 
-## 3. Single-Threaded Performance Analysis
+## 3. Single-Threaded Performance Analysis: The Tradeoff
 
-In a purely single-threaded scalar benchmark, an optimized sweep-line algorithm (like `fastpoly2tri`) will generally outperform a basic Bowyer-Watson implementation. 
+It is highly likely that **Cleave will never beat a highly-optimized Poly2tri implementation on a single, scalar thread.**
 
-- **Poly2tri** simply evaluates the active front and links 1 or 2 new triangles per point.
-- **Cleave** must execute a stochastic walk, run in-circle determinant math to map a cavity, tombstone old triangles, and allocate new ones. It fundamentally performs more "work" per point.
+An optimized sweep-line algorithm (like `fastpoly2tri`) is incredibly lightweight per-point. It simply evaluates the active front, performs a basic orientation check, and links 1 or 2 new triangles.
 
-Our initial pure-Zig benchmark confirms this: a single-threaded, scalar implementation of Cleave is slower than `fastpoly2tri`. However, Cleave is not designed to win a single-threaded scalar race—it is designed to leverage modern hardware in ways Poly2tri cannot.
+Cleave fundamentally performs a heavier "tax" of work per point inserted:
+1. It must execute a stochastic walk to find the container triangle.
+2. It must calculate exact `incircle` determinants to map the cavity boundaries.
+3. It must tombstone old triangles and carefully wire up new internal and external adjacencies.
+
+Our pure-Zig benchmark confirms this reality. Cleave is not designed to win a single-threaded scalar race. It explicitly trades this raw single-threaded speed for absolute mathematical robustness and the ability to scale.
 
 ## 4. The Roadmap to Beating Poly2tri
 
