@@ -63,8 +63,8 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
 
             for (sorted_indices) |idx| {
                 mesh_ids[idx] = try engine.insertPoint(&arena, vertices[idx]);
+                try engine.validateTopology();
             }
-            try engine.validateTopology();
 
             var corridor = corridor_module.Corridor{};
             defer corridor.deinit(allocator);
@@ -72,6 +72,8 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
             for (0..vertices.len) |i| {
                 const start_idx = mesh_ids[i];
                 const end_idx = mesh_ids[(i + 1) % vertices.len];
+
+                if (engine.hasLiveEdge(start_idx, end_idx)) continue;
 
                 const start_pt = engine.getVertex(start_idx);
                 const end_pt = engine.getVertex(end_idx);
@@ -133,6 +135,8 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
         for (0..vertices.len) |i| {
             const start_idx = mesh_ids[i];
             const end_idx = mesh_ids[(i + 1) % vertices.len];
+
+            if (engine.hasLiveEdge(start_idx, end_idx)) continue;
 
             const start_pt = engine.getVertex(start_idx);
             const end_pt = engine.getVertex(end_idx);

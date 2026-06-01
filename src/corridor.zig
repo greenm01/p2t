@@ -10,6 +10,71 @@ pub const Corridor = struct {
         self.pierced_triangles.deinit(allocator);
     }
 
+    fn containsPierced(self: *const Corridor, tri_idx: i32) bool {
+        for (self.pierced_triangles.items) |pierced_idx| {
+            if (pierced_idx == tri_idx) return true;
+        }
+        return false;
+    }
+
+    fn triangleHasVertex(tri: mesh.Triangle, vertex_idx: i32) bool {
+        return tri.v0 == vertex_idx or tri.v1 == vertex_idx or tri.v2 == vertex_idx;
+    }
+
+    fn pointInTriangle(engine: *triangulate.Engine, tri: mesh.Triangle, pt: mesh.Vertex) bool {
+        const eps = 1e-9;
+        const v0 = engine.getVertex(tri.v0);
+        const v1 = engine.getVertex(tri.v1);
+        const v2 = engine.getVertex(tri.v2);
+        return predicates.orient2d(v0, v1, pt) >= -eps and
+            predicates.orient2d(v1, v2, pt) >= -eps and
+            predicates.orient2d(v2, v0, pt) >= -eps;
+    }
+
+    fn samePoint(a: mesh.Vertex, b: mesh.Vertex) bool {
+        return a.x == b.x and a.y == b.y;
+    }
+
+    fn segmentIntersectsTriangle(engine: *triangulate.Engine, tri: mesh.Triangle, start_pt: mesh.Vertex, end_pt: mesh.Vertex) bool {
+        const v0 = engine.getVertex(tri.v0);
+        const v1 = engine.getVertex(tri.v1);
+        const v2 = engine.getVertex(tri.v2);
+
+        if (pointInTriangle(engine, tri, start_pt) and !samePoint(start_pt, v0) and !samePoint(start_pt, v1) and !samePoint(start_pt, v2)) return true;
+        if (pointInTriangle(engine, tri, end_pt) and !samePoint(end_pt, v0) and !samePoint(end_pt, v1) and !samePoint(end_pt, v2)) return true;
+
+        return predicates.intersect(start_pt, end_pt, v0, v1) or
+            predicates.intersect(start_pt, end_pt, v1, v2) or
+            predicates.intersect(start_pt, end_pt, v2, v0);
+    }
+
+    fn augmentPiercedBySegmentScan(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, start_pt_idx: i32, end_pt_idx: i32) !void {
+        const start_pt = engine.getVertex(start_pt_idx);
+        const end_pt = engine.getVertex(end_pt_idx);
+        const near_start = mesh.Vertex{
+            .x = start_pt.x + (end_pt.x - start_pt.x) * 1e-7,
+            .y = start_pt.y + (end_pt.y - start_pt.y) * 1e-7,
+        };
+        const near_end = mesh.Vertex{
+            .x = end_pt.x + (start_pt.x - end_pt.x) * 1e-7,
+            .y = end_pt.y + (start_pt.y - end_pt.y) * 1e-7,
+        };
+
+        for (0..engine.mesh.triangles.len) |tri_idx| {
+            const tri_i32 = @as(i32, @intCast(tri_idx));
+            if (self.containsPierced(tri_i32)) continue;
+
+            const tri = engine.mesh.triangles.get(tri_idx);
+            if (mesh.isDeadTriangle(tri)) continue;
+
+            const enters_from_start = triangleHasVertex(tri, start_pt_idx) and pointInTriangle(engine, tri, near_start);
+            const enters_from_end = triangleHasVertex(tri, end_pt_idx) and pointInTriangle(engine, tri, near_end);
+            if (enters_from_start or enters_from_end or segmentIntersectsTriangle(engine, tri, start_pt, end_pt)) {
+                try self.pierced_triangles.append(allocator, tri_i32);
+            }
+        }
+    }
+
     pub fn trace(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, start_tri: i32, end_pt: mesh.Vertex, start_pt: mesh.Vertex) !void {
         var curr = start_tri;
 
@@ -121,15 +186,22 @@ pub const Corridor = struct {
                 const is_convex = if (is_left) orient < 0.0 else orient > 0.0;
 
                 if (is_convex) {
-                    // Create triangle (prev, top, p)
+                    // Create triangle
                     const new_tri_idx = arena.getFreeSlot() orelse @as(i32, @intCast(engine.mesh.triangles.len));
                     if (new_tri_idx == engine.mesh.triangles.len) {
                         try engine.mesh.triangles.append(allocator, undefined);
                     }
 
-                    const t0 = if (is_left) prev_idx else prev_idx;
-                    const t1 = if (is_left) p_idx else top_idx;
-                    const t2 = if (is_left) top_idx else p_idx;
+                    const t0 = prev_idx;
+                    var t1 = p_idx;
+                    var t2 = top_idx;
+
+                    // Enforce CCW
+                    if (predicates.orient2d(engine.getVertex(t0), engine.getVertex(t1), engine.getVertex(t2)) < 0.0) {
+                        const tmp = t1;
+                        t1 = t2;
+                        t2 = tmp;
+                    }
 
                     engine.mesh.triangles.set(@as(usize, @intCast(new_tri_idx)), .{
                         .v0 = t0,
@@ -160,9 +232,15 @@ pub const Corridor = struct {
                 try engine.mesh.triangles.append(allocator, undefined);
             }
 
-            const t0 = if (is_left) prev_idx else prev_idx;
-            const t1 = if (is_left) p_idx else top_idx;
-            const t2 = if (is_left) top_idx else p_idx;
+            const t0 = prev_idx;
+            var t1 = p_idx;
+            var t2 = top_idx;
+
+            if (predicates.orient2d(engine.getVertex(t0), engine.getVertex(t1), engine.getVertex(t2)) < 0.0) {
+                const tmp = t1;
+                t1 = t2;
+                t2 = tmp;
+            }
 
             engine.mesh.triangles.set(@as(usize, @intCast(new_tri_idx)), .{
                 .v0 = t0,
@@ -180,6 +258,8 @@ pub const Corridor = struct {
 
     pub fn clearAndRetriangulate(self: *Corridor, allocator: std.mem.Allocator, engine: *triangulate.Engine, arena: *mesh.ThreadArena, start_pt_idx: i32, end_pt_idx: i32) !void {
         const EdgeKey = struct { v1: i32, v2: i32 };
+
+        try self.augmentPiercedBySegmentScan(allocator, engine, start_pt_idx, end_pt_idx);
 
         // 1. Extract boundaries
         // We collect all boundary edges of the corridor. A boundary edge is one that belongs to exactly one pierced triangle.

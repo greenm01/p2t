@@ -10,20 +10,125 @@ pub const Edge = struct {
     old_tri: i32,
 };
 
+const CavityEdgeBucket = struct {
+    generation: u32 = 0,
+    entry_index: i32 = -1,
+};
+
+const CavityEdgeEntry = struct {
+    next: i32,
+    a: i32,
+    b: i32,
+    count: u8,
+    edge: Edge,
+};
+
+const CavityEdgeCounter = struct {
+    buckets: std.ArrayListUnmanaged(CavityEdgeBucket) = .empty,
+    entries: std.ArrayListUnmanaged(CavityEdgeEntry) = .empty,
+    generation: u32 = 1,
+
+    fn deinit(self: *CavityEdgeCounter, allocator: std.mem.Allocator) void {
+        self.buckets.deinit(allocator);
+        self.entries.deinit(allocator);
+    }
+
+    fn reset(self: *CavityEdgeCounter, allocator: std.mem.Allocator, max_edges: usize) !void {
+        try self.ensureBuckets(allocator, max_edges * 2 + 1);
+        self.entries.clearRetainingCapacity();
+
+        self.generation +%= 1;
+        if (self.generation == 0) {
+            for (self.buckets.items) |*bucket| bucket.generation = 0;
+            self.generation = 1;
+        }
+    }
+
+    fn ensureBuckets(self: *CavityEdgeCounter, allocator: std.mem.Allocator, min_count: usize) !void {
+        const target = @max(min_count, 16);
+        if (self.buckets.items.len >= target) return;
+
+        self.buckets.clearRetainingCapacity();
+        try self.buckets.ensureTotalCapacity(allocator, target);
+        while (self.buckets.items.len < target) {
+            try self.buckets.append(allocator, .{});
+        }
+        self.generation = 1;
+    }
+
+    fn bucketIndex(self: *const CavityEdgeCounter, a: i32, b: i32) usize {
+        const au: u64 = @intCast(a);
+        const bu: u64 = @intCast(b);
+        const hash = (au *% 0x9E3779B185EBCA87) ^ (bu *% 0xC2B2AE3D27D4EB4F);
+        return @intCast(hash % self.buckets.items.len);
+    }
+
+    fn add(self: *CavityEdgeCounter, allocator: std.mem.Allocator, edge: Edge) !void {
+        const a = @min(edge.v1, edge.v2);
+        const b = @max(edge.v1, edge.v2);
+        const bucket_index = self.bucketIndex(a, b);
+        var bucket = &self.buckets.items[bucket_index];
+
+        if (bucket.generation != self.generation) {
+            bucket.generation = self.generation;
+            bucket.entry_index = -1;
+        } else {
+            var entry_index = bucket.entry_index;
+            while (entry_index >= 0) {
+                const entry_usize: usize = @intCast(entry_index);
+                if (self.entries.items[entry_usize].a == a and self.entries.items[entry_usize].b == b) {
+                    if (self.entries.items[entry_usize].count == std.math.maxInt(u8)) {
+                        return error.NonManifoldCavity;
+                    }
+                    self.entries.items[entry_usize].count += 1;
+                    return;
+                }
+                entry_index = self.entries.items[entry_usize].next;
+            }
+        }
+
+        try self.entries.append(allocator, .{
+            .next = bucket.entry_index,
+            .a = a,
+            .b = b,
+            .count = 1,
+            .edge = edge,
+        });
+        bucket.entry_index = @as(i32, @intCast(self.entries.items.len - 1));
+    }
+
+    fn appendBoundaryTo(self: *const CavityEdgeCounter, allocator: std.mem.Allocator, edges: *std.ArrayListUnmanaged(Edge)) !void {
+        edges.clearRetainingCapacity();
+        for (self.entries.items) |entry| {
+            switch (entry.count) {
+                1 => try edges.append(allocator, entry.edge),
+                2 => {},
+                else => {
+                    std.debug.print("NonManifoldCavity: edge ({d},{d}) appears {d} times in cavity\n", .{ entry.a, entry.b, entry.count });
+                    return error.NonManifoldCavity;
+                },
+            }
+        }
+    }
+};
+
 pub const Engine = struct {
     mesh: mesh.GlobalMesh,
     allocator: std.mem.Allocator,
     last_valid_tri: i32,
+    cavity_edge_counter: CavityEdgeCounter,
 
     pub fn init(allocator: std.mem.Allocator) Engine {
         return .{
             .mesh = mesh.GlobalMesh{},
             .allocator = allocator,
             .last_valid_tri = 0,
+            .cavity_edge_counter = .{},
         };
     }
 
     pub fn deinit(self: *Engine) void {
+        self.cavity_edge_counter.deinit(self.allocator);
         self.mesh.deinit(self.allocator);
     }
 
@@ -233,6 +338,15 @@ pub const Engine = struct {
                 if (edge_map.get(key)) |other| {
                     var tri_mut = self.mesh.triangles.get(i);
                     var other_mut = self.mesh.triangles.get(@as(usize, @intCast(other.tri)));
+
+                    // Non-manifold check: Is this edge already bound to another triangle?
+                    if (triangleAdj(other_mut, other.side) != -1) {
+                        const existing_adj = triangleAdj(other_mut, other.side);
+                        const existing_tri = self.mesh.triangles.get(@as(usize, @intCast(existing_adj)));
+                        std.debug.print("NonManifoldEdge: Tri {d} (v:{d},{d},{d}) and Tri {d} (v:{d},{d},{d}) share edge ({d},{d}), but Tri {d} is already bound to {d} (v:{d},{d},{d})\n", .{ i, tri_mut.v0, tri_mut.v1, tri_mut.v2, other.tri, other_mut.v0, other_mut.v1, other_mut.v2, key.a, key.b, other.tri, existing_adj, existing_tri.v0, existing_tri.v1, existing_tri.v2 });
+                        return error.NonManifoldEdge;
+                    }
+
                     setTriangleAdj(&tri_mut, side, other.tri);
                     setTriangleAdj(&other_mut, other.side, @as(i32, @intCast(i)));
                     self.mesh.triangles.set(i, tri_mut);
@@ -255,6 +369,104 @@ pub const Engine = struct {
         const v1 = self.getVertex(tri.v1);
         const v2 = self.getVertex(tri.v2);
         return predicates.incircle(v0, v1, v2, pt) > 0.0;
+    }
+
+    fn cavityContains(cavity: []const i32, tri_idx: i32) bool {
+        for (cavity) |c_idx| {
+            if (c_idx == tri_idx) return true;
+        }
+        return false;
+    }
+
+    fn extractCavityBoundary(self: *Engine, cavity: []const i32, edges: *std.ArrayListUnmanaged(Edge)) !void {
+        try self.cavity_edge_counter.reset(self.allocator, cavity.len * 3);
+
+        for (cavity) |t_idx| {
+            const tri = self.mesh.triangles.get(@as(usize, @intCast(t_idx)));
+            const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
+            for (neighbors, 0..) |n_idx, side| {
+                const edge = triangleEdge(tri, side);
+                try self.cavity_edge_counter.add(self.allocator, .{
+                    .adj_tri = n_idx,
+                    .v1 = edge.v1,
+                    .v2 = edge.v2,
+                    .old_tri = t_idx,
+                });
+            }
+        }
+
+        try self.cavity_edge_counter.appendBoundaryTo(self.allocator, edges);
+
+        for (edges.items) |e| {
+            if (e.adj_tri != -1 and cavityContains(cavity, e.adj_tri)) {
+                std.debug.print("InvalidCavityBoundary: boundary edge ({d},{d}) still points into cavity tri {d}\n", .{ e.v1, e.v2, e.adj_tri });
+                return error.InvalidCavityBoundary;
+            }
+        }
+    }
+
+    fn pointOnTriangleEdge(self: *Engine, tri: mesh.Triangle, pt: mesh.Vertex) bool {
+        inline for (0..3) |side| {
+            const edge = triangleEdge(tri, side);
+            if (predicates.pointOnSegment(
+                self.getVertex(edge.v1),
+                self.getVertex(edge.v2),
+                pt,
+            )) return true;
+        }
+        return false;
+    }
+
+    fn boundaryHasPinch(edges: []const Edge) bool {
+        for (edges) |edge| {
+            var v1_count: usize = 0;
+            var v2_count: usize = 0;
+            for (edges) |other| {
+                if (other.v1 == edge.v1 or other.v2 == edge.v1) v1_count += 1;
+                if (other.v1 == edge.v2 or other.v2 == edge.v2) v2_count += 1;
+            }
+            if (v1_count > 2 or v2_count > 2) return true;
+        }
+        return false;
+    }
+
+    fn completeCavityByGlobalScan(self: *Engine, cavity: *std.ArrayListUnmanaged(i32), pt: mesh.Vertex) !bool {
+        var added = false;
+        for (0..self.mesh.triangles.len) |tri_idx| {
+            const tri_i32 = @as(i32, @intCast(tri_idx));
+            if (cavityContains(cavity.items, tri_i32)) continue;
+
+            const tri = self.mesh.triangles.get(tri_idx);
+            if (mesh.isDeadTriangle(tri)) continue;
+
+            if (self.isInsideCircumcircle(tri_i32, pt) or self.pointOnTriangleEdge(tri, pt)) {
+                try cavity.append(self.allocator, tri_i32);
+                added = true;
+            }
+        }
+        return added;
+    }
+
+    fn repairBoundaryNonManifoldEdges(self: *Engine, cavity: *std.ArrayListUnmanaged(i32), edges: []const Edge) !bool {
+        var added = false;
+        for (edges) |edge| {
+            var outside_count: usize = 0;
+            for (0..self.mesh.triangles.len) |tri_idx| {
+                const tri_i32 = @as(i32, @intCast(tri_idx));
+                if (cavityContains(cavity.items, tri_i32)) continue;
+
+                const tri = self.mesh.triangles.get(tri_idx);
+                if (mesh.isDeadTriangle(tri)) continue;
+                if (edgeSide(tri, edge.v1, edge.v2) == null) continue;
+
+                outside_count += 1;
+                if (outside_count > 1 and !cavityContains(cavity.items, tri_i32)) {
+                    try cavity.append(self.allocator, tri_i32);
+                    added = true;
+                }
+            }
+        }
+        return added;
     }
 
     // Simplified Bowyer-Watson insertion for testing
@@ -291,18 +503,10 @@ pub const Engine = struct {
         while (i < cavity.items.len) : (i += 1) {
             const t_idx = cavity.items[i];
             const tri = self.mesh.triangles.get(@as(usize, @intCast(t_idx)));
-
-            // check neighbors
             const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
 
             for (neighbors, 0..) |n_idx, side| {
-                var in_cavity = false;
-                for (cavity.items) |c_idx| {
-                    if (c_idx == n_idx) {
-                        in_cavity = true;
-                        break;
-                    }
-                }
+                if (cavityContains(cavity.items, n_idx)) continue;
 
                 const edge = triangleEdge(tri, side);
                 const point_on_edge = n_idx != -1 and predicates.pointOnSegment(
@@ -311,33 +515,29 @@ pub const Engine = struct {
                     pt,
                 );
 
-                if (!in_cavity and (point_on_edge or self.isInsideCircumcircle(n_idx, pt))) {
+                if (point_on_edge or self.isInsideCircumcircle(n_idx, pt)) {
                     try cavity.append(self.allocator, n_idx);
                 }
             }
         }
 
-        for (cavity.items) |t_idx| {
-            const tri = self.mesh.triangles.get(@as(usize, @intCast(t_idx)));
-            const neighbors = [_]i32{ tri.adj0, tri.adj1, tri.adj2 };
-            for (neighbors, 0..) |n_idx, side| {
-                var in_cavity = false;
-                for (cavity.items) |c_idx| {
-                    if (c_idx == n_idx) {
-                        in_cavity = true;
-                        break;
-                    }
-                }
-                if (!in_cavity) {
-                    const edge = triangleEdge(tri, side);
-                    try edges.append(self.allocator, .{
-                        .adj_tri = n_idx,
-                        .v1 = edge.v1,
-                        .v2 = edge.v2,
-                        .old_tri = t_idx,
-                    });
-                }
+        while (true) {
+            try self.extractCavityBoundary(cavity.items, &edges);
+
+            if (try self.repairBoundaryNonManifoldEdges(&cavity, edges.items)) {
+                continue;
             }
+
+            if (boundaryHasPinch(edges.items)) {
+                const repaired = try self.completeCavityByGlobalScan(&cavity, pt);
+                if (!repaired) {
+                    std.debug.print("InvalidCavityBoundary: pinched boundary could not be repaired for point {d},{d}\n", .{ pt.x, pt.y });
+                    return error.InvalidCavityBoundary;
+                }
+                continue;
+            }
+
+            break;
         }
 
         // Tombstone cavity
@@ -411,4 +611,23 @@ test "cavity building" {
     // Let's also insert another point and verify
     _ = try engine.insertPoint(&arena, mesh.Vertex{ .x = 14.0, .y = 16.0 });
     try engine.validateTopology();
+}
+
+test "cavity edge counter keeps only once-used boundary edges" {
+    var counter = CavityEdgeCounter{};
+    defer counter.deinit(std.testing.allocator);
+
+    var edges: std.ArrayListUnmanaged(Edge) = .empty;
+    defer edges.deinit(std.testing.allocator);
+
+    try counter.reset(std.testing.allocator, 3);
+    try counter.add(std.testing.allocator, .{ .adj_tri = 10, .v1 = 1, .v2 = 2, .old_tri = 0 });
+    try counter.add(std.testing.allocator, .{ .adj_tri = 11, .v1 = 2, .v2 = 1, .old_tri = 1 });
+    try counter.add(std.testing.allocator, .{ .adj_tri = 12, .v1 = 2, .v2 = 3, .old_tri = 2 });
+
+    try counter.appendBoundaryTo(std.testing.allocator, &edges);
+
+    try std.testing.expectEqual(@as(usize, 1), edges.items.len);
+    try std.testing.expectEqual(@as(i32, 2), edges.items[0].v1);
+    try std.testing.expectEqual(@as(i32, 3), edges.items[0].v2);
 }
