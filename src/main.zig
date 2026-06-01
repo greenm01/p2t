@@ -4,6 +4,8 @@ const parser = @import("parser.zig");
 const mesh = @import("mesh.zig");
 const triangulate = @import("triangulate.zig");
 const corridor_module = @import("corridor.zig");
+const spatial = @import("spatial.zig");
+const quality = @import("quality.zig");
 
 pub fn readFile(allocator: std.mem.Allocator, io: Io, path: []const u8) ![]u8 {
     const dir = Io.Dir.cwd();
@@ -33,28 +35,91 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
         vertices[i] = .{ .x = p.x, .y = p.y };
     }
 
-    var times = try allocator.alloc(u64, iterations);
+    const BENCH_ROUNDS = 5;
+    var times = try allocator.alloc(u64, BENCH_ROUNDS);
     defer allocator.free(times);
 
     var reportedTriangles: usize = 0;
 
-    for (0..iterations) |round| {
+    for (0..BENCH_ROUNDS) |round| {
+        var ts_start: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts_start);
+
+        var total_triangles: usize = 0;
+
+        for (0..iterations) |_| {
+            var engine = triangulate.Engine.init(allocator);
+            defer engine.deinit();
+
+            var arena = mesh.ThreadArena{};
+            defer arena.deinit(allocator);
+
+            try engine.initSuperTriangle(vertices);
+
+            const sorted_indices = try spatial.sortVerticesByMorton(allocator, vertices);
+            defer allocator.free(sorted_indices);
+
+            for (sorted_indices) |idx| {
+                try engine.insertPoint(&arena, vertices[idx]);
+            }
+
+            var corridor = corridor_module.Corridor{};
+            defer corridor.deinit(allocator);
+
+            for (0..vertices.len) |i| {
+                const start_idx = @as(i32, @intCast(i));
+                const end_idx = @as(i32, @intCast((i + 1) % vertices.len));
+                
+                const start_pt = engine.getVertex(start_idx);
+                const end_pt = engine.getVertex(end_idx);
+
+                corridor.pierced_triangles.clearRetainingCapacity();
+
+                const start_tri = engine.walk(engine.last_valid_tri, start_pt);
+                if (start_tri >= 0) {
+                    try corridor.trace(allocator, &engine, start_tri, end_pt, start_pt);
+                    try corridor.clearAndRetriangulate(allocator, &engine, &arena, start_idx, end_idx);
+                }
+            }
+
+            total_triangles += engine.mesh.triangles.len;
+        }
+
+        var ts_end: std.os.linux.timespec = undefined;
+        _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts_end);
+        
+        const start_ns = @as(u64, @intCast(ts_start.sec)) * 1_000_000_000 + @as(u64, @intCast(ts_start.nsec));
+        const end_ns = @as(u64, @intCast(ts_end.sec)) * 1_000_000_000 + @as(u64, @intCast(ts_end.nsec));
+
+        const elapsed = end_ns - start_ns;
+        times[round] = @intCast(elapsed / 1000); // to us
+        reportedTriangles = total_triangles;
+    }
+
+    std.mem.sortUnstable(u64, times, {}, std.sort.asc(u64));
+    const best = times[0];
+    const median = times[BENCH_ROUNDS / 2];
+
+    std.debug.print("{s}: {d} runs, {d} triangles, best {d} us, median {d} us\n", .{ name, iterations, reportedTriangles, best, median });
+
+    // Calculate quality for the last run
+    if (iterations > 0) {
+        // We will just do a final run to measure quality so we don't skew the timing loop
         var engine = triangulate.Engine.init(allocator);
         defer engine.deinit();
 
         var arena = mesh.ThreadArena{};
         defer arena.deinit(allocator);
 
-        var ts_start: std.os.linux.timespec = undefined;
-        _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts_start);
-
-        try engine.initSuperTriangle(vertices);
-
-        for (vertices) |v| {
-            try engine.insertPoint(&arena, v);
+        engine.initSuperTriangle(vertices) catch unreachable;
+        
+        const sorted_indices = spatial.sortVerticesByMorton(allocator, vertices) catch unreachable;
+        defer allocator.free(sorted_indices);
+        
+        for (sorted_indices) |idx| {
+            engine.insertPoint(&arena, vertices[idx]) catch unreachable;
         }
 
-        // Phase 5: Constraint Recovery
         var corridor = corridor_module.Corridor{};
         defer corridor.deinit(allocator);
 
@@ -67,30 +132,30 @@ pub fn bench(allocator: std.mem.Allocator, io: Io, name: []const u8, file_path: 
 
             corridor.pierced_triangles.clearRetainingCapacity();
 
-            // Find triangle containing start_pt to begin tracing
             const start_tri = engine.walk(engine.last_valid_tri, start_pt);
             if (start_tri >= 0) {
-                try corridor.trace(allocator, &engine, start_tri, end_pt, start_pt);
-                try corridor.clearAndRetriangulate(allocator, &engine, &arena, start_idx, end_idx);
+                corridor.trace(allocator, &engine, start_tri, end_pt, start_pt) catch unreachable;
+                corridor.clearAndRetriangulate(allocator, &engine, &arena, start_idx, end_idx) catch unreachable;
             }
         }
 
-        var ts_end: std.os.linux.timespec = undefined;
-        _ = std.os.linux.clock_gettime(std.os.linux.CLOCK.MONOTONIC, &ts_end);
-        
-        const start_ns = @as(u64, @intCast(ts_start.sec)) * 1_000_000_000 + @as(u64, @intCast(ts_start.nsec));
-        const end_ns = @as(u64, @intCast(ts_end.sec)) * 1_000_000_000 + @as(u64, @intCast(ts_end.nsec));
+        var stats = quality.QualityStats{};
+        for (0..engine.mesh.triangles.len) |i| {
+            const tri = engine.mesh.triangles.get(i);
+            // Ignore tombstoned
+            if (tri.v0 == tri.v1 and tri.v1 == tri.v2) continue;
+            // Ignore super-triangle vertices (indices 0, 1, 2)
+            if (tri.v0 < 3 or tri.v1 < 3 or tri.v2 < 3) continue;
 
-        const elapsed = end_ns - start_ns;
-        times[round] = @intCast(elapsed / 1000); // to us
-        reportedTriangles = engine.mesh.triangles.len;
+            const a = engine.getVertex(tri.v0);
+            const b = engine.getVertex(tri.v1);
+            const c = engine.getVertex(tri.v2);
+
+            stats.accumulate(a, b, c);
+        }
+        stats.finalize();
+        stats.print(name);
     }
-
-    std.mem.sortUnstable(u64, times, {}, std.sort.asc(u64));
-    const best = times[0];
-    const median = times[iterations / 2];
-
-    std.debug.print("{s} (Zig): {d} runs, {d} triangles, best {d} us, median {d} us\n", .{ name, iterations, reportedTriangles, best, median });
 }
 
 pub fn main(init: std.process.Init) !void {
