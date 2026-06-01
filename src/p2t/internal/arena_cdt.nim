@@ -110,6 +110,7 @@ proc newPoint(
 ): ptr ArenaPoint {.inline.} =
   result = addr ws.points[ws.pointCount]
   result.firstEdge = nil
+  result.node = nil
   result.x = x.asArenaReal
   result.y = y.asArenaReal
   result.sourceIndex = sourceIndex.int32
@@ -206,22 +207,6 @@ proc swapNeighbor(
 proc clearDelaunayEdges(t: ptr ArenaTriangle) {.inline.} =
   t.flags = t.flags and not DelaunayEdgeMask
 
-proc pointCW(t: ptr ArenaTriangle, p: ptr ArenaPoint): ptr ArenaPoint {.inline.} =
-  if p == t.points[0]:
-    t.points[2]
-  elif p == t.points[1]:
-    t.points[0]
-  else:
-    t.points[1]
-
-proc pointCCW(t: ptr ArenaTriangle, p: ptr ArenaPoint): ptr ArenaPoint {.inline.} =
-  if p == t.points[0]:
-    t.points[1]
-  elif p == t.points[1]:
-    t.points[2]
-  else:
-    t.points[0]
-
 proc neighborCW(t: ptr ArenaTriangle, p: ptr ArenaPoint): ptr ArenaTriangle {.inline.} =
   if p == t.points[0]:
     t.neighbors[1]
@@ -304,16 +289,6 @@ proc setDelaunayEdgeCW(t: ptr ArenaTriangle, p: ptr ArenaPoint, edge: bool) =
   else:
     t.setFlag(delaunayFlag(0), edge)
 
-proc neighborAcross(
-    t: ptr ArenaTriangle, opoint: ptr ArenaPoint
-): ptr ArenaTriangle {.inline.} =
-  if opoint == t.points[0]:
-    t.neighbors[0]
-  elif opoint == t.points[1]:
-    t.neighbors[1]
-  else:
-    t.neighbors[2]
-
 proc oppositePointAcross(
     t: ptr ArenaTriangle, a, b: ptr ArenaPoint
 ): tuple[point: ptr ArenaPoint, index: int] {.inline.} =
@@ -390,6 +365,7 @@ proc newNode(
   result.point = p
   result.triangle = t
   result.value = p.x
+  p.node = result
   inc ws.nodeCount
 
 proc locateNode(ws: var ArenaWorkspace, x: ArenaReal): ptr ArenaNode =
@@ -406,34 +382,6 @@ proc locateNode(ws: var ArenaWorkspace, x: ArenaReal): ptr ArenaNode =
       if not node.isNil and x < node.value:
         ws.front.searchNode = node.prev
         return node.prev
-  nil
-
-proc locatePoint(ws: var ArenaWorkspace, p: ptr ArenaPoint): ptr ArenaNode =
-  let px = p.x
-  var node = ws.front.searchNode
-  let nx = node.point.x
-
-  if px == nx:
-    if p == node.point:
-      return node
-    if not node.prev.isNil and p == node.prev.point:
-      ws.front.searchNode = node.prev
-      return node.prev
-    if not node.next.isNil and p == node.next.point:
-      ws.front.searchNode = node.next
-      return node.next
-  elif px < nx:
-    while not node.prev.isNil:
-      node = node.prev
-      if p == node.point:
-        ws.front.searchNode = node
-        return node
-  else:
-    while not node.next.isNil:
-      node = node.next
-      if p == node.point:
-        ws.front.searchNode = node
-        return node
   nil
 
 proc addPoint(ws: var ArenaWorkspace, p: ptr ArenaPoint) =
@@ -564,7 +512,7 @@ proc createAdvancingFront(ws: var ArenaWorkspace) =
 proc mapTriangleToNodes(ws: var ArenaWorkspace, t: ptr ArenaTriangle) =
   for i in 0 .. 2:
     if t.neighbors[i].isNil:
-      let n = ws.locatePoint(t.pointCW(t.points[i]))
+      let n = t.points[PrevEdgeIndex[i]].node
       if not n.isNil:
         n.triangle = t
 
@@ -734,6 +682,9 @@ proc fill(ws: var ArenaWorkspace, n: ptr ArenaNode) {.inline.} =
 
   let prev = n.prev
   let next = n.next
+  if ws.front.searchNode == n:
+    ws.front.searchNode = prev
+  n.point.node = nil
   prev.next = next
   next.prev = prev
 
@@ -931,6 +882,7 @@ proc edgeEvent(
   ep, eq: ptr ArenaPoint,
   t: ptr ArenaTriangle,
   p: ptr ArenaPoint,
+  pIdx: int,
 )
 
 proc flipEdgeEvent(
@@ -938,6 +890,7 @@ proc flipEdgeEvent(
   ep, eq: ptr ArenaPoint,
   t: ptr ArenaTriangle,
   p: ptr ArenaPoint,
+  pIdx: int,
 )
 
 proc fillRightAboveEdgeEvent(
@@ -1025,29 +978,30 @@ proc nextFlipTriangle(
     o: Orientation,
     t, ot: ptr ArenaTriangle,
     p, op: ptr ArenaPoint,
-): ptr ArenaTriangle =
+): tuple[tri: ptr ArenaTriangle, pIndex: int] =
   if o == ccw:
     let idx = ot.edgeIndex(p, op)
     ot.setFlag(delaunayFlag(idx), true)
     discard ws.legalize(ot)
     ot.clearDelaunayEdges()
-    return t
+    return (t, t.index(p))
 
   let idx = t.edgeIndex(p, op)
   t.setFlag(delaunayFlag(idx), true)
   discard ws.legalize(t)
   t.clearDelaunayEdges()
-  ot
+  (ot, ot.index(p))
 
 proc nextFlipPoint(
-    ep, eq: ptr ArenaPoint, ot: ptr ArenaTriangle, op: ptr ArenaPoint
-): ptr ArenaPoint =
-  let opIdx = ot.index(op)
+    ep, eq: ptr ArenaPoint, ot: ptr ArenaTriangle, op: ptr ArenaPoint, opIdx: int
+): tuple[point: ptr ArenaPoint, index: int] =
   case orient2d(eq, op, ep)
   of cw:
-    ot.points[NextEdgeIndex[opIdx]]
+    let idx = NextEdgeIndex[opIdx]
+    (ot.points[idx], idx)
   of ccw:
-    ot.points[PrevEdgeIndex[opIdx]]
+    let idx = PrevEdgeIndex[opIdx]
+    (ot.points[idx], idx)
   of collinear:
     raise newException(ValueError, "opposing point on constrained edge")
 
@@ -1056,8 +1010,8 @@ proc flipScanEdgeEvent(
     ep, eq: ptr ArenaPoint,
     flipTriangle, t: ptr ArenaTriangle,
     p: ptr ArenaPoint,
+    pIdx: int,
 ) =
-  let pIdx = t.index(p)
   let ot = t.neighbors[pIdx]
   if ot.isNil:
     raise newException(ValueError, "flip scan failed due to missing triangle")
@@ -1066,6 +1020,7 @@ proc flipScanEdgeEvent(
     pcw = t.points[PrevEdgeIndex[pIdx]]
     opposite = ot.oppositePointAcross(pccw, pcw)
     op = opposite.point
+    opIdx = opposite.index
 
   let eqIdx = flipTriangle.index(eq)
   if inScanArea(
@@ -1074,18 +1029,18 @@ proc flipScanEdgeEvent(
     flipTriangle.points[PrevEdgeIndex[eqIdx]],
     op,
   ):
-    ws.flipEdgeEvent(eq, op, ot, op)
+    ws.flipEdgeEvent(eq, op, ot, op, opIdx)
   else:
-    let newP = nextFlipPoint(ep, eq, ot, op)
-    ws.flipScanEdgeEvent(ep, eq, flipTriangle, ot, newP)
+    let newP = nextFlipPoint(ep, eq, ot, op, opIdx)
+    ws.flipScanEdgeEvent(ep, eq, flipTriangle, ot, newP.point, newP.index)
 
 proc flipEdgeEvent(
     ws: var ArenaWorkspace,
     ep, eq: ptr ArenaPoint,
     t: ptr ArenaTriangle,
     p: ptr ArenaPoint,
+    pIdx: int,
 ) =
-  let pIdx = t.index(p)
   let ot = t.neighbors[pIdx]
   if ot.isNil:
     raise newException(ValueError, "flip failed due to missing triangle")
@@ -1094,6 +1049,7 @@ proc flipEdgeEvent(
     pcw = t.points[PrevEdgeIndex[pIdx]]
     opposite = ot.oppositePointAcross(pccw, pcw)
     op = opposite.point
+    opIdx = opposite.index
 
   if inScanArea(p, pccw, pcw, op):
     ws.rotateTrianglePair(t, p, ot, op)
@@ -1109,41 +1065,45 @@ proc flipEdgeEvent(
     else:
       let o = orient2d(eq, op, ep)
       let nextT = ws.nextFlipTriangle(o, t, ot, p, op)
-      ws.flipEdgeEvent(ep, eq, nextT, p)
+      ws.flipEdgeEvent(ep, eq, nextT.tri, p, nextT.pIndex)
   else:
-    let newP = nextFlipPoint(ep, eq, ot, op)
-    ws.flipScanEdgeEvent(ep, eq, t, ot, newP)
-    ws.edgeEvent(ep, eq, t, p)
+    let newP = nextFlipPoint(ep, eq, ot, op, opIdx)
+    ws.flipScanEdgeEvent(ep, eq, t, ot, newP.point, newP.index)
+    ws.edgeEvent(ep, eq, t, p, pIdx)
 
 proc edgeEvent(
     ws: var ArenaWorkspace,
     ep, eq: ptr ArenaPoint,
     t: ptr ArenaTriangle,
     p: ptr ArenaPoint,
+    pIdx: int,
 ) =
   var t = t
+  var pIdx = pIdx
   if t.isEdgeSideOfTriangle(ep, eq):
     return
 
-  let p1 = t.pointCCW(p)
+  let p1 = t.points[NextEdgeIndex[pIdx]]
   let o1 = orient2d(eq, p1, ep)
   if o1 == collinear:
     if t.contains(eq, p1):
       t.markConstrainedEdge(eq, p1)
       ws.edgeEvent.constrainedEdge.q = p1
-      ws.edgeEvent(ep, p1, t.neighborAcross(p), p1)
+      let nt = t.neighbors[pIdx]
+      ws.edgeEvent(ep, p1, nt, p1, nt.index(p1))
     else:
       raise
         newException(ValueError, "collinear constrained edge points are not supported")
     return
 
-  let p2 = t.pointCW(p)
+  let p2 = t.points[PrevEdgeIndex[pIdx]]
   let o2 = orient2d(eq, p2, ep)
   if o2 == collinear:
     if t.contains(eq, p2):
       t.markConstrainedEdge(eq, p2)
       ws.edgeEvent.constrainedEdge.q = p2
-      ws.edgeEvent(ep, p2, t.neighborAcross(p), p2)
+      let nt = t.neighbors[pIdx]
+      ws.edgeEvent(ep, p2, nt, p2, nt.index(p2))
     else:
       raise
         newException(ValueError, "collinear constrained edge points are not supported")
@@ -1151,14 +1111,15 @@ proc edgeEvent(
 
   if o1 == o2:
     if o1 == cw:
-      t = t.neighborCCW(p)
+      t = t.neighbors[PrevEdgeIndex[pIdx]]
     else:
-      t = t.neighborCW(p)
+      t = t.neighbors[NextEdgeIndex[pIdx]]
     if t.isNil:
       raise newException(ValueError, "missing neighbor while walking constrained edge")
-    ws.edgeEvent(ep, eq, t, p)
+    pIdx = t.index(p)
+    ws.edgeEvent(ep, eq, t, p, pIdx)
   else:
-    ws.flipEdgeEvent(ep, eq, t, p)
+    ws.flipEdgeEvent(ep, eq, t, p, pIdx)
 
 proc edgeEvent(ws: var ArenaWorkspace, edge: ptr ArenaEdge, n: ptr ArenaNode) =
   ws.edgeEvent.constrainedEdge = edge
@@ -1166,7 +1127,7 @@ proc edgeEvent(ws: var ArenaWorkspace, edge: ptr ArenaEdge, n: ptr ArenaNode) =
   if n.triangle.isEdgeSideOfTriangle(edge.p, edge.q):
     return
   ws.fillEdgeEvent(edge, n)
-  ws.edgeEvent(edge.p, edge.q, n.triangle, edge.q)
+  ws.edgeEvent(edge.p, edge.q, n.triangle, edge.q, n.triangle.index(edge.q))
 
 proc sweepPoints(ws: var ArenaWorkspace) =
   for i in 1 ..< ws.activePoints.len:

@@ -65,6 +65,7 @@ when defined(p2tArenaCdt):
   type
     ArenaPoint* = object
       firstEdge*: ptr ArenaEdge
+      node*: ptr ArenaNode
       x*, y*: ArenaReal
       sourceIndex*, id*: int32
 
