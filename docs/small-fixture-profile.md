@@ -89,6 +89,59 @@ dude's residual +2.1% is now distributed across the geometry kernels (`legalize`
 ~18%, fill family ~22%, `sweepPoints` ~9%, `locateNode` ~5%) which match the
 reference structurally — diminishing returns from here.
 
+## Closing dude: pdqsort replaces the merge sort (commit `66f98c4`)
+
+The "diminishing returns" call above was wrong about one thing: the sort. Earlier
+work had concluded our hybrid merge sort was a settled strength — it beat
+poly2tri's merge and a naive recursive quicksort (`-d:p2tQuickSort`, which lost
+because it had no insertion base and recursed to size 1) in an isolated
+microbench. That conclusion did not test a *good* quicksort.
+
+Swapping in **pdqsort** (pattern-defeating quicksort, Orson Peters' algorithm,
+vendored from `~/dev/fastsort-nim`) as the default `sortActivePoints` won on
+**every** fixture, randomized-order 40-run global-min, two batches:
+
+| fixture          | pdqsort vs merge |
+|------------------|-----------------:|
+| dude-with-holes  |    -4.0..-4.1%   |
+| nazca-monkey     |    -5.3..-6.1%   |
+| nazca-heron      |    -2.6..-4.6%   |
+| diamond          |    -2.0..-2.3%   |
+| star             |    -0.5..-2.6%   |
+| large-shape      |    wash          |
+
+**Why it wins is not the comparison count** — pdqsort and our merge both use an
+insertion base at 24, and on dude (104 pts) both do divide-and-conquer. The
+difference is memory traffic: the merge sort copies each run out to `sortTemp`
+and back into `activePoints` on every merge level; pdqsort partitions **in
+place**. On these small-to-medium pointer arrays the copy-back dominates.
+Stability (merge stable, pdqsort not) is irrelevant: `pointCmp` returns 0 only
+for exact-duplicate points, which poly2tri rejects upstream, so no equal keys
+ever reach the sort.
+
+This flipped dude from **+2.1% to -2.9%** vs `fast-poly2tri` and widened every
+other margin. The engine now beats `fast-poly2tri` (double, fast-float) on the
+entire fixture set:
+
+| fixture          | ours/ref (pre-pdq) | ours/ref (pdq) |
+|------------------|-------------------:|---------------:|
+| diamond          |     -6.2%          |   -5.8%        |
+| star             |    -11.5%          |   -9.6%        |
+| dude-with-holes  |     +2.1%          |   **-2.9%**    |
+| nazca-monkey     |     -5.5%          |   -9.0%        |
+| nazca-heron      |    -12.4%          |  -18.9%        |
+
+`skaSort` (LSD radix, also in `fastsort-nim`) was assessed and rejected: it sorts
+numeric values, not pointers; our key is a 128-bit lexicographic (y,x) of two
+float64s exceeding its 64-bit width; and it only engages at >=256 elements —
+fixtures we already win. `-d:p2tMergeSort` / `-d:p2tQuickSort` keep the old
+implementations available for A/B.
+
+**Lesson:** "our sort is already fastest" was true only against the alternatives
+previously benchmarked. A microbench that omits the strongest candidate proves
+nothing about it.
+
+
 ## Methodology (important)
 
 The `legalize` A/B initially showed a clear win, then **flipped sign entirely**
