@@ -89,7 +89,9 @@ proc resetCdt(ws: var ArenaWorkspace) =
   ws.rawInteriorCount = 0
   ws.activePoints.setLen(0)
   ws.sortTemp.setLen(0)
-  ws.meshStack.setLen(0)
+  # meshStack is scratch space owned entirely by meshClean (overwrites [0] and
+  # drives via stackCount); never reset its length so we avoid a per-call grow
+  # that zero-fills triangles.len pointer slots.
   ws.interiorTriangles.setLen(0)
   when FrontHashOn:
     ws.frontBuckets.setLen(0)
@@ -779,7 +781,6 @@ proc meshClean(ws: var ArenaWorkspace, t: ptr ArenaTriangle) =
             ws.meshStack[stackCount] = neighbor
             inc stackCount
 
-  ws.meshStack.setLen(0)
   ws.interiorTriangles.setLen(ws.rawInteriorCount)
 
 proc incircle(pa, pb, pc, pd: ptr ArenaPoint): bool {.inline.} =
