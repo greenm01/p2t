@@ -4,6 +4,9 @@
 
 Diagram by Thomas Åhlén, December 2009.
 
+For the point-insertion side of the engine, see the
+[Žalik sweep-line CDT guide](zalik-sweep.md).
+
 ## Purpose
 
 The sweep creates a Delaunay-ish triangulation while points are inserted from

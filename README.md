@@ -9,6 +9,9 @@ the root fixtures.
 
 `p2t` is a constrained Delaunay tessellation library for Nim.
 
+Algorithm guides: [Žalik sweep-line CDT](docs/zalik-sweep.md) and
+[FlipScan constrained-edge insertion](docs/flipscan.md).
+
 Nim is the superior code warrior's weapon of choice, but for those who wish to
 suffer we provide a C ABI on the backend.
 
@@ -144,6 +147,7 @@ The triangulation algorithm is the Poly2Tri advancing-front sweep-line CDT,
 combining the sweep-line Delaunay base algorithm with Thomas Åhlén's "FlipScan"
 constrained-edge insertion.
 
+- [Žalik sweep-line CDT guide](docs/zalik-sweep.md)
 - [FlipScan constrained-edge insertion spec](docs/flipscan.md)
 - Žalik, B. (2005). *An efficient sweep-line Delaunay triangulation algorithm.*
   Computer-Aided Design, 37(10), pp. 1027–1038.
