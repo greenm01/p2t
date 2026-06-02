@@ -43,8 +43,8 @@ responsibility.
 ## Final Head-to-Head
 
 The final comparison uses the public `import p2t` API against vendored
-`fast-poly2tri` and libtess2. Times are best/median microseconds per
-triangulation, derived from five sequential `nimble benchCompareAll` passes.
+`fast-poly2tri,` Shewchuk's Triangle, and libtess2. Times are best/median
+microseconds per triangulation, from five sequential `nimble benchCompareAll` passes.
 Each cell uses the pass with the lowest best time for that fixture/engine.
 
 Benchmark machine:
