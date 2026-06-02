@@ -413,6 +413,19 @@ proc oppositePointAcross(
   else:
     (t.points[2], 2)
 
+proc pointCW(
+    t: ptr ArenaTriangle, p: ptr ArenaPoint
+): tuple[point: ptr ArenaPoint, index: int] {.inline.} =
+  ## Point clockwise from `p` in `t` (== the apex opposite the shared edge whose
+  ## cw endpoint is `p`). Mirrors fast-poly2tri MPE_PointCW: needs only `p`, so
+  ## the ccw shared point can be computed lazily after the constrained check.
+  if p == t.points[0]:
+    (t.points[2], 2)
+  elif p == t.points[1]:
+    (t.points[0], 0)
+  else:
+    (t.points[1], 1)
+
 proc legalize(t: ptr ArenaTriangle, opoint, npoint: ptr ArenaPoint) =
   if opoint == t.points[0]:
     t.points[1] = t.points[0]
@@ -945,10 +958,8 @@ proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
     let ot = t.neighbors[i]
     if not ot.isNil:
       let
-        p = t.points[i]
-        pccw = t.points[NextEdgeIndex[i]]
         pcw = t.points[PrevEdgeIndex[i]]
-        opposite = ot.oppositePointAcross(pccw, pcw)
+        opposite = ot.pointCW(pcw)
         op = opposite.point
         oi = opposite.index
 
@@ -956,6 +967,9 @@ proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
         t.setFlag(constrainedFlag(i), ot.hasFlag(constrainedFlag(oi)))
         continue
 
+      let
+        p = t.points[i]
+        pccw = t.points[NextEdgeIndex[i]]
       if incircle(p, pccw, pcw, op):
         ws.statInc(incircleSuccesses)
         t.setFlag(delaunayFlag(i), true)
