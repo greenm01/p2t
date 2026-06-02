@@ -1,6 +1,7 @@
 import std/[math, os, strformat, strutils]
 
 import p2t
+import p2t/types
 
 when defined(p2tIdxCdt) or defined(p2tLegacyCdt):
   {.fatal: "bench_cdt_stats requires the arena CDT backend".}
