@@ -130,7 +130,7 @@ proc reserveArena(
     if frontHashPointCountEnabled(pointCount):
       workspace.arena.frontBuckets.reserveSeq(max(16, pointCount div 4))
   workspace.arena.activePoints.reserveSeq(pointCount + 2)
-  when not defined(p2tQuickSort):
+  when defined(p2tMergeSort):
     workspace.arena.sortTemp.reserveSeq(pointCount + 2)
   when keepVertices:
     workspace.vertices.reserveSeq(pointCount)
@@ -698,11 +698,213 @@ proc mergeSortActivePoints(ws: var ArenaWorkspace) {.used.} =
       ws.sortTemp.setLen(ws.activePoints.len)
     ws.sortRange(0, ws.activePoints.len)
 
+when not defined(p2tQuickSort):
+  # pdqsort: pattern-defeating quicksort over activePoints, vendored from
+  # ~/dev/fastsort-nim (Orson Peters' pdqsort). Comparator splices pointCmp so it
+  # inlines to a raw lexicographic (y,x) compare. In-place (no sortTemp traffic),
+  # which is why it beats the previous hybrid merge sort on every fixture. This is
+  # the default sort; -d:p2tMergeSort / -d:p2tQuickSort select the alternatives.
+  const
+    PdqInsertionThreshold = 24
+    PdqNintherThreshold = 128
+
+  func pdqLog2(n: int): int {.inline.} =
+    var v = n
+    while v > 1:
+      inc result
+      v = v shr 1
+
+  template pdqLt(x, y: ptr ArenaPoint): bool =
+    pointCmp(x, y) < 0
+
+  proc pdqIns(a: var seq[ptr ArenaPoint], lo, hi: int) =
+    var i = lo + 1
+    while i <= hi:
+      var j = i
+      let tmp = a[j]
+      while j > lo and pdqLt(tmp, a[j - 1]):
+        a[j] = a[j - 1]
+        dec j
+      a[j] = tmp
+      inc i
+
+  proc pdqUnIns(a: var seq[ptr ArenaPoint], lo, hi: int) =
+    var i = lo + 1
+    while i <= hi:
+      var j = i
+      let tmp = a[j]
+      while pdqLt(tmp, a[j - 1]):
+        a[j] = a[j - 1]
+        dec j
+      a[j] = tmp
+      inc i
+
+  proc pdqS3(a: var seq[ptr ArenaPoint], x, y, z: int) =
+    if pdqLt(a[y], a[x]):
+      swap(a[x], a[y])
+    if pdqLt(a[z], a[y]):
+      swap(a[y], a[z])
+      if pdqLt(a[y], a[x]):
+        swap(a[x], a[y])
+
+  proc pdqPartRight(
+      a: var seq[ptr ArenaPoint], lo, hi: int
+  ): tuple[pos: int, ap: bool] =
+    let pivot = a[lo]
+    var first = lo
+    var last = hi + 1
+    inc first
+    while pdqLt(a[first], pivot):
+      inc first
+    if first - 1 == lo:
+      while first < last:
+        dec last
+        if pdqLt(a[last], pivot):
+          break
+    else:
+      while true:
+        dec last
+        if pdqLt(a[last], pivot):
+          break
+    let alreadyPartitioned = first >= last
+    while first < last:
+      swap(a[first], a[last])
+      inc first
+      while pdqLt(a[first], pivot):
+        inc first
+      dec last
+      while not pdqLt(a[last], pivot):
+        dec last
+    let pivotPos = first - 1
+    a[lo] = a[pivotPos]
+    a[pivotPos] = pivot
+    result = (pivotPos, alreadyPartitioned)
+
+  proc pdqPartLeft(a: var seq[ptr ArenaPoint], lo, hi: int): int =
+    let pivot = a[lo]
+    var first = lo
+    var last = hi + 1
+    while true:
+      dec last
+      if pdqLt(pivot, a[last]):
+        break
+    if last == hi:
+      while first < last:
+        inc first
+        if pdqLt(pivot, a[first]):
+          break
+    else:
+      while true:
+        inc first
+        if pdqLt(pivot, a[first]):
+          break
+    while first < last:
+      swap(a[first], a[last])
+      while true:
+        dec last
+        if pdqLt(pivot, a[last]):
+          break
+      while true:
+        inc first
+        if pdqLt(pivot, a[first]):
+          break
+    result = last
+    let pivotPos = last
+    a[lo] = a[pivotPos]
+    a[pivotPos] = pivot
+
+  proc pdqSift(a: var seq[ptr ArenaPoint], lo, hi, start: int) =
+    let n = hi - lo + 1
+    var root = start - lo
+    while true:
+      var child = 2 * root + 1
+      if child >= n:
+        break
+      if child + 1 < n and pdqLt(a[lo + child], a[lo + child + 1]):
+        inc child
+      if pdqLt(a[lo + root], a[lo + child]):
+        swap(a[lo + root], a[lo + child])
+        root = child
+      else:
+        break
+
+  proc pdqHeap(a: var seq[ptr ArenaPoint], lo, hi: int) =
+    let n = hi - lo + 1
+    var start = lo + (n div 2) - 1
+    while start >= lo:
+      pdqSift(a, lo, hi, start)
+      dec start
+    var ed = hi
+    while ed > lo:
+      swap(a[lo], a[ed])
+      pdqSift(a, lo, ed - 1, lo)
+      dec ed
+
+  proc pdqLoop(
+      a: var seq[ptr ArenaPoint], lo0, hi0, bad0: int, leftmost0: bool
+  ) =
+    var lo = lo0
+    var hi = hi0
+    var badAllowed = bad0
+    var leftmost = leftmost0
+    while true:
+      let size = hi - lo + 1
+      if size < PdqInsertionThreshold:
+        if leftmost:
+          pdqIns(a, lo, hi)
+        else:
+          pdqUnIns(a, lo, hi)
+        return
+      let half = size div 2
+      if size > PdqNintherThreshold:
+        pdqS3(a, lo, lo + half, hi)
+        pdqS3(a, lo + 1, lo + (half - 1), hi - 1)
+        pdqS3(a, lo + 2, lo + (half + 1), hi - 2)
+        pdqS3(a, lo + (half - 1), lo + half, lo + (half + 1))
+        swap(a[lo], a[lo + half])
+      else:
+        pdqS3(a, lo + half, lo, hi)
+      if not leftmost and not pdqLt(a[lo - 1], a[lo]):
+        let p = pdqPartLeft(a, lo, hi)
+        lo = p + 1
+        continue
+      let (pivotPos, _) = pdqPartRight(a, lo, hi)
+      let lSize = pivotPos - lo
+      let rSize = hi - pivotPos
+      let unbalanced = lSize < size div 8 or rSize < size div 8
+      if unbalanced:
+        dec badAllowed
+        if badAllowed <= 0:
+          pdqHeap(a, lo, hi)
+          return
+        if lSize >= PdqInsertionThreshold:
+          swap(a[lo], a[lo + lSize div 4])
+          swap(a[pivotPos - 1], a[pivotPos - lSize div 4])
+        if rSize >= PdqInsertionThreshold:
+          swap(a[pivotPos + 1], a[pivotPos + 1 + rSize div 4])
+          swap(a[hi], a[hi - rSize div 4])
+      if lSize < rSize:
+        pdqLoop(a, lo, pivotPos - 1, badAllowed, leftmost)
+        lo = pivotPos + 1
+        leftmost = false
+      else:
+        pdqLoop(a, pivotPos + 1, hi, badAllowed, false)
+        hi = pivotPos - 1
+
+  proc pdqsortActivePoints(ws: var ArenaWorkspace) {.used.} =
+    let hi = ws.activePoints.high
+    if hi <= 0:
+      return
+    let depth = pdqLog2(hi + 1)
+    pdqLoop(ws.activePoints, 0, hi, depth, true)
+
 proc sortActivePoints(ws: var ArenaWorkspace) =
   when defined(p2tQuickSort):
     ws.quicksortActivePoints()
-  else:
+  elif defined(p2tMergeSort):
     ws.mergeSortActivePoints()
+  else:
+    ws.pdqsortActivePoints()
 
 proc initTriangulation(ws: var ArenaWorkspace) =
   var
