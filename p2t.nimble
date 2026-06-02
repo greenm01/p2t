@@ -3,7 +3,7 @@
 version = "0.1.0"
 author = "Mason Austin Green"
 description = "Standalone constrained polygon tessellation for Nim"
-license = "BSD-2-Clause"
+license = "BSD-3-Clause"
 srcDir = "src"
 
 # Dependencies

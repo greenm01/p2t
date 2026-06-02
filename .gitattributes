@@ -1,0 +1,8 @@
+*.nim linguist-language=Nim
+*.nimble linguist-language=Nim
+
+# Keep GitHub's language bar focused on the package implementation. These are
+# benchmark adapters, fixture generators, or screenshot helpers.
+*.c linguist-detectable=false
+*.rs linguist-detectable=false
+*.py linguist-detectable=false

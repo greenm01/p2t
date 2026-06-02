@@ -117,4 +117,4 @@ constrained-edge insertion.
 
 ## License
 
-BSD 2-Clause License. Copyright (c) 2009-2026 Mason Austin Green.
+BSD 3-Clause License. Copyright (c) 2009-2026 Mason Austin Green.
