@@ -81,6 +81,9 @@ when defined(p2tArenaCdt):
       legalizeEdges*, incircleSuccesses*, markNeighborCalls*: uint64
       mapTriangleNodeUpdates*: uint64
       locateNodeHashHits*, locateNodeHashMisses*, frontBucketUpdates*: uint64
+      when defined(p2tIncircleProf):
+        legalizeNilNeighbors*, legalizeSkipDelaunay*, legalizeSkipConstrained*,
+          legalizeSkipOppositeDelaunay*: uint64
       when defined(p2tFrontHashStats):
         frontHashDirect*, frontHashScan*, frontHashFallback*: FrontHashWalkStats
         frontHashScanRadius*: array[FrontHashScanRadiusCount, uint64]

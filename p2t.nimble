@@ -344,6 +344,24 @@ task benchCdtStats, "report arena CDT operation counts":
   )
   sh quoteShell("/tmp/p2t_bench_cdt_stats_front_hash")
 
+task benchPhaseProfile, "profile arena CDT phase timing on small fixtures":
+  nimCompile(
+    "bench/bench_phase_profile",
+    flags = ChampionFlags & " -d:p2tPhaseProf",
+    outPath = "/tmp/p2t_bench_phase_profile",
+    nimcache = "/tmp/p2t_bench_phase_profile_d",
+  )
+  sh quoteShell("/tmp/p2t_bench_phase_profile")
+
+task benchIncircleProfile, "profile arena CDT in-circle legalize work":
+  nimCompile(
+    "bench/bench_incircle_profile",
+    flags = ChampionFlags & " -d:p2tCdtStats -d:p2tIncircleProf",
+    outPath = "/tmp/p2t_bench_incircle_profile",
+    nimcache = "/tmp/p2t_bench_incircle_profile_d",
+  )
+  sh quoteShell("/tmp/p2t_bench_incircle_profile")
+
 task benchStressSmall, "benchmark the small stress fixture with champion Nim flags":
   nimCompile(
     "bench/bench_stress_small",

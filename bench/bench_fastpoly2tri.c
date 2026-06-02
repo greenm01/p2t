@@ -25,6 +25,11 @@ typedef struct BenchContour {
   uint32_t count;
 } BenchContour;
 
+typedef struct BenchFixture {
+  BenchContour *contours;
+  uint32_t count;
+} BenchFixture;
+
 static double now_seconds(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -81,6 +86,71 @@ static BenchContour read_dat(const char *path) {
   return result;
 }
 
+static void push_fixture_contour(BenchFixture *fixture, BenchContour contour) {
+  if (contour.count == 0) {
+    free(contour.points);
+    return;
+  }
+  BenchContour *grown = (BenchContour *)realloc(
+      fixture->contours, sizeof(BenchContour) * (fixture->count + 1));
+  if (!grown) {
+    fprintf(stderr, "out of memory\n");
+    exit(1);
+  }
+  fixture->contours = grown;
+  fixture->contours[fixture->count++] = contour;
+}
+
+static BenchFixture read_dat_rings(const char *path) {
+  BenchFixture result = {0};
+  FILE *file = fopen(path, "r");
+  if (!file) {
+    fprintf(stderr, "failed to open %s\n", path);
+    exit(1);
+  }
+
+  BenchContour current = {0};
+  uint32_t cap = 0;
+  char line[256];
+  while (fgets(line, sizeof(line), file)) {
+    double x, y;
+    if (sscanf(line, "%lf %lf", &x, &y) != 2) {
+      push_fixture_contour(&result, current);
+      current = (BenchContour){0};
+      cap = 0;
+      continue;
+    }
+    if (current.count == cap) {
+      cap = cap == 0 ? 128 : cap * 2;
+      BenchPoint *grown =
+          (BenchPoint *)realloc(current.points, sizeof(BenchPoint) * cap);
+      if (!grown) {
+        fprintf(stderr, "out of memory\n");
+        exit(1);
+      }
+      current.points = grown;
+    }
+    current.points[current.count++] = (BenchPoint){x, y};
+  }
+  push_fixture_contour(&result, current);
+  fclose(file);
+
+  if (result.count == 0) {
+    fprintf(stderr, "empty fixture %s\n", path);
+    exit(1);
+  }
+  return result;
+}
+
+static void free_fixture(BenchFixture *fixture) {
+  for (uint32_t i = 0; i < fixture->count; ++i) {
+    free(fixture->contours[i].points);
+  }
+  free(fixture->contours);
+  fixture->contours = NULL;
+  fixture->count = 0;
+}
+
 static void push_contour(MPEPolyContext *ctx, const BenchContour *contour) {
   MPEPolyPoint *points = MPE_PolyPushPointArray(ctx, contour->count);
   for (uint32_t i = 0; i < contour->count; ++i) {
@@ -89,19 +159,11 @@ static void push_contour(MPEPolyContext *ctx, const BenchContour *contour) {
   }
 }
 
-static void bench_case(const char *name, const char *path, int iterations,
-                       int add_dude_holes) {
-  static const BenchPoint head_hole_points[] = {
-      {325, 437}, {320, 423}, {329, 413}, {332, 423}};
-  static const BenchPoint chest_hole_points[] = {
-      {320.72342, 480},      {338.90617, 465.96863},
-      {347.99754, 480.61584}, {329.8148, 510.41534},
-      {339.91632, 480.11077}, {334.86556, 478.09046}};
-  const BenchContour head_hole = {(BenchPoint *)head_hole_points, 4};
-  const BenchContour chest_hole = {(BenchPoint *)chest_hole_points, 6};
-
-  BenchContour outer = read_dat(path);
-  uint32_t max_points = outer.count + (add_dude_holes ? 10u : 0u);
+static void bench_fixture(const char *name, int iterations, BenchFixture fixture) {
+  uint32_t max_points = 0;
+  for (uint32_t i = 0; i < fixture.count; ++i) {
+    max_points += fixture.contours[i].count;
+  }
   size_t memory_size = MPE_PolyMemoryRequired(max_points);
   void *memory = calloc(memory_size, 1);
   if (!memory) {
@@ -122,12 +184,10 @@ static void bench_case(const char *name, const char *path, int iterations,
         exit(1);
       }
 
-      push_contour(&ctx, &outer);
+      push_contour(&ctx, &fixture.contours[0]);
       MPE_PolyAddEdge(&ctx);
-      if (add_dude_holes) {
-        push_contour(&ctx, &head_hole);
-        MPE_PolyAddHole(&ctx);
-        push_contour(&ctx, &chest_hole);
+      for (uint32_t hole = 1; hole < fixture.count; ++hole) {
+        push_contour(&ctx, &fixture.contours[hole]);
         MPE_PolyAddHole(&ctx);
       }
 
@@ -142,9 +202,51 @@ static void bench_case(const char *name, const char *path, int iterations,
   printf("%s: %d runs, %llu triangles, best %.0f us, median %.0f us\n", name,
          iterations, (unsigned long long)reported_triangles, times[0],
          times[BENCH_ROUNDS / 2]);
+  fflush(stdout);
 
   free(memory);
-  free(outer.points);
+  free_fixture(&fixture);
+}
+
+static void bench_case(const char *name, const char *path, int iterations) {
+  BenchFixture fixture = {0};
+  BenchContour outer = read_dat(path);
+  push_fixture_contour(&fixture, outer);
+  bench_fixture(name, iterations, fixture);
+}
+
+static void bench_dude(void) {
+  static const BenchPoint head_hole_points[] = {
+      {325, 437}, {320, 423}, {329, 413}, {332, 423}};
+  static const BenchPoint chest_hole_points[] = {
+      {320.72342, 480},       {338.90617, 465.96863},
+      {347.99754, 480.61584}, {329.8148, 510.41534},
+      {339.91632, 480.11077}, {334.86556, 478.09046}};
+
+  BenchFixture fixture = {0};
+  push_fixture_contour(&fixture, read_dat("tests/fixtures/dude.dat"));
+
+  BenchContour head_hole = {0};
+  head_hole.count = 4;
+  head_hole.points = (BenchPoint *)malloc(sizeof(head_hole_points));
+  if (!head_hole.points) {
+    fprintf(stderr, "out of memory\n");
+    exit(1);
+  }
+  memcpy(head_hole.points, head_hole_points, sizeof(head_hole_points));
+  push_fixture_contour(&fixture, head_hole);
+
+  BenchContour chest_hole = {0};
+  chest_hole.count = 6;
+  chest_hole.points = (BenchPoint *)malloc(sizeof(chest_hole_points));
+  if (!chest_hole.points) {
+    fprintf(stderr, "out of memory\n");
+    exit(1);
+  }
+  memcpy(chest_hole.points, chest_hole_points, sizeof(chest_hole_points));
+  push_fixture_contour(&fixture, chest_hole);
+
+  bench_fixture("dude-with-holes", 1000, fixture);
 }
 
 int main(void) {
@@ -154,11 +256,15 @@ int main(void) {
   const char *precision = "fast-poly2tri float";
 #endif
   printf("%s\n", precision);
-  bench_case("fixture-test", "tests/fixtures/test.dat", 10000, 0);
-  bench_case("diamond", "tests/fixtures/diamond.dat", 10000, 0);
-  bench_case("star", "tests/fixtures/star.dat", 10000, 0);
-  bench_case("dude-with-holes", "tests/fixtures/dude.dat", 1000, 1);
-  bench_case("nazca-monkey", "tests/fixtures/nazca_monkey.dat", 100, 0);
-  bench_case("nazca-heron", "tests/fixtures/nazca_heron.dat", 100, 0);
+  fflush(stdout);
+  bench_case("fixture-test", "tests/fixtures/test.dat", 10000);
+  bench_case("diamond", "tests/fixtures/diamond.dat", 10000);
+  bench_case("star", "tests/fixtures/star.dat", 10000);
+  bench_dude();
+  bench_case("nazca-monkey", "tests/fixtures/nazca_monkey.dat", 100);
+  bench_case("nazca-heron", "tests/fixtures/nazca_heron.dat", 100);
+  bench_fixture(
+      "organic-large", 100,
+      read_dat_rings("tests/fixtures/organic/cdt_organic_large.dat"));
   return 0;
 }

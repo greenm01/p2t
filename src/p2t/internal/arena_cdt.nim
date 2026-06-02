@@ -6,8 +6,14 @@
 
 import ../types
 
+when defined(p2tPhaseProf):
+  import std/[monotimes, times]
+
 when defined(p2tFrontHashStats) and not defined(p2tCdtStats):
   {.fatal: "p2tFrontHashStats requires -d:p2tCdtStats".}
+
+when defined(p2tIncircleProf) and not defined(p2tCdtStats):
+  {.fatal: "p2tIncircleProf requires -d:p2tCdtStats".}
 
 when defined(p2tUnsafeCdt):
   {.push checks: off.}
@@ -64,6 +70,63 @@ type
   CdtRawResult* = object
     vertices*: ptr seq[Vec2]
     arena*: ptr ArenaWorkspace
+
+when defined(p2tPhaseProf):
+  type
+    ArenaCdtPhase* = enum
+      phSetup
+      phSort
+      phLocate
+      phPointEvent
+      phFill
+      phLegalize
+      phEdgeEvent
+      phFinalize
+
+    ArenaCdtPhaseProf* = object
+      ns*: array[ArenaCdtPhase, int64]
+      hits*: array[ArenaCdtPhase, int64]
+      stack: array[64, tuple[phase: ArenaCdtPhase, start: MonoTime]]
+      sp: int
+
+  var arenaCdtPhaseProf*: ArenaCdtPhaseProf
+
+  proc resetArenaCdtPhaseProf*() =
+    for phase in ArenaCdtPhase:
+      arenaCdtPhaseProf.ns[phase] = 0
+      arenaCdtPhaseProf.hits[phase] = 0
+    arenaCdtPhaseProf.sp = 0
+
+  proc arenaCdtPhaseProfSnapshot*(): ArenaCdtPhaseProf =
+    arenaCdtPhaseProf
+
+  proc enterPhase(phase: ArenaCdtPhase) {.inline.} =
+    let now = getMonoTime()
+    if arenaCdtPhaseProf.sp > 0:
+      let parent = arenaCdtPhaseProf.stack[arenaCdtPhaseProf.sp - 1]
+      arenaCdtPhaseProf.ns[parent.phase] += (now - parent.start).inNanoseconds
+      arenaCdtPhaseProf.stack[arenaCdtPhaseProf.sp - 1].start = now
+    arenaCdtPhaseProf.stack[arenaCdtPhaseProf.sp] = (phase, now)
+    inc arenaCdtPhaseProf.sp
+
+  proc exitPhase() {.inline.} =
+    let now = getMonoTime()
+    dec arenaCdtPhaseProf.sp
+    let current = arenaCdtPhaseProf.stack[arenaCdtPhaseProf.sp]
+    arenaCdtPhaseProf.ns[current.phase] += (now - current.start).inNanoseconds
+    inc arenaCdtPhaseProf.hits[current.phase]
+    if arenaCdtPhaseProf.sp > 0:
+      arenaCdtPhaseProf.stack[arenaCdtPhaseProf.sp - 1].start = now
+
+  template phase(p: ArenaCdtPhase, body: untyped) =
+    enterPhase(p)
+    try:
+      body
+    finally:
+      exitPhase()
+else:
+  template phase(p: untyped, body: untyped) =
+    body
 
 when defined(p2tCdtStats):
   var arenaCdtStats*: ArenaCdtStats
@@ -1037,39 +1100,42 @@ proc sortActivePoints(ws: var ArenaWorkspace) =
     ws.pdqsortActivePoints()
 
 proc initTriangulation(ws: var ArenaWorkspace) =
-  var
-    xmax = ws.activePoints[0].x
-    xmin = xmax
-    ymax = ws.activePoints[0].y
-    ymin = ymax
+  phase(phSetup):
+    var
+      xmax = ws.activePoints[0].x
+      xmin = xmax
+      ymax = ws.activePoints[0].y
+      ymin = ymax
 
-  for p in ws.activePoints:
-    xmax = max(xmax, p.x)
-    xmin = min(xmin, p.x)
-    ymax = max(ymax, p.y)
-    ymin = min(ymin, p.y)
+    for p in ws.activePoints:
+      xmax = max(xmax, p.x)
+      xmin = min(xmin, p.x)
+      ymax = max(ymax, p.y)
+      ymin = min(ymin, p.y)
 
-  let
-    dx = Alpha * (xmax - xmin)
-    dy = Alpha * (ymax - ymin)
-  ws.head = ws.newPoint(xmax + dx, ymin - dy)
-  ws.tail = ws.newPoint(xmin - dx, ymin - dy)
-  when FrontHashOn:
-    ws.initFrontHash(ws.tail.x, ws.head.x, ws.activePoints.len)
-  ws.sortActivePoints()
+    let
+      dx = Alpha * (xmax - xmin)
+      dy = Alpha * (ymax - ymin)
+    ws.head = ws.newPoint(xmax + dx, ymin - dy)
+    ws.tail = ws.newPoint(xmin - dx, ymin - dy)
+    when FrontHashOn:
+      ws.initFrontHash(ws.tail.x, ws.head.x, ws.activePoints.len)
+  phase(phSort):
+    ws.sortActivePoints()
 
 proc createAdvancingFront(ws: var ArenaWorkspace) =
-  let t = ws.newTriangle(ws.activePoints[0], ws.tail, ws.head)
+  phase(phSetup):
+    let t = ws.newTriangle(ws.activePoints[0], ws.tail, ws.head)
 
-  ws.afHead = ws.newNode(t.points[1], t)
-  ws.afMiddle = ws.newNode(t.points[0], t)
-  ws.afTail = ws.newNode(t.points[2])
-  ws.front = ArenaFront(head: ws.afHead, tail: ws.afTail, searchNode: ws.afHead)
+    ws.afHead = ws.newNode(t.points[1], t)
+    ws.afMiddle = ws.newNode(t.points[0], t)
+    ws.afTail = ws.newNode(t.points[2])
+    ws.front = ArenaFront(head: ws.afHead, tail: ws.afTail, searchNode: ws.afHead)
 
-  ws.afHead.next = ws.afMiddle
-  ws.afMiddle.next = ws.afTail
-  ws.afMiddle.prev = ws.afHead
-  ws.afTail.prev = ws.afMiddle
+    ws.afHead.next = ws.afMiddle
+    ws.afMiddle.next = ws.afTail
+    ws.afMiddle.prev = ws.afHead
+    ws.afTail.prev = ws.afMiddle
   when FrontHashOn:
     ws.updateFrontBucket(ws.afHead)
     ws.updateFrontBucket(ws.afMiddle)
@@ -1281,46 +1347,61 @@ when not defined(p2tSlotCdt):
     )
 
 proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
-  ws.statInc(legalizeCalls)
-  for i in 0 .. 2:
-    ws.statInc(legalizeEdges)
-    if t.hasFlag(delaunayFlag(i)):
-      continue
-
-    let ot = t.neighbors[i]
-    if not ot.isNil:
-      let
-        pcw = t.points[PrevEdgeIndex[i]]
-        opposite = ot.pointCW(pcw)
-        op = opposite.point
-        oi = opposite.index
-
-      if ot.hasFlag(constrainedFlag(oi)) or ot.hasFlag(delaunayFlag(oi)):
-        t.setFlag(constrainedFlag(i), ot.hasFlag(constrainedFlag(oi)))
+  phase(phLegalize):
+    ws.statInc(legalizeCalls)
+    for i in 0 .. 2:
+      ws.statInc(legalizeEdges)
+      if t.hasFlag(delaunayFlag(i)):
+        when defined(p2tIncircleProf):
+          ws.statInc(legalizeSkipDelaunay)
         continue
 
-      let
-        p = t.points[i]
-        pccw = t.points[NextEdgeIndex[i]]
-      if incircle(p, pccw, pcw, op):
-        ws.statInc(incircleSuccesses)
-        t.setFlag(delaunayFlag(i), true)
-        ot.setFlag(delaunayFlag(oi), true)
+      let ot = t.neighbors[i]
+      if not ot.isNil:
+        let
+          pcw = t.points[PrevEdgeIndex[i]]
+          opposite = ot.pointCW(pcw)
+          op = opposite.point
+          oi = opposite.index
 
-        ws.rotateTrianglePairIndexed(t, p, i, ot, op, oi)
+        let
+          oppositeConstrained = ot.hasFlag(constrainedFlag(oi))
+          oppositeDelaunay = ot.hasFlag(delaunayFlag(oi))
+        if oppositeConstrained or oppositeDelaunay:
+          when defined(p2tIncircleProf):
+            if oppositeConstrained:
+              ws.statInc(legalizeSkipConstrained)
+            if oppositeDelaunay:
+              ws.statInc(legalizeSkipOppositeDelaunay)
+          t.setFlag(constrainedFlag(i), oppositeConstrained)
+          continue
 
-        var notLegalized = not ws.legalize(t)
-        if notLegalized:
-          ws.mapTriangleToNodes(t)
+        let
+          p = t.points[i]
+          pccw = t.points[NextEdgeIndex[i]]
+        if incircle(p, pccw, pcw, op):
+          ws.statInc(incircleSuccesses)
+          t.setFlag(delaunayFlag(i), true)
+          ot.setFlag(delaunayFlag(oi), true)
 
-        notLegalized = not ws.legalize(ot)
-        if notLegalized:
-          ws.mapTriangleToNodes(ot)
+          ws.rotateTrianglePairIndexed(t, p, i, ot, op, oi)
 
-        t.setFlag(delaunayFlag(i), false)
-        ot.setFlag(delaunayFlag(oi), false)
-        return true
-  false
+          var notLegalized = not ws.legalize(t)
+          if notLegalized:
+            ws.mapTriangleToNodes(t)
+
+          notLegalized = not ws.legalize(ot)
+          if notLegalized:
+            ws.mapTriangleToNodes(ot)
+
+          t.setFlag(delaunayFlag(i), false)
+          ot.setFlag(delaunayFlag(oi), false)
+          result = true
+          return
+      else:
+        when defined(p2tIncircleProf):
+          ws.statInc(legalizeNilNeighbors)
+    result = false
 
 proc fill(ws: var ArenaWorkspace, n: ptr ArenaNode) {.inline.} =
   ws.statInc(fills)
@@ -1511,13 +1592,17 @@ proc newFrontTriangle(
 
 proc pointEvent(ws: var ArenaWorkspace, p: ptr ArenaPoint): ptr ArenaNode {.inline.} =
   ws.statInc(pointEvents)
-  let n = ws.locateNode(p.x)
+  var n: ptr ArenaNode
+  phase(phLocate):
+    n = ws.locateNode(p.x)
   if n.isNil:
     raise newException(ValueError, "failed to locate advancing-front node")
-  result = ws.newFrontTriangle(p, n)
-  if p.x <= n.point.x + Epsilon:
-    ws.fill(n)
-  ws.fillAdvancingFront(result)
+  phase(phPointEvent):
+    result = ws.newFrontTriangle(p, n)
+  phase(phFill):
+    if p.x <= n.point.x + Epsilon:
+      ws.fill(n)
+    ws.fillAdvancingFront(result)
 
 proc fillRightConcaveEdgeEvent(
   ws: var ArenaWorkspace, edge: ptr ArenaEdge, n: ptr ArenaNode
@@ -1816,17 +1901,19 @@ proc sweepPoints(ws: var ArenaWorkspace) =
     let n = ws.pointEvent(p)
     var edge = p.firstEdge
     while not edge.isNil:
-      ws.edgeEvent(edge, n)
+      phase(phEdgeEvent):
+        ws.edgeEvent(edge, n)
       edge = edge.next
 
 proc finalizationPolygon(ws: var ArenaWorkspace) =
-  var t = ws.front.head.next.triangle
-  let p = ws.front.head.next.point
-  while not t.getConstrainedEdgeCW(p):
-    t = t.neighborCCW(p)
-    if t.isNil:
-      raise newException(ValueError, "failed to find finalization triangle")
-  ws.meshClean(t)
+  phase(phFinalize):
+    var t = ws.front.head.next.triangle
+    let p = ws.front.head.next.point
+    while not t.getConstrainedEdgeCW(p):
+      t = t.neighborCCW(p)
+      if t.isNil:
+        raise newException(ValueError, "failed to find finalization triangle")
+    ws.meshClean(t)
 
 proc triangulate(ws: var ArenaWorkspace) =
   ws.initTriangulation()
@@ -1912,24 +1999,25 @@ proc triangulateCdtInPlace(workspace: var TessWorkspace, input: CdtInput) =
   if input.outer.len < 3:
     raise newException(ValueError, "outer contour has fewer than 3 points")
 
-  workspace.arena.resetCdt()
-  workspace.vertices.setLen(0)
+  phase(phSetup):
+    workspace.arena.resetCdt()
+    workspace.vertices.setLen(0)
 
-  var pointCount = input.outer.len + input.steiner.len
-  for hole in input.holes:
-    pointCount += hole.len
-  workspace.reserveArena(pointCount, keepVertices = true)
+    var pointCount = input.outer.len + input.steiner.len
+    for hole in input.holes:
+      pointCount += hole.len
+    workspace.reserveArena(pointCount, keepVertices = true)
 
-  workspace.arena.addContour(input.outer, workspace.vertices)
+    workspace.arena.addContour(input.outer, workspace.vertices)
 
-  for hole in input.holes:
-    workspace.arena.addContour(hole, workspace.vertices)
+    for hole in input.holes:
+      workspace.arena.addContour(hole, workspace.vertices)
 
-  for p in input.steiner:
-    workspace.vertices.add p
-    workspace.arena.addPoint(
-      workspace.arena.newPoint(p.x, p.y, workspace.vertices.high)
-    )
+    for p in input.steiner:
+      workspace.vertices.add p
+      workspace.arena.addPoint(
+        workspace.arena.newPoint(p.x, p.y, workspace.vertices.high)
+      )
 
   workspace.arena.triangulate()
 
@@ -1953,21 +2041,22 @@ proc triangulateCdtRaw*(workspace: var TessWorkspace, input: TessInput): CdtRawR
   if input.outer.points.len < 3:
     raise newException(ValueError, "outer contour has fewer than 3 points")
 
-  workspace.arena.resetCdt()
-  workspace.vertices.setLen(0)
+  phase(phSetup):
+    workspace.arena.resetCdt()
+    workspace.vertices.setLen(0)
 
-  var pointCount = input.outer.points.len + input.steiner.len
-  for hole in input.holes:
-    pointCount += hole.points.len
-  workspace.reserveArena(pointCount, keepVertices = false)
+    var pointCount = input.outer.points.len + input.steiner.len
+    for hole in input.holes:
+      pointCount += hole.points.len
+    workspace.reserveArena(pointCount, keepVertices = false)
 
-  workspace.arena.addContourRaw(input.outer.points)
+    workspace.arena.addContourRaw(input.outer.points)
 
-  for hole in input.holes:
-    workspace.arena.addContourRaw(hole.points)
+    for hole in input.holes:
+      workspace.arena.addContourRaw(hole.points)
 
-  for p in input.steiner:
-    workspace.arena.addPoint(workspace.arena.newPoint(p.x, p.y))
+    for p in input.steiner:
+      workspace.arena.addPoint(workspace.arena.newPoint(p.x, p.y))
 
   workspace.arena.triangulate()
   CdtRawResult(vertices: addr workspace.vertices, arena: addr workspace.arena)

@@ -64,6 +64,31 @@ proc readDat(name: string): seq[Vec2] =
     let parts = trimmed.splitWhitespace()
     result.add vec2(parseFloat(parts[0]), parseFloat(parts[1]))
 
+proc readDatRings(name: string): TessInput =
+  let path = currentSourcePath().parentDir.parentDir / "tests" / "fixtures" / name
+  var
+    rings: seq[seq[Vec2]]
+    current: seq[Vec2]
+
+  for line in lines(path):
+    let trimmed = line.strip()
+    if trimmed.len == 0:
+      if current.len > 0:
+        rings.add current
+        current.setLen(0)
+      continue
+    let parts = trimmed.splitWhitespace()
+    current.add vec2(parseFloat(parts[0]), parseFloat(parts[1]))
+
+  if current.len > 0:
+    rings.add current
+  if rings.len == 0:
+    raise newException(ValueError, "empty fixture: " & path)
+
+  result.outer = contour(1, rings[0])
+  for i in 1 ..< rings.len:
+    result.holes.add contour(i + 1, rings[i])
+
 proc contourBuffer(points: openArray[Vec2]): seq[TESSreal] =
   result.setLen(points.len * 2)
   for i, point in points:
@@ -144,3 +169,4 @@ benchLine(
   "nazca-monkey", 100, TessInput(outer: contour(7, readDat("nazca_monkey.dat")))
 )
 benchLine("nazca-heron", 100, TessInput(outer: contour(11, readDat("nazca_heron.dat"))))
+benchLine("organic-large", 100, readDatRings("organic/cdt_organic_large.dat"))
