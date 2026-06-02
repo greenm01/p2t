@@ -201,26 +201,30 @@ suite "original poly2tri fixtures":
     fixtureCase("nazca_monkey.dat")
     fixtureCase("nazca_heron.dat")
 
-suite "stress fixtures":
-  test "small front-hash stress fixture with holes":
-    let input = readDatRings("stress/cdt_stress.dat")
-    let result = tessellate(input)
-    var expectedArea = polygonArea(input.outer.points)
-    var ringVertices = input.outer.points.len
-    for hole in input.holes:
-      expectedArea -= polygonArea(hole.points)
-      ringVertices += hole.points.len
+proc stressFixtureCase(name: string) =
+  let input = readDatRings("stress" / name)
+  let result = tessellate(input)
+  var expectedArea = polygonArea(input.outer.points)
+  var ringVertices = input.outer.points.len
+  for hole in input.holes:
+    expectedArea -= polygonArea(hole.points)
+    ringVertices += hole.points.len
 
-    check result.ok
-    check result.triangles.len > 0
-    for tri in result.triangles:
-      check tri[0] >= 0 and tri[0] < result.vertices.len
-      check tri[1] >= 0 and tri[1] < result.vertices.len
-      check tri[2] >= 0 and tri[2] < result.vertices.len
-    check abs(areaOf(result) - expectedArea) < 1e-5
-    # This count identity is valid here because all vertices are on rings and
-    # this CDT path inserts no Steiner/interior points for the stress fixture.
-    check result.triangles.len == ringVertices + 2 * input.holes.len - 2
+  check result.ok
+  check result.triangles.len > 0
+  for tri in result.triangles:
+    check tri[0] >= 0 and tri[0] < result.vertices.len
+    check tri[1] >= 0 and tri[1] < result.vertices.len
+    check tri[2] >= 0 and tri[2] < result.vertices.len
+  check abs(areaOf(result) - expectedArea) < 1e-5
+  # This count identity is valid here because all vertices are on rings and
+  # this CDT path inserts no Steiner/interior points for the stress fixtures.
+  check result.triangles.len == ringVertices + 2 * input.holes.len - 2
+
+suite "stress fixtures":
+  test "front-hash stress fixtures with holes":
+    for name in ["cdt_stress.dat", "cdt_stress_mid.dat", "cdt_stress_large.dat"]:
+      stressFixtureCase(name)
 
 suite "p2t validation":
   test "duplicate point":

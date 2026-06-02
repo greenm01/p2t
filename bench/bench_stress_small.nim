@@ -13,7 +13,11 @@ when defined(p2tCdtStats):
 when not defined(p2tCdtStats):
   const
     BenchRounds = 11
-    Iterations = 5000
+    StressIterations {.intdefine.} = 5000
+
+const
+  StressFixture {.strdefine.} = "cdt_stress.dat"
+  StressName {.strdefine.} = "stress-small"
 
 proc cdtBackend(): string =
   when defined(p2tIdxCdt):
@@ -61,6 +65,8 @@ proc emitConfig() =
   echo "config,frontHash," & frontHashConfig()
   echo "config,fastRaw," & fastRawConfig()
   echo "config,unsafeCdt," & unsafeCdtConfig()
+  echo "config,stressFixture," & StressFixture
+  echo "config,stressName," & StressName
   when defined(p2tCdtStats):
     echo "config,cdtStats,on"
   else:
@@ -69,6 +75,8 @@ proc emitConfig() =
     echo "config,frontHashStats,on"
   else:
     echo "config,frontHashStats,off"
+  when not defined(p2tCdtStats):
+    echo "config,stressIterations," & $StressIterations
 
 proc contour(id: int, points: sink seq[Vec2]): TessContour =
   TessContour(id: id, points: points)
@@ -104,6 +112,37 @@ proc oriented(input: TessInput): TessInput =
   result.outer.points.ensureOrientation(ccw = true)
   for hole in result.holes.mitems:
     hole.points.ensureOrientation(ccw = false)
+
+proc areaOf(tess: TessResult): float64 =
+  for tri in tess.triangles:
+    result +=
+      triangleArea(tess.vertices[tri[0]], tess.vertices[tri[1]], tess.vertices[tri[2]])
+
+proc validateStressInput(name: string, input: TessInput) =
+  let result = tessellate(input)
+  if not result.ok:
+    raise newException(ValueError, name & " failed validation: " & result.error.message)
+
+  var expectedArea = polygonArea(input.outer.points)
+  var ringVertices = input.outer.points.len
+  for hole in input.holes:
+    expectedArea -= polygonArea(hole.points)
+    ringVertices += hole.points.len
+
+  let areaError = abs(result.areaOf() - expectedArea)
+  if areaError >= 1e-5:
+    raise newException(
+      ValueError, &"{name} area mismatch: error={areaError:.6f}"
+    )
+
+  let expectedTriangles = ringVertices + 2 * input.holes.len - 2
+  if result.triangles.len != expectedTriangles:
+    raise newException(
+      ValueError,
+      &"{name} triangle-count mismatch: got={result.triangles.len} expected={expectedTriangles}",
+    )
+
+  echo &"fixture,{name},points,{ringVertices},holes,{input.holes.len},triangles,{result.triangles.len},areaError,{areaError:.6f}"
 
 when defined(p2tCdtStats):
   proc pointCount(input: TessInput): int =
@@ -183,7 +222,7 @@ when not defined(p2tCdtStats):
       var workspace: TessWorkspace
       var triangles = 0
       let start = getMonoTime()
-      for _ in 0 ..< Iterations:
+      for _ in 0 ..< StressIterations:
         let raw = workspace.tessellateTrustedRaw(trustedInput)
         when not defined(p2tFastRawCdt):
           if not raw.ok:
@@ -193,12 +232,13 @@ when not defined(p2tCdtStats):
       reportedTriangles = triangles
 
     benchTimes.sort()
-    echo &"{name} raw: {Iterations} runs, {reportedTriangles} triangles, best {benchTimes[0]} us, median {benchTimes[BenchRounds div 2]} us, per-best {benchTimes[0].float / Iterations.float:.3f} us, per-median {benchTimes[BenchRounds div 2].float / Iterations.float:.3f} us"
+    echo &"{name} raw: {StressIterations} runs, {reportedTriangles} triangles, best {benchTimes[0]} us, median {benchTimes[BenchRounds div 2]} us, per-best {benchTimes[0].float / StressIterations.float:.3f} us, per-median {benchTimes[BenchRounds div 2].float / StressIterations.float:.3f} us"
 
 emitConfig()
 
-let input = readStressDat("cdt_stress.dat")
+let input = readStressDat(StressFixture)
+validateStressInput(StressName, input)
 when defined(p2tCdtStats):
-  emitStats("stress-small", input)
+  emitStats(StressName, input)
 else:
-  benchRaw("stress-small", input)
+  benchRaw(StressName, input)
