@@ -83,6 +83,67 @@ proc prepareContour[CleanInput, AssumeOriented: static bool](
   when not AssumeOriented:
     result.ensureOrientation(ccw)
 
+proc normalizeTrustedContour(
+    contour: TessContour, eps: float64, error: var TessError
+): seq[Vec2] =
+  if contour.points.len == 0:
+    error = tessError(tekEmptyOuter, contour.id, -1, "contour has no points")
+    return @[]
+
+  result = newSeqOfCap[Vec2](contour.points.len)
+  for p in contour.points:
+    if result.len == 0 or not almostEqual(result[^1], p, eps):
+      result.add p
+  if result.len > 1 and almostEqual(result[0], result[^1], eps):
+    result.setLen(result.len - 1)
+
+  if result.len < 3:
+    error = tessError(
+      tekTooFewVertices, contour.id, result.len, "contour has fewer than 3 vertices"
+    )
+    return @[]
+
+  let adjacentCleaned = result
+  result = newSeqOfCap[Vec2](adjacentCleaned.len)
+  for i in 0 ..< adjacentCleaned.len:
+    let
+      prev = adjacentCleaned[(i + adjacentCleaned.len - 1) mod adjacentCleaned.len]
+      curr = adjacentCleaned[i]
+      next = adjacentCleaned[(i + 1) mod adjacentCleaned.len]
+    if not pointOnSegment(curr, prev, next, eps):
+      result.add curr
+
+  if result.len < 3:
+    error = tessError(
+      tekTooFewVertices, contour.id, result.len, "contour has fewer than 3 vertices"
+    )
+    return @[]
+
+proc normalizeTrustedInput(
+    input: TessInput, epsilon: float64, error: var TessError
+): TessInput =
+  result.outer = TessContour(
+    id: input.outer.id, points: normalizeTrustedContour(input.outer, epsilon, error)
+  )
+  if error.kind != tekNone:
+    return
+
+  result.holes = newSeqOfCap[TessContour](input.holes.len)
+  for holeContour in input.holes:
+    let holePoints = normalizeTrustedContour(holeContour, epsilon, error)
+    if error.kind != tekNone:
+      return
+    result.holes.add TessContour(id: holeContour.id, points: holePoints)
+
+  result.steiner = input.steiner
+
+proc toCdtInput(input: TessInput): CdtInput =
+  result.outer = input.outer.points
+  result.holes = newSeqOfCap[seq[Vec2]](input.holes.len)
+  for hole in input.holes:
+    result.holes.add hole.points
+  result.steiner = input.steiner
+
 proc tessellateStatic[
     CleanInput, Validate, KeepBoundaryEdges, AssumeOriented: static bool
 ](
@@ -210,6 +271,29 @@ proc tessellateTrusted*(
   ## Steiner points must be inside the outer contour.
   tessellateStatic[false, false, false, true](workspace, input, epsilon)
 
+proc tessellateNormalizedTrusted*(
+    workspace: var TessWorkspace, input: TessInput, epsilon = DefaultTessEpsilon
+): TessResult =
+  ## Trusted path with cheap contour normalization.
+  ##
+  ## Removes adjacent duplicates, a repeated closing point, and collinear
+  ## contour points. The input must still be simple and valid: outer contour CCW,
+  ## holes CW, non-adjacent duplicates absent, holes valid, and Steiner points
+  ## inside the outer contour.
+  workspace.clear()
+
+  var error = tessError(tekNone)
+  let normalized = normalizeTrustedInput(input, epsilon, error)
+  if error.kind != tekNone:
+    return failure(error)
+
+  try:
+    let cdtResult = workspace.triangulateCdt(normalized.toCdtInput)
+    workspace.vertices = cdtResult.vertices
+    success(cdtResult.vertices, cdtResult.triangles)
+  except CatchableError as err:
+    failure(tessError(tekTriangulationFailed, -1, -1, err.msg))
+
 proc tessellateTrustedRaw*(
     workspace: var TessWorkspace, input: TessInput, epsilon = DefaultTessEpsilon
 ): TessRawResult =
@@ -274,6 +358,55 @@ proc tessellateTrustedRaw*(
         ok: false, error: tessError(tekTriangulationFailed, -1, -1, err.msg)
       )
 
+proc tessellateNormalizedTrustedRaw*(
+    workspace: var TessWorkspace, input: TessInput, epsilon = DefaultTessEpsilon
+): TessRawResult =
+  ## Raw trusted path with cheap contour normalization.
+  ##
+  ## Result lifetime and input preconditions match `tessellateTrustedRaw`, except
+  ## adjacent duplicate, closing, and collinear contour points are removed first.
+  when not defined(p2tFastRawCdt):
+    workspace.clear()
+
+  var error = tessError(tekNone)
+  let normalized = normalizeTrustedInput(input, epsilon, error)
+  if error.kind != tekNone:
+    return TessRawResult(ok: false, error: error)
+
+  when defined(p2tFastRawCdt):
+    let raw = workspace.triangulateCdtRaw(normalized)
+    when defined(p2tIdxCdt):
+      return TessRawResult(
+        ok: true, error: tessError(tekNone), vertices: raw.vertices, idx: raw.idx
+      )
+    elif defined(p2tLegacyCdt):
+      return TessRawResult(
+        ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
+      )
+    else:
+      return TessRawResult(
+        ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
+      )
+  else:
+    try:
+      let raw = workspace.triangulateCdtRaw(normalized)
+      when defined(p2tIdxCdt):
+        TessRawResult(
+          ok: true, error: tessError(tekNone), vertices: raw.vertices, idx: raw.idx
+        )
+      elif defined(p2tLegacyCdt):
+        TessRawResult(
+          ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
+        )
+      else:
+        TessRawResult(
+          ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
+        )
+    except CatchableError as err:
+      TessRawResult(
+        ok: false, error: tessError(tekTriangulationFailed, -1, -1, err.msg)
+      )
+
 proc rawTriangleCount*(raw: TessRawResult): int {.inline.} =
   ## Return the number of triangles available through a raw result.
   ##
@@ -313,6 +446,15 @@ proc tessellateTrusted*(input: TessInput, epsilon = DefaultTessEpsilon): TessRes
   ## The same preconditions as the workspace overload apply.
   var workspace: TessWorkspace
   workspace.tessellateTrusted(input, epsilon)
+
+proc tessellateNormalizedTrusted*(
+    input: TessInput, epsilon = DefaultTessEpsilon
+): TessResult =
+  ## Normalized trusted one-shot tessellation using a temporary workspace.
+  ##
+  ## The same preconditions as the workspace overload apply.
+  var workspace: TessWorkspace
+  workspace.tessellateNormalizedTrusted(input, epsilon)
 
 # A single triangulation is inherently serial (the advancing front is one chain
 # of data dependencies), but distinct inputs are independent. tessellateBatch

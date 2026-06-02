@@ -27,3 +27,32 @@ suite "public p2t API":
     check raw.rawTriangleCount == 2
     discard raw.rawTrianglePoints(0)
     discard raw.rawTriangleVertices(0)
+
+  test "normalized trusted API is exported":
+    var workspace: TessWorkspace
+    let input = TessInput(
+      outer:
+        contour(
+          1,
+          [
+            vec2(0, 0),
+            vec2(2, 0),
+            vec2(4, 0),
+            vec2(4, 4),
+            vec2(0, 4),
+            vec2(0, 0),
+          ],
+        )
+    )
+
+    let result = workspace.tessellateNormalizedTrusted(input)
+    check result.ok
+    check result.vertices.len == 4
+    check result.triangles.len == 2
+
+    let oneShot = tessellateNormalizedTrusted(input)
+    check oneShot.ok
+
+    let raw = workspace.tessellateNormalizedTrustedRaw(input)
+    check raw.ok
+    check raw.rawTriangleCount == 2

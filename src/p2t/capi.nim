@@ -274,3 +274,23 @@ proc p2t_tessellate_trusted*(
     ctx.copyResult(ctx.workspace.tessellateTrusted(input, epsilon.float64))
   except CatchableError as err:
     ctx.fail(cint(tekTriangulationFailed), -1, -1, err.msg)
+
+proc p2t_tessellate_normalized_trusted*(
+    ctx: P2tContext,
+    outer: P2tContour,
+    holes: ptr P2tContour,
+    hole_count: cint,
+    steiner: ptr P2tVec2,
+    steiner_count: cint,
+    epsilon: cdouble,
+): P2tResult {.exportc, cdecl, dynlib.} =
+  if ctx.isNil:
+    return staticFailure(P2tInvalidInput, "context pointer is null")
+
+  try:
+    var input: TessInput
+    if not buildInput(ctx, outer, holes, hole_count, steiner, steiner_count, input):
+      return ctx.makeResult(false, ctx.makeError())
+    ctx.copyResult(ctx.workspace.tessellateNormalizedTrusted(input, epsilon.float64))
+  except CatchableError as err:
+    ctx.fail(cint(tekTriangulationFailed), -1, -1, err.msg)

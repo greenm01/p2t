@@ -173,6 +173,74 @@ suite "p2t tessellation":
     let tri = raw.rawTriangleVertices(0)
     check triangleArea(tri[0], tri[1], tri[2]) > 0
 
+  test "normalized trusted removes redundant contour points":
+    let input = TessInput(
+      outer:
+        contour(
+          1,
+          [
+            vec2(0, 0),
+            vec2(2, 0),
+            vec2(4, 0),
+            vec2(4, 2),
+            vec2(4, 4),
+            vec2(0, 4),
+            vec2(0, 0),
+          ],
+        ),
+      holes:
+        @[
+          contour(
+            2,
+            [
+              vec2(1, 1),
+              vec2(1, 2),
+              vec2(2, 2),
+              vec2(2, 1),
+              vec2(1.5, 1),
+              vec2(1, 1),
+            ],
+          )
+        ],
+    )
+
+    let result = tessellateNormalizedTrusted(input)
+    check result.ok
+    check result.vertices.len == 8
+    checkArea(result, 15)
+
+  test "normalized trusted raw exposes simplified triangles":
+    var workspace: TessWorkspace
+    let input =
+      TessInput(
+        outer:
+          contour(
+            1,
+            [
+              vec2(0, 0),
+              vec2(2, 0),
+              vec2(4, 0),
+              vec2(4, 4),
+              vec2(0, 4),
+              vec2(0, 0),
+            ],
+          )
+      )
+
+    let raw = workspace.tessellateNormalizedTrustedRaw(input)
+    check raw.ok
+    check raw.rawTriangleCount == 2
+    let tri = raw.rawTriangleVertices(0)
+    check triangleArea(tri[0], tri[1], tri[2]) > 0
+
+  test "normalized trusted rejects too-small normalized contours":
+    let input =
+      TessInput(outer: contour(1, [vec2(0, 0), vec2(1, 0), vec2(2, 0), vec2(0, 0)]))
+
+    let result = tessellateNormalizedTrusted(input)
+    check not result.ok
+    check result.error.kind == tekTooFewVertices
+
   test "workspace reuse handles changing input sizes":
     var workspace: TessWorkspace
     let small =

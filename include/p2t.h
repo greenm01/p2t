@@ -146,6 +146,22 @@ P2T_API p2t_result p2t_tessellate_trusted(
   int32_t steiner_count,
   double epsilon);
 
+/*
+ * Trusted tessellation with cheap contour normalization.
+ *
+ * Removes adjacent duplicate points, a repeated closing point, and collinear
+ * contour points. The remaining trusted preconditions still apply: outer CCW,
+ * holes CW, simple valid contours, valid holes, and valid Steiner points.
+ */
+P2T_API p2t_result p2t_tessellate_normalized_trusted(
+  p2t_context *ctx,
+  p2t_contour outer,
+  const p2t_contour *holes,
+  int32_t hole_count,
+  const p2t_vec2 *steiner,
+  int32_t steiner_count,
+  double epsilon);
+
 #ifdef __cplusplus
 }
 #endif

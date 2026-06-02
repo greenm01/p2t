@@ -66,6 +66,21 @@ int main(void) {
   if (check(result.error.kind == P2T_ERROR_TOO_FEW_VERTICES,
             "unexpected invalid contour error kind")) return 1;
 
+  p2t_vec2 redundant_square[] = {
+      {0.0, 0.0}, {2.0, 0.0}, {4.0, 0.0}, {4.0, 2.0},
+      {4.0, 4.0}, {0.0, 4.0}, {0.0, 0.0},
+  };
+  p2t_contour redundant_outer = {4, redundant_square, 7};
+  result = p2t_tessellate_normalized_trusted(ctx, redundant_outer, NULL, 0,
+                                             NULL, 0, 1e-9);
+  if (check(result.ok, "normalized trusted tessellation failed")) return 1;
+  if (check(result.vertex_count == 4,
+            "unexpected normalized trusted vertex count")) return 1;
+  if (check(result.triangle_count == 2,
+            "unexpected normalized trusted triangle count")) return 1;
+  if (check(fabs(result_area(result) - 16.0) < 1e-9,
+            "unexpected normalized trusted area")) return 1;
+
   p2t_destroy(ctx);
   return 0;
 }

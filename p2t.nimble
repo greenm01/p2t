@@ -275,6 +275,16 @@ task bench, "run champion Nim p2t benchmark":
   echo "p2t champion: pointer arena + pdqsort + front hash default-on + Tier 1 tuned"
   sh quoteShell("/tmp/p2t_bench_champion")
 
+task benchNormalizedTrusted, "benchmark cheap normalized trusted path":
+  nimCompile(
+    "bench/bench_normalized_trusted",
+    flags = ChampionFlags,
+    outPath = "/tmp/p2t_bench_normalized_trusted",
+    nimcache = "/tmp/p2t_bench_normalized_trusted_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_normalized_trusted")
+  sh quoteShell("/tmp/p2t_bench_normalized_trusted")
+
 task benchUnsafeCdt, "run p2t benchmark with CDT runtime checks disabled":
   nimCompile(
     "bench/bench_p2t",
@@ -822,4 +832,4 @@ task benchParallel, "benchmark tessellateBatch scaling across threads":
   sh quoteShell("/tmp/p2t_bench_parallel")
 
 task tidy, "format p2t sources":
-  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/capi.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/triangulate.nim tests/test_public_api.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/bench_stress_small.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
+  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/capi.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/triangulate.nim tests/test_public_api.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/bench_stress_small.nim bench/bench_normalized_trusted.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
