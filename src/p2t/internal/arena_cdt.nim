@@ -387,6 +387,22 @@ proc setDelaunayEdgeCW(t: ptr ArenaTriangle, p: ptr ArenaPoint, edge: bool) =
   else:
     t.setFlag(delaunayFlag(0), edge)
 
+proc applyRotatedFlags(
+    t: ptr ArenaTriangle, ea, eb: int, deA, ceA, deB, ceB: bool
+) {.inline.} =
+  ## Write back the two rotated edges of `t` in a single masked store, with no
+  ## point search. After a rotate the touched edge indices `ea`/`eb` are pure
+  ## functions of the rotate amounts (already computed by the caller), so the
+  ## constrained+delaunay bits fold into one flags update. Edge `ea` receives
+  ## (deA, ceA); edge `eb` receives (deB, ceB). Constrained bits sit 3 above the
+  ## matching delaunay bit (see DelaunayEdge0/ConstrainedEdge0).
+  const pair = DelaunayEdge0 or ConstrainedEdge0
+  let mask = (pair shl ea) or (pair shl eb)
+  let bits =
+    (uint32(ord(deA)) shl ea) or (uint32(ord(ceA)) shl (ea + 3)) or
+    (uint32(ord(deB)) shl eb) or (uint32(ord(ceB)) shl (eb + 3))
+  t.flags = (t.flags and not mask) or bits
+
 proc oppositePointAcross(
     t: ptr ArenaTriangle, a, b: ptr ArenaPoint
 ): tuple[point: ptr ArenaPoint, index: int] {.inline.} =
@@ -863,15 +879,10 @@ when defined(p2tSlotCdt):
     t.legalize(p, op)
     ot.legalize(op, p)
 
-    ot.setDelaunayEdgeCCW(p, de1)
-    t.setDelaunayEdgeCW(p, de2)
-    t.setDelaunayEdgeCCW(op, de3)
-    ot.setDelaunayEdgeCW(op, de4)
-
-    ot.setConstrainedEdgeCCW(p, ce1)
-    t.setConstrainedEdgeCW(p, ce2)
-    t.setConstrainedEdgeCCW(op, ce3)
-    ot.setConstrainedEdgeCW(op, ce4)
+    applyRotatedFlags(t, rotateAmount, NextEdgeIndex[rotateAmount], de3, ce3, de2, ce2)
+    applyRotatedFlags(
+      ot, otherRotateAmount, NextEdgeIndex[otherRotateAmount], de1, ce1, de4, ce4
+    )
 
 when not defined(p2tSlotCdt):
   proc rotateTrianglePairIndexed(
@@ -919,15 +930,10 @@ when not defined(p2tSlotCdt):
     t.legalize(p, op)
     ot.legalize(op, p)
 
-    ot.setDelaunayEdgeCCW(p, de1)
-    t.setDelaunayEdgeCW(p, de2)
-    t.setDelaunayEdgeCCW(op, de3)
-    ot.setDelaunayEdgeCW(op, de4)
-
-    ot.setConstrainedEdgeCCW(p, ce1)
-    t.setConstrainedEdgeCW(p, ce2)
-    t.setConstrainedEdgeCCW(op, ce3)
-    ot.setConstrainedEdgeCW(op, ce4)
+    applyRotatedFlags(t, rotateAmount, NextEdgeIndex[rotateAmount], de3, ce3, de2, ce2)
+    applyRotatedFlags(
+      ot, otherRotateAmount, NextEdgeIndex[otherRotateAmount], de1, ce1, de4, ce4
+    )
 
 proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
   ws.statInc(legalizeCalls)
@@ -1292,16 +1298,23 @@ proc nextFlipTriangle(
     o: Orientation,
     t, ot: ptr ArenaTriangle,
     p, op: ptr ArenaPoint,
+    pIdx, opIdx: int,
 ): tuple[tri: ptr ArenaTriangle, pIndex: int] =
+  # The flipped edge index equals the (pre-rotation) index already in hand:
+  # the rotate is a pure permutation, so ot.edgeIndex(p, op) == opIdx and
+  # t.edgeIndex(p, op) == pIdx. Reuse them to skip the 3-way point search
+  # (matches fast-poly2tri's MPE_NextFlipTriangle).
   if o == ccw:
-    let idx = ot.edgeIndex(p, op)
-    ot.setFlag(delaunayFlag(idx), true)
+    when defined(p2tVerifyFlipIdx):
+      doAssert opIdx == ot.edgeIndex(p, op)
+    ot.setFlag(delaunayFlag(opIdx), true)
     discard ws.legalize(ot)
     ot.clearDelaunayEdges()
     return (t, t.index(p))
 
-  let idx = t.edgeIndex(p, op)
-  t.setFlag(delaunayFlag(idx), true)
+  when defined(p2tVerifyFlipIdx):
+    doAssert pIdx == t.edgeIndex(p, op)
+  t.setFlag(delaunayFlag(pIdx), true)
   discard ws.legalize(t)
   t.clearDelaunayEdges()
   (ot, ot.index(p))
@@ -1380,7 +1393,7 @@ proc flipEdgeEvent(
         discard ws.legalize(ot)
     else:
       let o = orient2d(eq, op, ep)
-      let nextT = ws.nextFlipTriangle(o, t, ot, p, op)
+      let nextT = ws.nextFlipTriangle(o, t, ot, p, op, pIdx, opIdx)
       ws.flipEdgeEvent(ep, eq, nextT.tri, p, nextT.pIndex)
   else:
     let newP = nextFlipPoint(ep, eq, ot, op, opIdx)
