@@ -1,5 +1,12 @@
 # p2t
 
+![p2t triangulation mesh](tests/fixtures/dude-with-holes.png)
+
+![p2t nazca monkey triangulation mesh](tests/fixtures/nazca_monkey.png)
+
+[Fixture screenshots](tests/fixtures) show champion-path triangulation meshes for
+the root fixtures.
+
 `p2t` is a constrained Delaunay tessellation library for Nim.
 
 ## About
@@ -37,6 +44,20 @@ Champion Nim configuration:
 - front hash default-on at `FrontHashMinPoints = 512`
 - trusted raw path
 - Tier 1 tuned release flags
+
+Fixture stats:
+
+| Fixture | Points | Holes | Champion triangles | Notes |
+| --- | ---: | ---: | ---: | --- |
+| fixture-test | 6 | 0 | 4 | tiny smoke fixture |
+| diamond | 10 | 0 | 8 | convex baseline |
+| star | 10 | 0 | 8 | concave baseline |
+| dude-with-holes | 104 | 2 | 106 | sub-512 hole fixture |
+| nazca-monkey | 1,204 | 0 | 1,202 | large organic outline |
+| nazca-heron | 1,036 | 0 | 1,034 | large organic outline |
+| organic-large | 3,340 | 287 | 3,912 | matched organic control |
+
+Performance results:
 
 | Fixture | Nim champion raw | fast-poly2tri f32 | fast-poly2tri f64 | libtess2 |
 | --- | ---: | ---: | ---: | ---: |
@@ -96,4 +117,4 @@ constrained-edge insertion.
 
 ## License
 
-MIT License. Copyright (c) 2009-2026 Mason Austin Green.
+BSD 2-Clause License. Copyright (c) 2009-2026 Mason Austin Green.
