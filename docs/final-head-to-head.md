@@ -62,6 +62,50 @@ column is replaced by Triangle.
 no valid fast-poly2tri timing for that fixture. The Nim champion, Triangle, and
 libtess2 all complete it.
 
+## External Contenders
+
+These are not part of the official benchmark suite. They are useful checks
+against other serious CDT implementations, so the harness keeps them
+reproducible without vendoring them into this repository.
+
+The table uses `nimble benchExternalContenders`. Delabella and artem-ogre/CDT are
+external source checkouts. Fade2D is the public 2.17.3 SDK and runs under its
+student/non-commercial research license. Times are best/median microseconds per
+triangulation. The `delta` column is p2t raw's best-time advantage over the
+fastest external contender for that case.
+
+| Case | p2t raw | Delabella | CDT | Fade2D | delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| small-ui-quad | 0.079 / 0.081 | 0.348 / 0.370 | 1.530 / 1.703 | 2.358 / 2.402 | +77.3% vs Delabella |
+| medium-icon | 1.924 / 2.023 | 62.318 / 62.724 | 29.845 / 30.079 | 274.627 / 277.202 | +93.6% vs CDT |
+| large-shape | 32.136 / 32.816 | 439.192 / 464.322 | 372.568 / 380.200 | 2525.106 / 2536.890 | +91.4% vs CDT |
+| fixture-test | 0.143 / 0.151 | 0.355 / 0.363 | 2.195 / 2.242 | 3.636 / 3.660 | +59.7% vs Delabella |
+| diamond | 0.288 / 0.290 | 0.748 / 0.774 | 3.458 / 3.493 | 8.431 / 8.446 | +61.5% vs Delabella |
+| star | 0.228 / 0.232 | 0.679 / 0.686 | 3.288 / 3.304 | 7.341 / 7.410 | +66.4% vs Delabella |
+| dude-with-holes | 4.378 / 4.406 | 9.426 / 9.819 | 32.822 / 33.537 | 63.381 / 64.374 | +53.6% vs Delabella |
+| nazca-monkey | 65.210 / 65.640 | 156.900 / 159.230 | 498.310 / 525.580 | 1130.090 / 1142.310 | +58.4% vs Delabella |
+| nazca-heron | 53.500 / 53.660 | 124.120 / 127.030 | 417.360 / 422.380 | 888.550 / 904.980 | +56.9% vs Delabella |
+| organic-large | 230.390 / 238.390 | 1151.140 / 1162.290 | 1783.980 / 1792.170 | 32833.570 / 33004.840 | +80.0% vs Delabella |
+
+Reproduction, using the exact external inputs used for the table:
+
+```sh
+mkdir -p /private/tmp/p2t-contenders
+git clone --depth 1 https://github.com/msokalski/delabella.git /private/tmp/p2t-contenders/delabella
+git clone --depth 1 https://github.com/artem-ogre/CDT.git /private/tmp/p2t-contenders/CDT
+curl -L https://www.geom.at/_downloads/fadeRelease_v2.17.3.zip -o /private/tmp/p2t-contenders/fadeRelease_v2.17.3.zip
+unzip -q /private/tmp/p2t-contenders/fadeRelease_v2.17.3.zip -d /private/tmp/p2t-contenders/fadeRelease_v2.17.3
+
+DELABELLA_DIR=/private/tmp/p2t-contenders/delabella \
+  CDT_DIR=/private/tmp/p2t-contenders/CDT \
+  FADE2D_DIR=/private/tmp/p2t-contenders/fadeRelease_v2.17.3/fadeRelease_v2.17.3 \
+  nimble benchExternalContenders
+```
+
+The recorded checkouts were Delabella
+`0b8d371c28c82492d0a945f535bd7d73c467b630`, artem-ogre/CDT
+`7bd85e41a7b2e6e6e3bf82f36bcbc2bcec6441c5`, and Fade2D 2.17.3.
+
 ## Conclusion
 
 The champion Nim path wins every fixture where fast-poly2tri completes, stays

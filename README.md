@@ -43,9 +43,10 @@ responsibility.
 ## Final Head-to-Head
 
 The final comparison uses the public `import p2t` API against vendored
-`fast-poly2tri,` Shewchuk's Triangle, and libtess2. Times are best/median
-microseconds per triangulation, from five sequential `nimble benchCompareAll` passes.
-Each cell uses the pass with the lowest best time for that fixture/engine.
+`fast-poly2tri` and libtess2, with Shewchuk's Triangle available as an optional
+external backend. Times are best/median microseconds per triangulation, from
+five sequential `nimble benchCompareAll` passes. Each cell uses the pass with
+the lowest best time for that fixture/engine.
 
 Benchmark machine:
 
@@ -121,6 +122,29 @@ column is replaced by Triangle.
 no valid timing for that fixture. The Nim implementation, Triangle, and libtess2
 all complete it.
 
+External contenders:
+
+This separate table uses `nimble benchExternalContenders`, which is intentionally
+not part of the final `benchCompareAll` suite. Delabella and artem-ogre/CDT are
+external source checkouts; Fade2D is the public 2.17.3 SDK and runs under its
+student/non-commercial research license. The `delta` column is p2t raw's
+best-time advantage over the fastest external contender for that case.
+Full reproduction commands are in the
+[final benchmark notes](docs/final-head-to-head.md).
+
+| Case | p2t raw | Delabella | CDT | Fade2D | delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| small-ui-quad | 0.079 / 0.081 | 0.348 / 0.370 | 1.530 / 1.703 | 2.358 / 2.402 | +77.3% vs Delabella |
+| medium-icon | 1.924 / 2.023 | 62.318 / 62.724 | 29.845 / 30.079 | 274.627 / 277.202 | +93.6% vs CDT |
+| large-shape | 32.136 / 32.816 | 439.192 / 464.322 | 372.568 / 380.200 | 2525.106 / 2536.890 | +91.4% vs CDT |
+| fixture-test | 0.143 / 0.151 | 0.355 / 0.363 | 2.195 / 2.242 | 3.636 / 3.660 | +59.7% vs Delabella |
+| diamond | 0.288 / 0.290 | 0.748 / 0.774 | 3.458 / 3.493 | 8.431 / 8.446 | +61.5% vs Delabella |
+| star | 0.228 / 0.232 | 0.679 / 0.686 | 3.288 / 3.304 | 7.341 / 7.410 | +66.4% vs Delabella |
+| dude-with-holes | 4.378 / 4.406 | 9.426 / 9.819 | 32.822 / 33.537 | 63.381 / 64.374 | +53.6% vs Delabella |
+| nazca-monkey | 65.210 / 65.640 | 156.900 / 159.230 | 498.310 / 525.580 | 1130.090 / 1142.310 | +58.4% vs Delabella |
+| nazca-heron | 53.500 / 53.660 | 124.120 / 127.030 | 417.360 / 422.380 | 888.550 / 904.980 | +56.9% vs Delabella |
+| organic-large | 230.390 / 238.390 | 1151.140 / 1162.290 | 1783.980 / 1792.170 | 32833.570 / 33004.840 | +80.0% vs Delabella |
+
 The short version: the optimized Nim path is ahead of the reference C
 implementation on every fixture where `fast-poly2tri` completes, ahead of
 Triangle, and much faster than libtess2 on this benchmark set. The large-input
@@ -143,6 +167,7 @@ nimble bench
 nimble benchCompareAll
 nimble benchLibtess2
 nimble benchNormalizedTrusted
+nimble benchExternalContenders
 nimble benchParallel
 nimble tidy
 ```
@@ -151,6 +176,9 @@ Benchmark comparisons use vendored `fast-poly2tri` and `libtess2` sources under
 `vendor/` by default. Set `FAST_POLY2TRI_DIR`, `LIBTESS2_DIR`, or
 `TRIANGLE_DIR` to compare against external checkouts. Triangle must contain
 `triangle.c` and `triangle.h`; it is intentionally external-only.
+
+The external contenders task also stays external-only. Set `DELABELLA_DIR`,
+`CDT_DIR`, and `FADE2D_DIR` before running `nimble benchExternalContenders`.
 
 ## References
 

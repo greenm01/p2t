@@ -1,5 +1,9 @@
 /htmldocs/
 /nimcache/
+.DS_Store
+__pycache__/
+.zig-cache/
+zig-out/
 *.exe
 *.dll
 *.so

@@ -146,6 +146,56 @@ proc findTriangleDir(): string =
   if hasTriangleSource(siblingDir):
     return siblingDir
 
+proc hasDelabellaSource(path: string): bool =
+  fileExists(path / "delabella.h") and fileExists(path / "delabella.cpp")
+
+proc findDelabellaDir(): string =
+  let envDir = getEnv("DELABELLA_DIR")
+  if envDir.len > 0 and hasDelabellaSource(envDir):
+    return envDir
+
+  let homeDir = getHomeDir() / "src" / "delabella"
+  if hasDelabellaSource(homeDir):
+    return homeDir
+
+  let siblingDir = getCurrentDir().parentDir / "delabella"
+  if hasDelabellaSource(siblingDir):
+    return siblingDir
+
+proc hasCdtSource(path: string): bool =
+  fileExists(path / "CDT" / "include" / "CDT.h")
+
+proc findCdtDir(): string =
+  let envDir = getEnv("CDT_DIR")
+  if envDir.len > 0 and hasCdtSource(envDir):
+    return envDir
+
+  let homeDir = getHomeDir() / "src" / "CDT"
+  if hasCdtSource(homeDir):
+    return homeDir
+
+  let siblingDir = getCurrentDir().parentDir / "CDT"
+  if hasCdtSource(siblingDir):
+    return siblingDir
+
+proc hasFade2dSdk(path: string): bool =
+  fileExists(path / "include_fade2d" / "Fade_2D.h") and
+    fileExists(path / "lib_mac" / "libfade2d.dylib") and
+    fileExists(path / "lib_mac" / "libgmp.10.dylib")
+
+proc findFade2dDir(): string =
+  let envDir = getEnv("FADE2D_DIR")
+  if envDir.len > 0 and hasFade2dSdk(envDir):
+    return envDir
+
+  let homeDir = getHomeDir() / "src" / "fadeRelease"
+  if hasFade2dSdk(homeDir):
+    return homeDir
+
+  let siblingDir = getCurrentDir().parentDir / "fadeRelease"
+  if hasFade2dSdk(siblingDir):
+    return siblingDir
+
 task testLibtess2, "compare dude fixture output against libtess2":
   let libtess2Dir = findLibtess2Dir()
   if libtess2Dir.len == 0:
@@ -619,6 +669,41 @@ task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri,
     nimcache = "/tmp/p2t_bench_compare_all_d",
   )
   sh quoteShell("/tmp/p2t_bench_compare_all") & " " & quoteArgs(reportArgs)
+
+task benchExternalContenders, "run external Delabella, CDT, and Fade2D contender benchmark":
+  let delabellaDir = findDelabellaDir()
+  if delabellaDir.len == 0:
+    quit(
+      "Delabella not found; set DELABELLA_DIR=/path/to/delabella containing delabella.h and delabella.cpp",
+      QuitFailure,
+    )
+
+  let cdtDir = findCdtDir()
+  if cdtDir.len == 0:
+    quit(
+      "artem-ogre/CDT not found; set CDT_DIR=/path/to/CDT containing CDT/include/CDT.h",
+      QuitFailure,
+    )
+
+  let fade2dDir = findFade2dDir()
+  if fade2dDir.len == 0:
+    quit(
+      "Fade2D SDK not found; set FADE2D_DIR=/path/to/fadeRelease containing include_fade2d/ and lib_mac/",
+      QuitFailure,
+    )
+
+  let fadeLibDir = fade2dDir / "lib_mac"
+  sh "clang++ -std=c++17 -O3 -DNDEBUG " &
+    "-I" & quoteShell(delabellaDir) & " " &
+    "-I" & quoteShell(cdtDir / "CDT" / "include") & " " &
+    "-I" & quoteShell(fade2dDir / "include_fade2d") & " " &
+    "bench/bench_external_contenders.cpp " &
+    quoteShell(delabellaDir / "delabella.cpp") & " " &
+    "-L" & quoteShell(fadeLibDir) & " -lfade2d " &
+    quoteShell(fadeLibDir / "libgmp.10.dylib") & " " &
+    "-Wl,-rpath," & quoteShell(fadeLibDir) & " " &
+    "-o /tmp/p2t_external_contenders"
+  sh quoteShell("/tmp/p2t_external_contenders")
 
 task sizes, "report core p2t CDT struct sizes":
   nimRun(
