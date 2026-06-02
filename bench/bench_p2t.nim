@@ -147,9 +147,12 @@ proc benchRaw(name: string, iterations: int, input: TessInput) =
       triangles += result.rawTriangleCount
 
 proc bench(name: string, iterations: int, input: TessInput) =
-  benchSafe(name, iterations, input)
-  benchTrusted(name, iterations, input)
-  benchRaw(name, iterations, input)
+  when defined(p2tBenchOnlyTrusted):
+    benchTrusted(name, iterations, input)
+  else:
+    benchSafe(name, iterations, input)
+    benchTrusted(name, iterations, input)
+    benchRaw(name, iterations, input)
 
 emitConfig()
 

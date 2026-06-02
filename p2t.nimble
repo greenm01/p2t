@@ -341,6 +341,17 @@ task bench, "run champion Nim p2t benchmark":
   echo "p2t champion: pointer arena + pdqsort + front hash default-on + Tier 1 tuned"
   sh quoteShell("/tmp/p2t_bench_champion")
 
+task benchTrusted, "run champion Nim tessellateTrusted benchmark":
+  nimCompile(
+    "bench/bench_p2t",
+    flags = ChampionFlags & " -d:p2tBenchOnlyTrusted",
+    outPath = "/tmp/p2t_bench_trusted",
+    nimcache = "/tmp/p2t_bench_trusted_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_trusted")
+  echo "p2t tessellateTrusted: public trusted path"
+  sh quoteShell("/tmp/p2t_bench_trusted")
+
 task benchNormalizedTrusted, "benchmark cheap normalized trusted path":
   nimCompile(
     "bench/bench_normalized_trusted",

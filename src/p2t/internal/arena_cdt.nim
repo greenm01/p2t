@@ -1915,7 +1915,7 @@ proc triangulate(ws: var ArenaWorkspace) =
   ws.sweepPoints()
   ws.finalizationPolygon()
 
-proc sourceTriangle(t: ptr ArenaTriangle): array[3, int] =
+proc sourceTriangle(t: ptr ArenaTriangle): array[3, int] {.inline.} =
   if t.isNil or t.points[0].isNil or t.points[1].isNil or t.points[2].isNil or
       t.points[0] == t.points[1] or t.points[0] == t.points[2] or
       t.points[1] == t.points[2]:
@@ -1973,6 +1973,31 @@ proc addContour(ws: var ArenaWorkspace, contour: seq[Vec2], vertices: var seq[Ve
 
   discard ws.newEdge(prev, first)
 
+proc addTrustedContour(
+    ws: var ArenaWorkspace,
+    contour: openArray[Vec2],
+    vertices: var seq[Vec2],
+    sourceBase: var int,
+) =
+  if contour.len == 0:
+    return
+
+  let first = ws.newPoint(contour[0].x, contour[0].y, sourceBase)
+  vertices.add contour[0]
+  ws.activePoints.add first
+  var prev = first
+  inc sourceBase
+
+  for i in 1 ..< contour.len:
+    let point = ws.newPoint(contour[i].x, contour[i].y, sourceBase)
+    vertices.add contour[i]
+    ws.activePoints.add point
+    discard ws.newEdge(prev, point)
+    prev = point
+    inc sourceBase
+
+  discard ws.newEdge(prev, first)
+
 proc addContourRaw(ws: var ArenaWorkspace, contour: openArray[Vec2]) =
   if contour.len == 0:
     return
@@ -2019,13 +2044,56 @@ proc triangulateCdt*(workspace: var TessWorkspace, input: CdtInput): CdtResult =
   workspace.triangulateCdtInPlace(input)
 
   result.vertices = workspace.vertices
-  result.triangles.reserveSeq(workspace.arena.rawInteriorCount)
+  result.triangles.setLen(workspace.arena.rawInteriorCount)
+  var triangleCount = 0
   for i in 0 ..< workspace.arena.rawInteriorCount:
     let t = workspace.arena.interiorTriangles[i]
     let tri = t.sourceTriangle()
     if tri[0] < 0 or tri[1] < 0 or tri[2] < 0:
       continue
-    result.triangles.add tri
+    result.triangles[triangleCount] = tri
+    inc triangleCount
+  result.triangles.setLen(triangleCount)
+
+proc triangulateTrustedCdt*(workspace: var TessWorkspace, input: TessInput): CdtResult =
+  if input.outer.points.len < 3:
+    raise newException(ValueError, "outer contour has fewer than 3 points")
+
+  phase(phSetup):
+    workspace.arena.resetCdt()
+    workspace.vertices.setLen(0)
+
+    var pointCount = input.outer.points.len + input.steiner.len
+    for hole in input.holes:
+      pointCount += hole.points.len
+    workspace.reserveArena(pointCount, keepVertices = true)
+
+    var sourceBase = 0
+    workspace.arena.addTrustedContour(
+      input.outer.points, workspace.vertices, sourceBase
+    )
+
+    for hole in input.holes:
+      workspace.arena.addTrustedContour(hole.points, workspace.vertices, sourceBase)
+
+    for p in input.steiner:
+      workspace.arena.addPoint(workspace.arena.newPoint(p.x, p.y, sourceBase))
+      workspace.vertices.add p
+      inc sourceBase
+
+  workspace.arena.triangulate()
+
+  result.vertices = workspace.vertices
+  result.triangles.setLen(workspace.arena.rawInteriorCount)
+  var triangleCount = 0
+  for i in 0 ..< workspace.arena.rawInteriorCount:
+    let t = workspace.arena.interiorTriangles[i]
+    let tri = t.sourceTriangle()
+    if tri[0] < 0 or tri[1] < 0 or tri[2] < 0:
+      continue
+    result.triangles[triangleCount] = tri
+    inc triangleCount
+  result.triangles.setLen(triangleCount)
 
 proc triangulateCdtRaw*(workspace: var TessWorkspace, input: CdtInput): CdtRawResult =
   workspace.triangulateCdtInPlace(input)

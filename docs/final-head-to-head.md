@@ -36,7 +36,7 @@ Champion Nim configuration:
 - pointer arena CDT
 - pdqsort active-point sort
 - front hash default-on at `FrontHashMinPoints = 512`
-- trusted raw path
+- trusted and raw public API paths
 - Tier 1 tuned release flags
 
 The table reports best/median microseconds per triangulation. The `delta` column
@@ -86,6 +86,54 @@ fastest external contender for that case.
 | nazca-monkey | 65.210 / 65.640 | 156.900 / 159.230 | 498.310 / 525.580 | 1130.090 / 1142.310 | +58.4% vs Delabella |
 | nazca-heron | 53.500 / 53.660 | 124.120 / 127.030 | 417.360 / 422.380 | 888.550 / 904.980 | +56.9% vs Delabella |
 | organic-large | 230.390 / 238.390 | 1151.140 / 1162.290 | 1783.980 / 1792.170 | 32833.570 / 33004.840 | +80.0% vs Delabella |
+
+## Trusted Public API Check
+
+The raw path is useful when a caller can consume workspace-backed triangles
+directly. Most code wants a normal `TessResult`, though. That is what
+`tessellateTrusted` measures: trusted input, no full validation, but the public
+triangle index buffer is materialized.
+
+Run the p2t side directly with:
+
+```sh
+nimble benchTrusted
+```
+
+The official-reference table uses the accepted `benchCompareAll` run after the
+trusted-path optimization. Positive `delta` means p2t trusted is faster than the
+closest reference.
+
+Official references:
+
+| Case | p2t trusted | fast f32 | Triangle | libtess2 | delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| fixture-test | 0.186 / 0.190 | 0.236 / 0.267 | 0.689 / 0.716 | 2.126 / 2.148 | +21.3% vs fast f32 |
+| diamond | 0.346 / 0.348 | 0.432 / 0.445 | 0.953 / 0.978 | 2.659 / 2.692 | +19.9% vs fast f32 |
+| star | 0.276 / 0.283 | 0.316 / 0.339 | 1.128 / 1.130 | 2.738 / 2.785 | +12.7% vs fast f32 |
+| dude-with-holes | 4.825 / 4.862 | 4.864 / 4.918 | 11.130 / 11.238 | 14.391 / 14.704 | +0.8% vs fast f32 |
+| nazca-monkey | 74.670 / 75.570 | 75.350 / 78.490 | 170.620 / 176.350 | 242.900 / 244.110 | +0.9% vs fast f32 |
+| nazca-heron | 58.040 / 58.410 | 64.900 / 67.110 | 152.640 / 158.880 | 209.210 / 211.020 | +10.6% vs fast f32 |
+| organic-large | 248.240 / 259.970 | failed | 1027.540 / 1037.860 | 1207.350 / 1216.480 | +75.8% vs Triangle |
+
+External contenders:
+
+| Case | p2t trusted | Delabella | CDT | Fade2D | delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| small-ui-quad | 0.135 / 0.140 | 0.348 / 0.370 | 1.530 / 1.703 | 2.358 / 2.402 | +61.2% vs Delabella |
+| medium-icon | 2.241 / 2.306 | 62.318 / 62.724 | 29.845 / 30.079 | 274.627 / 277.202 | +92.5% vs CDT |
+| large-shape | 34.622 / 35.000 | 439.192 / 464.322 | 372.568 / 380.200 | 2525.106 / 2536.890 | +90.7% vs CDT |
+| fixture-test | 0.186 / 0.190 | 0.355 / 0.363 | 2.195 / 2.242 | 3.636 / 3.660 | +47.7% vs Delabella |
+| diamond | 0.346 / 0.348 | 0.748 / 0.774 | 3.458 / 3.493 | 8.431 / 8.446 | +53.7% vs Delabella |
+| star | 0.276 / 0.283 | 0.679 / 0.686 | 3.288 / 3.304 | 7.341 / 7.410 | +59.3% vs Delabella |
+| dude-with-holes | 4.825 / 4.862 | 9.426 / 9.819 | 32.822 / 33.537 | 63.381 / 64.374 | +48.8% vs Delabella |
+| nazca-monkey | 74.670 / 75.570 | 156.900 / 159.230 | 498.310 / 525.580 | 1130.090 / 1142.310 | +52.4% vs Delabella |
+| nazca-heron | 58.040 / 58.410 | 124.120 / 127.030 | 417.360 / 422.380 | 888.550 / 904.980 | +53.2% vs Delabella |
+| organic-large | 248.240 / 259.970 | 1151.140 / 1162.290 | 1783.980 / 1792.170 | 32833.570 / 33004.840 | +78.4% vs Delabella |
+
+This is the honest public fast-path read: `tessellateTrusted` now beats
+fast-poly2tri f32 on every official fixture where fast-poly2tri completes, while
+still paying to materialize the public result.
 
 Reproduction, using the exact external inputs used for the table:
 

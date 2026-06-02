@@ -137,7 +137,7 @@ proc normalizeTrustedInput(
 
   result.steiner = input.steiner
 
-proc toCdtInput(input: TessInput): CdtInput =
+proc toCdtInput(input: TessInput): CdtInput {.used.} =
   result.outer = input.outer.points
   result.holes = newSeqOfCap[seq[Vec2]](input.holes.len)
   for hole in input.holes:
@@ -269,7 +269,41 @@ proc tessellateTrusted*(
   ## The outer contour must be counterclockwise, holes must be clockwise,
   ## contours must be simple with no duplicate or degenerate points, and any
   ## Steiner points must be inside the outer contour.
-  tessellateStatic[false, false, false, true](workspace, input, epsilon)
+  when defined(p2tIdxCdt) or defined(p2tLegacyCdt):
+    tessellateStatic[false, false, false, true](workspace, input, epsilon)
+  else:
+    discard epsilon
+    workspace.clear()
+
+    if input.outer.points.len == 0:
+      return failure(
+        tessError(tekEmptyOuter, input.outer.id, -1, "contour has no points")
+      )
+    if input.outer.points.len < 3:
+      return failure(
+        tessError(
+          tekTooFewVertices, input.outer.id, input.outer.points.len,
+          "contour has fewer than 3 vertices",
+        )
+      )
+    for hole in input.holes:
+      if hole.points.len == 0:
+        return failure(
+          tessError(tekEmptyOuter, hole.id, -1, "contour has no points")
+        )
+      if hole.points.len < 3:
+        return failure(
+          tessError(
+            tekTooFewVertices, hole.id, hole.points.len,
+            "contour has fewer than 3 vertices",
+          )
+        )
+
+    try:
+      let cdtResult = workspace.triangulateTrustedCdt(input)
+      success(cdtResult.vertices, cdtResult.triangles)
+    except CatchableError as err:
+      failure(tessError(tekTriangulationFailed, -1, -1, err.msg))
 
 proc tessellateNormalizedTrusted*(
     workspace: var TessWorkspace, input: TessInput, epsilon = DefaultTessEpsilon
@@ -288,8 +322,11 @@ proc tessellateNormalizedTrusted*(
     return failure(error)
 
   try:
-    let cdtResult = workspace.triangulateCdt(normalized.toCdtInput)
-    workspace.vertices = cdtResult.vertices
+    when defined(p2tIdxCdt) or defined(p2tLegacyCdt):
+      let cdtResult = workspace.triangulateCdt(normalized.toCdtInput)
+      workspace.vertices = cdtResult.vertices
+    else:
+      let cdtResult = workspace.triangulateTrustedCdt(normalized)
     success(cdtResult.vertices, cdtResult.triangles)
   except CatchableError as err:
     failure(tessError(tekTriangulationFailed, -1, -1, err.msg))

@@ -92,16 +92,16 @@ Champion public-API results:
 
 | Fixture | no-validate | trusted | raw |
 | --- | ---: | ---: | ---: |
-| small-ui-quad | 0.214 / 0.223 | 0.116 / 0.119 | 0.079 / 0.081 |
-| medium-icon | 3.001 / 3.046 | 2.123 / 2.195 | 1.924 / 2.023 |
-| large-shape | 42.238 / 43.006 | 35.382 / 36.308 | 32.136 / 32.816 |
-| fixture-test | 0.328 / 0.329 | 0.198 / 0.203 | 0.143 / 0.151 |
-| diamond | 0.254 / 0.256 | 0.337 / 0.351 | 0.288 / 0.290 |
-| star | 0.495 / 0.502 | 0.287 / 0.294 | 0.228 / 0.232 |
-| dude-with-holes | 6.919 / 7.058 | 4.951 / 5.099 | 4.378 / 4.406 |
-| nazca-monkey | 94.310 / 96.130 | 70.730 / 72.170 | 65.210 / 65.640 |
-| nazca-heron | 76.420 / 79.040 | 58.330 / 58.960 | 53.500 / 53.660 |
-| organic-large | 310.390 / 314.660 | 249.770 / 250.840 | 230.390 / 238.390 |
+| small-ui-quad | 0.334 / 0.355 | 0.135 / 0.140 | 0.101 / 0.101 |
+| medium-icon | 3.481 / 3.822 | 2.241 / 2.306 | 1.927 / 1.998 |
+| large-shape | 43.174 / 44.308 | 34.622 / 35.000 | 32.752 / 33.028 |
+| fixture-test | 0.336 / 0.337 | 0.186 / 0.190 | 0.149 / 0.154 |
+| diamond | 0.263 / 0.267 | 0.346 / 0.348 | 0.293 / 0.298 |
+| star | 0.520 / 0.526 | 0.276 / 0.283 | 0.231 / 0.242 |
+| dude-with-holes | 6.770 / 6.836 | 4.825 / 4.862 | 4.459 / 4.494 |
+| nazca-monkey | 99.580 / 101.930 | 74.670 / 75.570 | 66.800 / 70.180 |
+| nazca-heron | 76.750 / 77.120 | 58.040 / 58.410 | 54.520 / 55.480 |
+| organic-large | 313.330 / 316.040 | 248.240 / 259.970 | 230.960 / 241.550 |
 
 Raw-path head-to-head:
 
@@ -145,6 +145,9 @@ Full reproduction commands are in the
 | nazca-heron | 53.500 / 53.660 | 124.120 / 127.030 | 417.360 / 422.380 | 888.550 / 904.980 | +56.9% vs Delabella |
 | organic-large | 230.390 / 238.390 | 1151.140 / 1162.290 | 1783.980 / 1792.170 | 32833.570 / 33004.840 | +80.0% vs Delabella |
 
+For the public fast path that materializes `TessResult.triangles`, see the
+[`tessellateTrusted` benchmark](docs/final-head-to-head.md#trusted-public-api-check).
+
 The short version: the optimized Nim path is ahead of the reference C
 implementation on every fixture where `fast-poly2tri` completes, ahead of
 Triangle, and much faster than libtess2 on this benchmark set. The large-input
@@ -166,6 +169,7 @@ nimble testLibtess2
 nimble bench
 nimble benchCompareAll
 nimble benchLibtess2
+nimble benchTrusted
 nimble benchNormalizedTrusted
 nimble benchExternalContenders
 nimble benchParallel
