@@ -16,7 +16,7 @@ when not defined(p2tCdtStats):
     StressIterations {.intdefine.} = 5000
 
 const
-  StressFixture {.strdefine.} = "cdt_stress.dat"
+  StressFixture {.strdefine.} = "stress/cdt_stress.dat"
   StressName {.strdefine.} = "stress-small"
 
 proc cdtBackend(): string =
@@ -83,7 +83,10 @@ proc contour(id: int, points: sink seq[Vec2]): TessContour =
 
 proc readStressDat(name: string): TessInput =
   let path =
-    currentSourcePath().parentDir.parentDir / "tests" / "fixtures" / "stress" / name
+    if name.isAbsolute():
+      name
+    else:
+      currentSourcePath().parentDir.parentDir / "tests" / "fixtures" / name
   var
     rings: seq[seq[Vec2]]
     current: seq[Vec2]

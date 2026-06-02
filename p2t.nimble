@@ -347,7 +347,7 @@ task benchCdtStats, "report arena CDT operation counts":
 task benchStressSmall, "benchmark the small stress fixture with champion Nim flags":
   nimCompile(
     "bench/bench_stress_small",
-    flags = ChampionFlags & stressBenchDefines("cdt_stress.dat", "stress-small", 5000),
+    flags = ChampionFlags & stressBenchDefines("stress/cdt_stress.dat", "stress-small", 5000),
     outPath = "/tmp/p2t_bench_stress_small",
     nimcache = "/tmp/p2t_bench_stress_small_d",
   )
@@ -359,7 +359,7 @@ task benchStressSmallNoHash, "benchmark the small stress fixture with champion N
   nimCompile(
     "bench/bench_stress_small",
     flags = ChampionFlags & " -d:p2tNoFrontHash" &
-      stressBenchDefines("cdt_stress.dat", "stress-small", 5000),
+      stressBenchDefines("stress/cdt_stress.dat", "stress-small", 5000),
     outPath = "/tmp/p2t_bench_stress_small_no_hash",
     nimcache = "/tmp/p2t_bench_stress_small_no_hash_d",
   )
@@ -371,7 +371,7 @@ task benchStressSmallStats, "report arena CDT stats for the small stress fixture
   nimCompile(
     "bench/bench_stress_small",
     flags = ChampionFlags & " -d:p2tCdtStats -d:p2tFrontHashStats" &
-      stressBenchDefines("cdt_stress.dat", "stress-small", 5000),
+      stressBenchDefines("stress/cdt_stress.dat", "stress-small", 5000),
     outPath = "/tmp/p2t_bench_stress_small_stats",
     nimcache = "/tmp/p2t_bench_stress_small_stats_d",
   )
@@ -380,7 +380,7 @@ task benchStressSmallStats, "report arena CDT stats for the small stress fixture
 task benchStressMid, "benchmark the mid stress fixture with champion Nim flags":
   nimCompile(
     "bench/bench_stress_small",
-    flags = ChampionFlags & stressBenchDefines("cdt_stress_mid.dat", "stress-mid", 1500),
+    flags = ChampionFlags & stressBenchDefines("stress/cdt_stress_mid.dat", "stress-mid", 1500),
     outPath = "/tmp/p2t_bench_stress_mid",
     nimcache = "/tmp/p2t_bench_stress_mid_d",
   )
@@ -392,7 +392,7 @@ task benchStressMidNoHash, "benchmark the mid stress fixture with champion Nim f
   nimCompile(
     "bench/bench_stress_small",
     flags = ChampionFlags & " -d:p2tNoFrontHash" &
-      stressBenchDefines("cdt_stress_mid.dat", "stress-mid", 1500),
+      stressBenchDefines("stress/cdt_stress_mid.dat", "stress-mid", 1500),
     outPath = "/tmp/p2t_bench_stress_mid_no_hash",
     nimcache = "/tmp/p2t_bench_stress_mid_no_hash_d",
   )
@@ -404,7 +404,7 @@ task benchStressMidStats, "report arena CDT stats for the mid stress fixture":
   nimCompile(
     "bench/bench_stress_small",
     flags = ChampionFlags & " -d:p2tCdtStats -d:p2tFrontHashStats" &
-      stressBenchDefines("cdt_stress_mid.dat", "stress-mid", 1500),
+      stressBenchDefines("stress/cdt_stress_mid.dat", "stress-mid", 1500),
     outPath = "/tmp/p2t_bench_stress_mid_stats",
     nimcache = "/tmp/p2t_bench_stress_mid_stats_d",
   )
@@ -413,7 +413,7 @@ task benchStressMidStats, "report arena CDT stats for the mid stress fixture":
 task benchStressLarge, "benchmark the large stress fixture with champion Nim flags":
   nimCompile(
     "bench/bench_stress_small",
-    flags = ChampionFlags & stressBenchDefines("cdt_stress_large.dat", "stress-large", 500),
+    flags = ChampionFlags & stressBenchDefines("stress/cdt_stress_large.dat", "stress-large", 500),
     outPath = "/tmp/p2t_bench_stress_large",
     nimcache = "/tmp/p2t_bench_stress_large_d",
   )
@@ -425,7 +425,7 @@ task benchStressLargeNoHash, "benchmark the large stress fixture with champion N
   nimCompile(
     "bench/bench_stress_small",
     flags = ChampionFlags & " -d:p2tNoFrontHash" &
-      stressBenchDefines("cdt_stress_large.dat", "stress-large", 500),
+      stressBenchDefines("stress/cdt_stress_large.dat", "stress-large", 500),
     outPath = "/tmp/p2t_bench_stress_large_no_hash",
     nimcache = "/tmp/p2t_bench_stress_large_no_hash_d",
   )
@@ -437,11 +437,54 @@ task benchStressLargeStats, "report arena CDT stats for the large stress fixture
   nimCompile(
     "bench/bench_stress_small",
     flags = ChampionFlags & " -d:p2tCdtStats -d:p2tFrontHashStats" &
-      stressBenchDefines("cdt_stress_large.dat", "stress-large", 500),
+      stressBenchDefines("stress/cdt_stress_large.dat", "stress-large", 500),
     outPath = "/tmp/p2t_bench_stress_large_stats",
     nimcache = "/tmp/p2t_bench_stress_large_stats_d",
   )
   sh quoteShell("/tmp/p2t_bench_stress_large_stats")
+
+task benchStressOrganicLarge, "benchmark the organic large control fixture with champion Nim flags":
+  nimCompile(
+    "bench/bench_stress_small",
+    flags = ChampionFlags &
+      stressBenchDefines("organic/cdt_organic_large.dat", "organic-large", 500),
+    outPath = "/tmp/p2t_bench_stress_organic_large",
+    nimcache = "/tmp/p2t_bench_stress_organic_large_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_stress_organic_large")
+  echo "p2t organic-large champion: pointer arena + pdqsort + front hash default-on + Tier 1 tuned"
+  sh quoteShell("/tmp/p2t_bench_stress_organic_large")
+
+task benchStressOrganicLargeNoHash, "benchmark the organic large control fixture with champion Nim flags and front hash disabled":
+  nimCompile(
+    "bench/bench_stress_small",
+    flags = ChampionFlags & " -d:p2tNoFrontHash" &
+      stressBenchDefines("organic/cdt_organic_large.dat", "organic-large", 500),
+    outPath = "/tmp/p2t_bench_stress_organic_large_no_hash",
+    nimcache = "/tmp/p2t_bench_stress_organic_large_no_hash_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_stress_organic_large_no_hash")
+  echo "p2t organic-large champion without front hash"
+  sh quoteShell("/tmp/p2t_bench_stress_organic_large_no_hash")
+
+task benchStressOrganicLargeStats, "report arena CDT stats for the organic large control fixture":
+  nimCompile(
+    "bench/bench_stress_small",
+    flags = ChampionFlags & " -d:p2tCdtStats -d:p2tNoFrontHash" &
+      stressBenchDefines("organic/cdt_organic_large.dat", "organic-large-nohash", 500),
+    outPath = "/tmp/p2t_bench_stress_organic_large_stats_no_hash",
+    nimcache = "/tmp/p2t_bench_stress_organic_large_stats_no_hash_d",
+  )
+  sh quoteShell("/tmp/p2t_bench_stress_organic_large_stats_no_hash")
+
+  nimCompile(
+    "bench/bench_stress_small",
+    flags = ChampionFlags & " -d:p2tCdtStats -d:p2tFrontHashStats" &
+      stressBenchDefines("organic/cdt_organic_large.dat", "organic-large", 500),
+    outPath = "/tmp/p2t_bench_stress_organic_large_stats",
+    nimcache = "/tmp/p2t_bench_stress_organic_large_stats_d",
+  )
+  sh quoteShell("/tmp/p2t_bench_stress_organic_large_stats")
 
 task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri, and libtess2":
   nimCompile(

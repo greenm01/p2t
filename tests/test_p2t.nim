@@ -202,7 +202,7 @@ suite "original poly2tri fixtures":
     fixtureCase("nazca_heron.dat")
 
 proc stressFixtureCase(name: string) =
-  let input = readDatRings("stress" / name)
+  let input = readDatRings(name)
   let result = tessellate(input)
   var expectedArea = polygonArea(input.outer.points)
   var ringVertices = input.outer.points.len
@@ -218,12 +218,17 @@ proc stressFixtureCase(name: string) =
     check tri[2] >= 0 and tri[2] < result.vertices.len
   check abs(areaOf(result) - expectedArea) < 1e-5
   # This count identity is valid here because all vertices are on rings and
-  # this CDT path inserts no Steiner/interior points for the stress fixtures.
+  # this CDT path inserts no Steiner/interior points for these fixtures.
   check result.triangles.len == ringVertices + 2 * input.holes.len - 2
 
 suite "stress fixtures":
   test "front-hash stress fixtures with holes":
-    for name in ["cdt_stress.dat", "cdt_stress_mid.dat", "cdt_stress_large.dat"]:
+    for name in [
+      "stress" / "cdt_stress.dat",
+      "stress" / "cdt_stress_mid.dat",
+      "stress" / "cdt_stress_large.dat",
+      "organic" / "cdt_organic_large.dat",
+    ]:
       stressFixtureCase(name)
 
 suite "p2t validation":
