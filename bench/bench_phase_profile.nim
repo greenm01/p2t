@@ -3,8 +3,8 @@ import std/[math, monotimes, os, strformat, strutils, times]
 import p2t
 import p2t/internal/arena_cdt as arena_cdt
 
-when not defined(p2tArenaCdt):
-  {.fatal: "bench_phase_profile requires -d:p2tArenaCdt".}
+when defined(p2tIdxCdt) or defined(p2tLegacyCdt):
+  {.fatal: "bench_phase_profile requires the arena CDT backend".}
 
 when not defined(p2tPhaseProf):
   {.fatal: "bench_phase_profile requires -d:p2tPhaseProf".}

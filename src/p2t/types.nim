@@ -61,7 +61,7 @@ type
     basin*: CdtBasin
     edgeEvent*: CdtEdgeEvent
 
-when defined(p2tArenaCdt):
+when not defined(p2tIdxCdt) and not defined(p2tLegacyCdt):
   when defined(p2tCdtStats):
     when defined(p2tFrontHashStats):
       const
@@ -280,7 +280,22 @@ when defined(p2tIdxCdt):
       cdt*: CdtWorkspace
       idx*: IdxWorkspace
 
-elif defined(p2tArenaCdt):
+elif defined(p2tLegacyCdt):
+  type
+    TessRawResult* = object
+      ok*: bool
+      error*: TessError
+      vertices*: ptr seq[Vec2]
+      cdt*: ptr CdtWorkspace
+
+    TessWorkspace* = object
+      vertices*: seq[Vec2]
+      polygon*: seq[int]
+      indexMap*: seq[int]
+      scratch*: seq[int]
+      cdt*: CdtWorkspace
+
+else:
   type
     TessRawResult* = object
       ok*: bool
@@ -296,22 +311,10 @@ elif defined(p2tArenaCdt):
       cdt*: CdtWorkspace
       arena*: ArenaWorkspace
 
-else:
-  type
-    TessRawResult* = object
-      ok*: bool
-      error*: TessError
-      vertices*: ptr seq[Vec2]
-      cdt*: ptr CdtWorkspace
-
-    TessWorkspace* = object
-      vertices*: seq[Vec2]
-      polygon*: seq[int]
-      indexMap*: seq[int]
-      scratch*: seq[int]
-      cdt*: CdtWorkspace
-
 const DefaultTessEpsilon* = 1e-9
+
+proc contour*(id: int, points: openArray[Vec2]): TessContour =
+  TessContour(id: id, points: @points)
 
 proc defaultTessOptions*(): TessOptions =
   TessOptions(

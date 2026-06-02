@@ -34,17 +34,11 @@ when defined(p2tSlotCdt):
 when FrontHashOn:
   const
     FrontHashMinPoints {.intdefine.} = 512
-    # 0 = uncapped. The hash is a pure accelerator for locateNode (the linear
-    # front walk still corrects from the bucket node), so capping it only
-    # forced the largest fronts back onto the slow O(n) walk. Uncapped it gives
-    # ~2.1x on large-shape and beats fast-poly2tri on the nazca fixtures.
-    FrontHashMaxPoints {.intdefine.} = 0
     FrontHashBucketFactor {.intdefine.} = 2
     FrontHashScanRadius {.intdefine.} = 8
 
   template frontHashPointCountEnabled(pointCount: int): bool =
-    pointCount >= FrontHashMinPoints and
-      (FrontHashMaxPoints <= 0 or pointCount <= FrontHashMaxPoints)
+    pointCount >= FrontHashMinPoints
 
 when defined(p2tFrontHashStats):
   type FrontHashHint = enum

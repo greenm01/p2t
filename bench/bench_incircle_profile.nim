@@ -3,8 +3,8 @@ import std/[math, os, strformat, strutils]
 import p2t
 import p2t/internal/arena_cdt as arena_cdt
 
-when not defined(p2tArenaCdt):
-  {.fatal: "bench_incircle_profile requires -d:p2tArenaCdt".}
+when defined(p2tIdxCdt) or defined(p2tLegacyCdt):
+  {.fatal: "bench_incircle_profile requires the arena CDT backend".}
 
 when not defined(p2tCdtStats):
   {.fatal: "bench_incircle_profile requires -d:p2tCdtStats".}

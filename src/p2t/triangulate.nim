@@ -1,10 +1,10 @@
 import ./[geometry, types]
 when defined(p2tIdxCdt):
   import ./internal/idx_cdt as cdt
-elif defined(p2tArenaCdt):
-  import ./internal/arena_cdt as cdt
-else:
+elif defined(p2tLegacyCdt):
   import ./internal/cdt
+else:
+  import ./internal/arena_cdt as cdt
 
 type Edge = array[2, int]
 
@@ -83,7 +83,7 @@ proc prepareContour[CleanInput, AssumeOriented: static bool](
   when not AssumeOriented:
     result.ensureOrientation(ccw)
 
-proc tessellateStatic*[
+proc tessellateStatic[
     CleanInput, Validate, KeepBoundaryEdges, AssumeOriented: static bool
 ](
     workspace: var TessWorkspace, input: TessInput, epsilon = DefaultTessEpsilon
@@ -240,13 +240,13 @@ proc tessellateTrustedRaw*(
       return TessRawResult(
         ok: true, error: tessError(tekNone), vertices: raw.vertices, idx: raw.idx
       )
-    elif defined(p2tArenaCdt):
+    elif defined(p2tLegacyCdt):
       return TessRawResult(
-        ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
+        ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
       )
     else:
       return TessRawResult(
-        ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
+        ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
       )
   else:
     try:
@@ -255,13 +255,13 @@ proc tessellateTrustedRaw*(
         TessRawResult(
           ok: true, error: tessError(tekNone), vertices: raw.vertices, idx: raw.idx
         )
-      elif defined(p2tArenaCdt):
+      elif defined(p2tLegacyCdt):
         TessRawResult(
-          ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
+          ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
         )
       else:
         TessRawResult(
-          ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
+          ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
         )
     except CatchableError as err:
       TessRawResult(

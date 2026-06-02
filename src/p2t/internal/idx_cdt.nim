@@ -29,13 +29,11 @@ const
 when FrontHashOn:
   const
     FrontHashMinPoints {.intdefine.} = 512
-    FrontHashMaxPoints {.intdefine.} = 0
     FrontHashBucketFactor {.intdefine.} = 2
     FrontHashScanRadius {.intdefine.} = 8
 
   template frontHashPointCountEnabled(pointCount: int): bool =
-    pointCount >= FrontHashMinPoints and
-      (FrontHashMaxPoints <= 0 or pointCount <= FrontHashMaxPoints)
+    pointCount >= FrontHashMinPoints
 
 type
   Orientation = enum

@@ -7,26 +7,30 @@ const BenchRounds = 5
 proc cdtBackend(): string =
   when defined(p2tIdxCdt):
     "idx"
-  elif defined(p2tArenaCdt):
-    "arena"
-  else:
+  elif defined(p2tLegacyCdt):
     "classic"
+  else:
+    "arena"
 
 proc sortBackend(): string =
   when defined(p2tQuickSort):
     "quicksort"
   elif defined(p2tMergeSort):
     "mergesort"
-  elif defined(p2tArenaCdt):
-    "pdqsort"
+  elif defined(p2tLegacyCdt):
+    "classic"
   elif defined(p2tIdxCdt):
     "mergesort"
   else:
-    "classic"
-
+    "pdqsort"
 proc frontHashConfig(): string =
-  when not defined(p2tArenaCdt) and not defined(p2tIdxCdt):
+  when defined(p2tLegacyCdt):
     "not-applicable"
+  elif defined(p2tIdxCdt):
+    when defined(p2tNoFrontHash):
+      "off"
+    else:
+      "on-default-min512"
   elif defined(p2tNoFrontHash):
     "off"
   else:

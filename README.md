@@ -9,6 +9,9 @@ the root fixtures.
 
 `p2t` is a constrained Delaunay tessellation library for Nim.
 
+Nim is the superior code warrior's weapon of choice, but for those who wish to
+suffer we provide a C ABI on the backend.
+
 ## About
 
 I wrote the original Poly2Tri in fits and starts from 2008 to 2009. It began as
@@ -34,8 +37,26 @@ responsibility.
 
 ## Final Head-to-Head
 
-The final comparison uses the Nim champion path against `fast-poly2tri` and
-libtess2. Times are best/median microseconds per triangulation.
+The final comparison uses the public `import p2t` API against vendored
+`fast-poly2tri` and libtess2. Times are best/median microseconds per
+triangulation, derived from five sequential `nimble benchCompareAll` passes.
+Each cell uses the pass with the lowest best time for that fixture/engine.
+
+Benchmark machine:
+
+- Mac mini (`Mac16,11`)
+- Apple M4 Pro, 12 cores (8 performance, 4 efficiency)
+- 24 GB memory
+- macOS 26.5 (`25F71`), arm64
+- Nim 2.2.10
+
+Comparison dependencies are vendored in this repository:
+
+- `fast-poly2tri` commit `c04c633f6e48fb4e79bd511f2c0bb46279fd5773`
+- `libtess2` commit `8dbd6483e920311a58c9af10a10beb278efebc36`
+
+Earcut is intentionally excluded because it is not a constrained Delaunay
+triangulation algorithm.
 
 Champion Nim configuration:
 
@@ -57,17 +78,32 @@ Fixture stats:
 | nazca-heron | 1,036 | 0 | 1,034 | large organic outline |
 | organic-large | 3,340 | 287 | 3,912 | matched organic control |
 
-Performance results:
+Champion public-API results:
 
-| Fixture | Nim champion raw | fast-poly2tri f32 | fast-poly2tri f64 | libtess2 |
-| --- | ---: | ---: | ---: | ---: |
-| fixture-test | 0.148 / 0.152 | 0.241 / 0.264 | 0.257 / 0.260 | 2.139 / 2.205 |
-| diamond | 0.286 / 0.295 | 0.419 / 0.440 | 0.404 / 0.429 | 2.575 / 2.621 |
-| star | 0.228 / 0.232 | 0.305 / 0.314 | 0.313 / 0.320 | 2.733 / 2.737 |
-| dude-with-holes | 4.318 / 4.428 | 4.888 / 4.942 | 4.489 / 4.845 | 14.640 / 14.975 |
-| nazca-monkey | 65.180 / 67.750 | 75.510 / 76.410 | 72.200 / 77.790 | 235.920 / 237.400 |
-| nazca-heron | 52.870 / 55.130 | 66.210 / 66.920 | 65.910 / 67.450 | 203.630 / 205.810 |
-| organic-large | 230.100 / 238.250 | failed | failed | 1188.930 / 1194.890 |
+| Fixture | no-validate | trusted | raw |
+| --- | ---: | ---: | ---: |
+| small-ui-quad | 0.214 / 0.223 | 0.116 / 0.119 | 0.079 / 0.081 |
+| medium-icon | 3.001 / 3.046 | 2.123 / 2.195 | 1.924 / 2.023 |
+| large-shape | 42.238 / 43.006 | 35.382 / 36.308 | 32.136 / 32.816 |
+| fixture-test | 0.328 / 0.329 | 0.198 / 0.203 | 0.143 / 0.151 |
+| diamond | 0.254 / 0.256 | 0.337 / 0.351 | 0.288 / 0.290 |
+| star | 0.495 / 0.502 | 0.287 / 0.294 | 0.228 / 0.232 |
+| dude-with-holes | 6.919 / 7.058 | 4.951 / 5.099 | 4.378 / 4.406 |
+| nazca-monkey | 94.310 / 96.130 | 70.730 / 72.170 | 65.210 / 65.640 |
+| nazca-heron | 76.420 / 79.040 | 58.330 / 58.960 | 53.500 / 53.660 |
+| organic-large | 310.390 / 314.660 | 249.770 / 250.840 | 230.390 / 238.390 |
+
+Raw-path head-to-head:
+
+| Case | p2t raw | fast f32 | fast f64 | libtess2 | delta |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| fixture-test | 0.143 / 0.151 | 0.169 / 0.169 | 0.176 / 0.180 | 2.075 / 2.204 | +15.3% |
+| diamond | 0.288 / 0.290 | 0.308 / 0.312 | 0.321 / 0.324 | 2.495 / 2.535 | +6.3% |
+| star | 0.228 / 0.232 | 0.273 / 0.277 | 0.264 / 0.274 | 2.655 / 2.691 | +13.6% |
+| dude-with-holes | 4.378 / 4.406 | 4.417 / 4.452 | 4.421 / 4.518 | 14.201 / 14.370 | +0.9% |
+| nazca-monkey | 65.210 / 65.640 | 72.390 / 75.210 | 73.740 / 76.130 | 232.900 / 238.840 | +9.9% |
+| nazca-heron | 53.500 / 53.660 | 65.050 / 66.010 | 65.800 / 68.870 | 198.660 / 199.730 | +17.8% |
+| organic-large | 230.390 / 238.390 | failed | failed | 1169.650 / 1181.680 | +80.3% vs libtess2 |
 
 `fast-poly2tri` asserts in `MPE_EdgeEventPoints` on `organic-large`, so there is
 no valid timing for that fixture. The Nim implementation and libtess2 both
@@ -98,12 +134,17 @@ nimble benchParallel
 nimble tidy
 ```
 
+Benchmark comparisons use vendored `fast-poly2tri` and `libtess2` sources under
+`vendor/` by default. Set `FAST_POLY2TRI_DIR` or `LIBTESS2_DIR` to compare
+against external checkouts.
+
 ## References
 
 The triangulation algorithm is the Poly2Tri advancing-front sweep-line CDT,
 combining the sweep-line Delaunay base algorithm with Thomas Åhlén's "FlipScan"
 constrained-edge insertion.
 
+- [FlipScan constrained-edge insertion spec](docs/flipscan.md)
 - Žalik, B. (2005). *An efficient sweep-line Delaunay triangulation algorithm.*
   Computer-Aided Design, 37(10), pp. 1027–1038.
   doi:[10.1016/j.cad.2004.10.004](https://doi.org/10.1016/j.cad.2004.10.004)

@@ -2,8 +2,8 @@ import std/[math, os, strformat, strutils]
 
 import p2t
 
-when not defined(p2tArenaCdt):
-  {.fatal: "bench_cdt_stats requires -d:p2tArenaCdt".}
+when defined(p2tIdxCdt) or defined(p2tLegacyCdt):
+  {.fatal: "bench_cdt_stats requires the arena CDT backend".}
 
 when not defined(p2tCdtStats):
   {.fatal: "bench_cdt_stats requires -d:p2tCdtStats".}
