@@ -88,7 +88,8 @@ proc resetCdt(ws: var ArenaWorkspace) =
   ws.nodeCount = 0
   ws.rawInteriorCount = 0
   ws.activePoints.setLen(0)
-  ws.sortTemp.setLen(0)
+  # sortTemp is merge-sort scratch (fully overwritten per sort); keep its length
+  # across reuse so the sort grows it at most once instead of every iteration.
   # meshStack and interiorTriangles are scratch/output buffers owned entirely by
   # meshClean; never reset their length so we avoid a per-call grow that
   # zero-fills triangles.len pointer slots. rawInteriorCount is the real count.
@@ -693,7 +694,8 @@ proc mergeSortActivePoints(ws: var ArenaWorkspace) {.used.} =
       ws.activePoints[i] = ws.sortTemp[i]
 
   if ws.activePoints.len > 1:
-    ws.sortTemp.setLen(ws.activePoints.len)
+    if ws.sortTemp.len < ws.activePoints.len:
+      ws.sortTemp.setLen(ws.activePoints.len)
     ws.sortRange(0, ws.activePoints.len)
 
 proc sortActivePoints(ws: var ArenaWorkspace) =
