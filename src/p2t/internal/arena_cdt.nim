@@ -89,10 +89,9 @@ proc resetCdt(ws: var ArenaWorkspace) =
   ws.rawInteriorCount = 0
   ws.activePoints.setLen(0)
   ws.sortTemp.setLen(0)
-  # meshStack is scratch space owned entirely by meshClean (overwrites [0] and
-  # drives via stackCount); never reset its length so we avoid a per-call grow
-  # that zero-fills triangles.len pointer slots.
-  ws.interiorTriangles.setLen(0)
+  # meshStack and interiorTriangles are scratch/output buffers owned entirely by
+  # meshClean; never reset their length so we avoid a per-call grow that
+  # zero-fills triangles.len pointer slots. rawInteriorCount is the real count.
   when FrontHashOn:
     ws.frontBuckets.setLen(0)
     ws.frontBucketMin = 0
@@ -778,10 +777,8 @@ proc meshClean(ws: var ArenaWorkspace, t: ptr ArenaTriangle) =
         if not item.hasFlag(constrainedFlag(i)):
           let neighbor = item.neighbors[i]
           if not neighbor.isNil:
-            ws.meshStack[stackCount] = neighbor
-            inc stackCount
-
-  ws.interiorTriangles.setLen(ws.rawInteriorCount)
+             ws.meshStack[stackCount] = neighbor
+             inc stackCount
 
 proc incircle(pa, pb, pc, pd: ptr ArenaPoint): bool {.inline.} =
   statIncGlobal(incircleCalls)
@@ -1606,8 +1603,9 @@ proc triangulateCdt*(workspace: var TessWorkspace, input: CdtInput): CdtResult =
   workspace.triangulateCdtInPlace(input)
 
   result.vertices = workspace.vertices
-  result.triangles.reserveSeq(workspace.arena.interiorTriangles.len)
-  for t in workspace.arena.interiorTriangles:
+  result.triangles.reserveSeq(workspace.arena.rawInteriorCount)
+  for i in 0 ..< workspace.arena.rawInteriorCount:
+    let t = workspace.arena.interiorTriangles[i]
     let tri = t.sourceTriangle()
     if tri[0] < 0 or tri[1] < 0 or tri[2] < 0:
       continue
