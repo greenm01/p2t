@@ -12,3 +12,6 @@ They are not part of the p2t public Nim API.
   - Source: https://github.com/memononen/libtess2
   - Commit: `8dbd6483e920311a58c9af10a10beb278efebc36`
   - Used files: `Include/tesselator.h`, `Source/*.{c,h}`, `LICENSE.txt`
+
+Triangle is supported only through an external `TRIANGLE_DIR` checkout for
+benchmarks. It is intentionally not vendored.

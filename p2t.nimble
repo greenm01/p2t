@@ -130,6 +130,22 @@ proc findFastPoly2TriDir(): string =
   if fileExists(siblingDir / "MPE_fastpoly2tri.h"):
     return siblingDir
 
+proc hasTriangleSource(path: string): bool =
+  fileExists(path / "triangle.c") and fileExists(path / "triangle.h")
+
+proc findTriangleDir(): string =
+  let envDir = getEnv("TRIANGLE_DIR")
+  if envDir.len > 0 and hasTriangleSource(envDir):
+    return envDir
+
+  let homeDir = getHomeDir() / "src" / "triangle"
+  if hasTriangleSource(homeDir):
+    return homeDir
+
+  let siblingDir = getCurrentDir().parentDir / "triangle"
+  if hasTriangleSource(siblingDir):
+    return siblingDir
+
 task testLibtess2, "compare dude fixture output against libtess2":
   let libtess2Dir = findLibtess2Dir()
   if libtess2Dir.len == 0:
@@ -517,7 +533,7 @@ task benchStressOrganicLargeStats, "report arena CDT stats for the organic large
   )
   sh quoteShell("/tmp/p2t_bench_stress_organic_large_stats")
 
-task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri, and libtess2":
+task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri, libtess2, and Triangle":
   nimCompile(
     "bench/bench_p2t",
     flags = ChampionFlags,
@@ -585,6 +601,16 @@ task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri,
     reportArgs.add "libtess2=/tmp/p2t_bench_libtess2_fixtures"
   else:
     echo "skipping libtess2; expected vendor/libtess2 or set LIBTESS2_DIR=/path/to/libtess2"
+
+  let triangleDir = findTriangleDir()
+  if triangleDir.len > 0:
+    sh "clang -std=gnu99 -O3 -Wno-deprecated-non-prototype -DNDEBUG " &
+      "-DTRILIBRARY -DNO_TIMER -I" & quoteShell(triangleDir) & " " &
+      quoteShell(triangleDir / "triangle.c") &
+      " bench/bench_triangle.c -o /tmp/p2t_triangle -lm"
+    reportArgs.add "triangle=/tmp/p2t_triangle"
+  else:
+    echo "skipping Triangle; set TRIANGLE_DIR=/path/to/triangle containing triangle.c and triangle.h"
 
   nimCompile(
     "bench/bench_compare_all",

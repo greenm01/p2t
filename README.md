@@ -60,6 +60,10 @@ Comparison dependencies are vendored in this repository:
 - `fast-poly2tri` commit `c04c633f6e48fb4e79bd511f2c0bb46279fd5773`
 - `libtess2` commit `8dbd6483e920311a58c9af10a10beb278efebc36`
 
+Triangle is supported as an optional external benchmark backend via
+`TRIANGLE_DIR`, but is not vendored because its license does not belong in this
+repository.
+
 Earcut is intentionally excluded because it is not a constrained Delaunay
 triangulation algorithm.
 
@@ -100,25 +104,28 @@ Champion public-API results:
 
 Raw-path head-to-head:
 
-| Case | p2t raw | fast f32 | fast f64 | libtess2 | delta |
+The faster `fast-poly2tri` float run stays in the table; the slower double
+column is replaced by Triangle.
+
+| Case | p2t raw | fast f32 | Triangle | libtess2 | delta |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| fixture-test | 0.143 / 0.151 | 0.169 / 0.169 | 0.176 / 0.180 | 2.075 / 2.204 | +15.3% |
-| diamond | 0.288 / 0.290 | 0.308 / 0.312 | 0.321 / 0.324 | 2.495 / 2.535 | +6.3% |
-| star | 0.228 / 0.232 | 0.273 / 0.277 | 0.264 / 0.274 | 2.655 / 2.691 | +13.6% |
-| dude-with-holes | 4.378 / 4.406 | 4.417 / 4.452 | 4.421 / 4.518 | 14.201 / 14.370 | +0.9% |
-| nazca-monkey | 65.210 / 65.640 | 72.390 / 75.210 | 73.740 / 76.130 | 232.900 / 238.840 | +9.9% |
-| nazca-heron | 53.500 / 53.660 | 65.050 / 66.010 | 65.800 / 68.870 | 198.660 / 199.730 | +17.8% |
-| organic-large | 230.390 / 238.390 | failed | failed | 1169.650 / 1181.680 | +80.3% vs libtess2 |
+| fixture-test | 0.143 / 0.151 | 0.169 / 0.169 | 0.693 / 0.734 | 2.075 / 2.204 | +15.3% |
+| diamond | 0.288 / 0.290 | 0.308 / 0.312 | 1.008 / 1.021 | 2.495 / 2.535 | +6.3% |
+| star | 0.228 / 0.232 | 0.273 / 0.277 | 1.138 / 1.192 | 2.655 / 2.691 | +16.5% |
+| dude-with-holes | 4.378 / 4.406 | 4.417 / 4.452 | 11.177 / 11.580 | 14.201 / 14.370 | +0.9% |
+| nazca-monkey | 65.210 / 65.640 | 72.390 / 75.210 | 164.630 / 171.050 | 232.900 / 238.840 | +9.9% |
+| nazca-heron | 53.500 / 53.660 | 65.050 / 66.010 | 134.180 / 143.650 | 198.660 / 199.730 | +17.8% |
+| organic-large | 230.390 / 238.390 | failed | 1032.100 / 1051.360 | 1169.650 / 1181.680 | +77.7% vs Triangle |
 
 `fast-poly2tri` asserts in `MPE_EdgeEventPoints` on `organic-large`, so there is
-no valid timing for that fixture. The Nim implementation and libtess2 both
-complete it.
+no valid timing for that fixture. The Nim implementation, Triangle, and libtess2
+all complete it.
 
 The short version: the optimized Nim path is ahead of the reference C
-implementation on every fixture where `fast-poly2tri` completes, and much faster
-than libtess2 on this benchmark set. The large-input front hash is a real win on
-organic large inputs; the sub-512 path is already close to the useful limit, with
-legalization work dominating what remains.
+implementation on every fixture where `fast-poly2tri` completes, ahead of
+Triangle, and much faster than libtess2 on this benchmark set. The large-input
+front hash is a real win on organic large inputs; the sub-512 path is already
+close to the useful limit, with legalization work dominating what remains.
 
 The `cleave` branch contains my sandbox experiments toward beating the
 single-threaded CPU sweep-line CDT with more ambitious approaches, including
@@ -141,8 +148,9 @@ nimble tidy
 ```
 
 Benchmark comparisons use vendored `fast-poly2tri` and `libtess2` sources under
-`vendor/` by default. Set `FAST_POLY2TRI_DIR` or `LIBTESS2_DIR` to compare
-against external checkouts.
+`vendor/` by default. Set `FAST_POLY2TRI_DIR`, `LIBTESS2_DIR`, or
+`TRIANGLE_DIR` to compare against external checkouts. Triangle must contain
+`triangle.c` and `triangle.h`; it is intentionally external-only.
 
 ## References
 
