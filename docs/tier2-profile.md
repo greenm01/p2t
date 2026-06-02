@@ -114,11 +114,14 @@ headroom:
   the +-3% noise floor and slightly negative on large fixtures, likely an
   icache/alignment shift in the hottest recursive function). Reverted.
 
-Conclusion: the meaningful single-threaded win was Tier 1 (`applyRotatedFlags`,
-commit `81d8541`). The engine is already at parity-or-ahead of `fast-poly2tri`
-on most fixtures (only diamond/dude remain ~+3%, inside the noise band), and
-further constant-factor micro-opts on these already-tuned hot paths land in the
-measurement noise. Tier 2 is closed without a net code change beyond Tier 1.
+Conclusion: the meaningful single-threaded win from this spike was Tier 1
+(`applyRotatedFlags`, commit `81d8541`). Later work made the champion path:
+pointer arena + default pdqsort + front hash default-on + fast raw trusted path +
+Tier 1 tuned codegen flags. The wins are regime-specific: pdqsort/Tier 1 covers
+all fixtures, including the sub-512-point dude-with-holes case; the front hash
+activates at `FrontHashMinPoints = 512` and covers large-shape plus the Nazca
+fixtures. Tier 2 is closed without a net code change beyond Tier 1 because
+corridor clearing and SIMD do not target the measured hot paths.
 
 ## Reproduce
 
@@ -127,7 +130,7 @@ nimble benchCdtStats            # operation counts (-d:p2tCdtStats)
 
 # symbolized time profile
 nim c --mm:arc --threads:off -d:release --opt:speed -d:p2tArenaCdt \
-  -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tFrontHash --path:src --panics:on \
+  -d:p2tUnsafeCdt -d:p2tFastRawCdt --path:src --panics:on \
   --passC:-mcpu=native --passL:-mcpu=native --debugger:native --passC:-g \
   -o:/tmp/p2t_bench_sym bench/bench_p2t.nim
 ( /tmp/p2t_bench_sym >/dev/null & P=$!; sleep 0.2; sample $P 4 -mayDie )

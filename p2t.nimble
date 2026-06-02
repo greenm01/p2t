@@ -28,6 +28,13 @@ const CommonFlags =
 const TunedFlags =
   "--panics:on --passC:-flto --passL:-flto --passC:-mcpu=native --passL:-mcpu=native"
 
+# Champion Nim configuration: pointer arena + pdqsort default + front hash
+# default-on (opt out with -d:p2tNoFrontHash) + fast raw trusted path + Tier 1
+# tuned codegen flags.
+const ChampionFlags =
+  "--mm:arc --threads:off -d:release --opt:speed -d:p2tArenaCdt " &
+  "-d:p2tUnsafeCdt -d:p2tFastRawCdt " & TunedFlags
+
 proc sh(cmd: string) =
   exec cmd
 
@@ -199,10 +206,10 @@ task testArenaCdt, "run p2t tests with arena-backed CDT":
     nimcache = "/tmp/p2t_test_arena_cdt_d",
   )
 
-task testArenaFrontHashCdt, "run p2t tests with arena CDT front hash":
+task testArenaFrontHashCdt, "run p2t tests with arena CDT front hash default-on":
   nimRun(
     "tests/test_p2t",
-    flags = "-d:p2tArenaCdt -d:p2tFrontHash",
+    flags = "-d:p2tArenaCdt",
     outPath = "/tmp/p2t_test_arena_front_hash_cdt",
     nimcache = "/tmp/p2t_test_arena_front_hash_cdt_d",
   )
@@ -215,10 +222,10 @@ task testArenaSlotCdt, "run p2t tests with arena CDT neighbor slots":
     nimcache = "/tmp/p2t_test_arena_slot_cdt_d",
   )
 
-task testArenaSlotFrontHashCdt, "run p2t tests with arena CDT neighbor slots and front hash":
+task testArenaSlotFrontHashCdt, "run p2t tests with arena CDT neighbor slots and front hash default-on":
   nimRun(
     "tests/test_p2t",
-    flags = "-d:p2tArenaCdt -d:p2tSlotCdt -d:p2tFrontHash",
+    flags = "-d:p2tArenaCdt -d:p2tSlotCdt",
     outPath = "/tmp/p2t_test_arena_slot_front_hash_cdt",
     nimcache = "/tmp/p2t_test_arena_slot_front_hash_cdt_d",
   )
@@ -246,15 +253,16 @@ task testMemory, "run repeated tessellation memory smoke":
     nimcache = "/tmp/p2t_test_memory_d",
   )
 
-task bench, "run p2t benchmark":
+task bench, "run champion Nim p2t benchmark":
   nimCompile(
     "bench/bench_p2t",
-    flags = "--mm:arc -d:release --opt:speed",
-    outPath = "/tmp/p2t_bench",
-    nimcache = "/tmp/p2t_bench_d",
+    flags = ChampionFlags,
+    outPath = "/tmp/p2t_bench_champion",
+    nimcache = "/tmp/p2t_bench_champion_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench")
-  sh quoteShell("/tmp/p2t_bench")
+  sh "strip " & quoteShell("/tmp/p2t_bench_champion")
+  echo "p2t champion: pointer arena + pdqsort + front hash default-on + Tier 1 tuned"
+  sh quoteShell("/tmp/p2t_bench_champion")
 
 task benchUnsafeCdt, "run p2t benchmark with CDT runtime checks disabled":
   nimCompile(
@@ -278,26 +286,26 @@ task benchArenaCdt, "run p2t benchmark with arena-backed CDT":
   echo "p2t arena CDT"
   sh quoteShell("/tmp/p2t_bench_arena_cdt")
 
-task benchArenaFrontHashCdt, "run p2t benchmark with arena CDT front hash":
+task benchArenaFrontHashCdt, "run p2t benchmark with arena CDT front hash default-on":
   nimCompile(
     "bench/bench_p2t",
-    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tFrontHash",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt",
     outPath = "/tmp/p2t_bench_arena_front_hash_cdt",
     nimcache = "/tmp/p2t_bench_arena_front_hash_cdt_d",
   )
   sh "strip " & quoteShell("/tmp/p2t_bench_arena_front_hash_cdt")
-  echo "p2t arena front hash CDT"
+  echo "p2t arena front hash CDT (default-on)"
   sh quoteShell("/tmp/p2t_bench_arena_front_hash_cdt")
 
-task benchArenaSlotFrontHashCdt, "run p2t benchmark with arena CDT neighbor slots and front hash":
+task benchArenaSlotFrontHashCdt, "run p2t benchmark with arena CDT neighbor slots and front hash default-on":
   nimCompile(
     "bench/bench_p2t",
-    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tSlotCdt -d:p2tFrontHash",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tSlotCdt",
     outPath = "/tmp/p2t_bench_arena_slot_front_hash_cdt",
     nimcache = "/tmp/p2t_bench_arena_slot_front_hash_cdt_d",
   )
   sh "strip " & quoteShell("/tmp/p2t_bench_arena_slot_front_hash_cdt")
-  echo "p2t arena slot front hash CDT"
+  echo "p2t arena slot front hash CDT (default-on)"
   sh quoteShell("/tmp/p2t_bench_arena_slot_front_hash_cdt")
 
 task benchArenaFloat32Cdt, "run p2t benchmark with arena-backed float32 CDT":
@@ -318,7 +326,7 @@ task benchEarcutFixtures, "run earcut against the p2t benchmark fixtures":
 task benchCdtStats, "report arena CDT operation counts":
   nimCompile(
     "bench/bench_cdt_stats",
-    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tCdtStats",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tCdtStats -d:p2tNoFrontHash",
     outPath = "/tmp/p2t_bench_cdt_stats",
     nimcache = "/tmp/p2t_bench_cdt_stats_d",
   )
@@ -326,41 +334,83 @@ task benchCdtStats, "report arena CDT operation counts":
 
   nimCompile(
     "bench/bench_cdt_stats",
-    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tCdtStats -d:p2tFrontHash",
+    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tCdtStats -d:p2tFrontHashStats",
     outPath = "/tmp/p2t_bench_cdt_stats_front_hash",
     nimcache = "/tmp/p2t_bench_cdt_stats_front_hash_d",
   )
   sh quoteShell("/tmp/p2t_bench_cdt_stats_front_hash")
 
-task benchCompareAll, "compare best Nim, front hash, fast-poly2tri, and libtess2":
+task benchStressSmall, "benchmark the small stress fixture with champion Nim flags":
+  nimCompile(
+    "bench/bench_stress_small",
+    flags = ChampionFlags,
+    outPath = "/tmp/p2t_bench_stress_small",
+    nimcache = "/tmp/p2t_bench_stress_small_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_stress_small")
+  echo "p2t stress-small champion: pointer arena + pdqsort + front hash default-on + Tier 1 tuned"
+  sh quoteShell("/tmp/p2t_bench_stress_small")
+
+task benchStressSmallNoHash, "benchmark the small stress fixture with champion Nim flags and front hash disabled":
+  nimCompile(
+    "bench/bench_stress_small",
+    flags = ChampionFlags & " -d:p2tNoFrontHash",
+    outPath = "/tmp/p2t_bench_stress_small_no_hash",
+    nimcache = "/tmp/p2t_bench_stress_small_no_hash_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_stress_small_no_hash")
+  echo "p2t stress-small champion without front hash"
+  sh quoteShell("/tmp/p2t_bench_stress_small_no_hash")
+
+task benchStressSmallStats, "report arena CDT stats for the small stress fixture":
+  nimCompile(
+    "bench/bench_stress_small",
+    flags = ChampionFlags & " -d:p2tCdtStats -d:p2tFrontHashStats",
+    outPath = "/tmp/p2t_bench_stress_small_stats",
+    nimcache = "/tmp/p2t_bench_stress_small_stats_d",
+  )
+  sh quoteShell("/tmp/p2t_bench_stress_small_stats")
+
+task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri, and libtess2":
   nimCompile(
     "bench/bench_p2t",
-    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt",
-    outPath = "/tmp/p2t_bench_best",
-    nimcache = "/tmp/p2t_bench_best_d",
+    flags = ChampionFlags,
+    outPath = "/tmp/p2t_bench_champion",
+    nimcache = "/tmp/p2t_bench_champion_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_best")
+  sh "strip " & quoteShell("/tmp/p2t_bench_champion")
 
   nimCompile(
     "bench/bench_p2t",
-    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tFrontHash",
-    outPath = "/tmp/p2t_bench_arena_front_hash_cdt",
-    nimcache = "/tmp/p2t_bench_arena_front_hash_cdt_d",
+    flags = ChampionFlags & " -d:p2tNoFrontHash",
+    outPath = "/tmp/p2t_bench_champion_no_front_hash",
+    nimcache = "/tmp/p2t_bench_champion_no_front_hash_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_arena_front_hash_cdt")
+  sh "strip " & quoteShell("/tmp/p2t_bench_champion_no_front_hash")
 
   nimCompile(
     "bench/bench_p2t",
-    flags = "--mm:arc -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tSlotCdt -d:p2tFrontHash",
+    flags = ChampionFlags & " -d:p2tSlotCdt",
     outPath = "/tmp/p2t_bench_arena_slot_front_hash_cdt",
     nimcache = "/tmp/p2t_bench_arena_slot_front_hash_cdt_d",
   )
   sh "strip " & quoteShell("/tmp/p2t_bench_arena_slot_front_hash_cdt")
 
+  nimCompile(
+    "bench/bench_p2t",
+    flags =
+      "--mm:arc --threads:off -d:release --opt:speed -d:p2tIdxCdt " &
+      "-d:p2tUnsafeCdt -d:p2tFastRawCdt " & TunedFlags,
+    outPath = "/tmp/p2t_bench_idx_tuned",
+    nimcache = "/tmp/p2t_bench_idx_tuned_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_idx_tuned")
+
   var reportArgs = @[
-    "nim-best=/tmp/p2t_bench_best",
-    "nim-front-hash=/tmp/p2t_bench_arena_front_hash_cdt",
+    "nim-champion=/tmp/p2t_bench_champion",
+    "nim-no-front-hash=/tmp/p2t_bench_champion_no_front_hash",
     "nim-slot-front-hash=/tmp/p2t_bench_arena_slot_front_hash_cdt",
+    "nim-idx-front-hash=/tmp/p2t_bench_idx_tuned",
   ]
 
   let fastDir = findFastPoly2TriDir()
@@ -552,18 +602,16 @@ task benchBestFastPoly2Tri, "compare best raw trusted p2t against local fast-pol
   sh quoteShell("/tmp/p2t_fastpoly2tri_float")
   sh quoteShell("/tmp/p2t_fastpoly2tri_double")
 
-task benchBestTuned, "run best raw trusted p2t with Tier 1 tuned codegen flags":
+task benchBestTuned, "run champion Nim p2t with Tier 1 tuned codegen flags":
   nimCompile(
     "bench/bench_p2t",
-    flags =
-      "--mm:arc --threads:off -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt " &
-      TunedFlags,
-    outPath = "/tmp/p2t_bench_best_tuned",
-    nimcache = "/tmp/p2t_bench_best_tuned_d",
+    flags = ChampionFlags,
+    outPath = "/tmp/p2t_bench_champion",
+    nimcache = "/tmp/p2t_bench_champion_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_best_tuned")
-  echo "p2t best raw trusted CDT (Tier 1 tuned)"
-  sh quoteShell("/tmp/p2t_bench_best_tuned")
+  sh "strip " & quoteShell("/tmp/p2t_bench_champion")
+  echo "p2t champion: pointer arena + pdqsort + front hash default-on + Tier 1 tuned"
+  sh quoteShell("/tmp/p2t_bench_champion")
 
 task benchIdxTuned, "run int32-index CDT twin with Tier 1 tuned codegen flags":
   nimCompile(
@@ -578,7 +626,7 @@ task benchIdxTuned, "run int32-index CDT twin with Tier 1 tuned codegen flags":
   echo "p2t int32-index CDT twin (Tier 1 tuned)"
   sh quoteShell("/tmp/p2t_bench_idx_tuned")
 
-task benchBestTunedFastPoly2Tri, "compare Tier 1 tuned p2t against local fast-poly2tri":
+task benchBestTunedFastPoly2Tri, "compare champion Nim p2t against local fast-poly2tri":
   let fastDir = findFastPoly2TriDir()
   if fastDir.len == 0:
     quit(
@@ -588,15 +636,13 @@ task benchBestTunedFastPoly2Tri, "compare Tier 1 tuned p2t against local fast-po
 
   nimCompile(
     "bench/bench_p2t",
-    flags =
-      "--mm:arc --threads:off -d:release --opt:speed -d:p2tArenaCdt -d:p2tUnsafeCdt -d:p2tFastRawCdt " &
-      TunedFlags,
-    outPath = "/tmp/p2t_bench_best_tuned",
-    nimcache = "/tmp/p2t_bench_best_tuned_d",
+    flags = ChampionFlags,
+    outPath = "/tmp/p2t_bench_champion",
+    nimcache = "/tmp/p2t_bench_champion_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_best_tuned")
-  echo "p2t best raw trusted CDT (Tier 1 tuned)"
-  sh quoteShell("/tmp/p2t_bench_best_tuned")
+  sh "strip " & quoteShell("/tmp/p2t_bench_champion")
+  echo "p2t champion: pointer arena + pdqsort + front hash default-on + Tier 1 tuned"
+  sh quoteShell("/tmp/p2t_bench_champion")
 
   let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
   sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
@@ -643,4 +689,4 @@ task benchParallel, "benchmark tessellateBatch scaling across threads":
   sh quoteShell("/tmp/p2t_bench_parallel")
 
 task tidy, "format p2t sources":
-  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
+  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/triangulate.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/bench_stress_small.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"

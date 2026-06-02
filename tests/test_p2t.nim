@@ -23,6 +23,30 @@ proc readDat(name: string): seq[Vec2] =
     let parts = trimmed.splitWhitespace()
     result.add vec2(parseFloat(parts[0]), parseFloat(parts[1]))
 
+proc readDatRings(name: string): TessInput =
+  let path = currentSourcePath().parentDir / "fixtures" / name
+  var
+    rings: seq[seq[Vec2]]
+    current: seq[Vec2]
+
+  for line in lines(path):
+    let trimmed = line.strip()
+    if trimmed.len == 0:
+      if current.len > 0:
+        rings.add current
+        current.setLen(0)
+      continue
+    let parts = trimmed.splitWhitespace()
+    current.add vec2(parseFloat(parts[0]), parseFloat(parts[1]))
+
+  if current.len > 0:
+    rings.add current
+  doAssert rings.len > 0
+
+  result.outer = contour(1, rings[0])
+  for i in 1 ..< rings.len:
+    result.holes.add contour(i + 1, rings[i])
+
 proc headHole(): TessContour =
   contour(100, [vec2(325, 437), vec2(320, 423), vec2(329, 413), vec2(332, 423)])
 
@@ -176,6 +200,27 @@ suite "original poly2tri fixtures":
   test "large nazca fixtures":
     fixtureCase("nazca_monkey.dat")
     fixtureCase("nazca_heron.dat")
+
+suite "stress fixtures":
+  test "small front-hash stress fixture with holes":
+    let input = readDatRings("stress/cdt_stress.dat")
+    let result = tessellate(input)
+    var expectedArea = polygonArea(input.outer.points)
+    var ringVertices = input.outer.points.len
+    for hole in input.holes:
+      expectedArea -= polygonArea(hole.points)
+      ringVertices += hole.points.len
+
+    check result.ok
+    check result.triangles.len > 0
+    for tri in result.triangles:
+      check tri[0] >= 0 and tri[0] < result.vertices.len
+      check tri[1] >= 0 and tri[1] < result.vertices.len
+      check tri[2] >= 0 and tri[2] < result.vertices.len
+    check abs(areaOf(result) - expectedArea) < 1e-5
+    # This count identity is valid here because all vertices are on rings and
+    # this CDT path inserts no Steiner/interior points for the stress fixture.
+    check result.triangles.len == ringVertices + 2 * input.holes.len - 2
 
 suite "p2t validation":
   test "duplicate point":

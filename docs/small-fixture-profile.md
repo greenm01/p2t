@@ -131,6 +131,41 @@ entire fixture set:
 | nazca-monkey     |     -5.5%          |   -9.0%        |
 | nazca-heron      |    -12.4%          |  -18.9%        |
 
+## Current champion: pdqsort baseline + front hash for large fronts
+
+The current Nim champion is:
+
+```
+--mm:arc --threads:off -d:release --opt:speed -d:p2tArenaCdt
+-d:p2tUnsafeCdt -d:p2tFastRawCdt --panics:on --passC:-flto --passL:-flto
+--passC:-mcpu=native --passL:-mcpu=native
+```
+
+This stacks two independent wins:
+
+- **pdqsort + arena + Tier 1 tuned flags** is the unconditional baseline win. It
+  applies to every fixture, including dude-with-holes.
+- **front hash** is default-on for arena builds and activates only at
+  `FrontHashMinPoints = 512`. It contributes to large-shape and the Nazca
+  fixtures, but not to dude-with-holes (104 points).
+
+That split is why dude is the clean sub-threshold read of the baseline path:
+pdqsort + arena + Tier 1 lands at parity-to-slightly-ahead of `fast-poly2tri`
+without any front-hash contribution. The large fixtures then add the front-hash
+win on top of that baseline. Do not interpret the dude wash next to the Nazca
+margin as inconsistency; they are different regimes.
+
+`nimble bench` and `nimble benchBestTuned` now build this champion. Benchmark
+output includes `config` rows for the CDT backend, active sort backend, front
+hash state, fast raw path, and unsafe CDT flag so future runs are
+self-describing. The champion claim assumes the default `pdqsortActivePoints`
+sort; `-d:p2tMergeSort` or `-d:p2tQuickSort` are A/B-only flags.
+
+The front-hash instrumentation (`-d:p2tFrontHashStats`) is deliberately not part
+of champion timing. Use `nimble benchCdtStats` to inspect direct/scan/fallback
+walk histograms and decide whether bucket-factor or self-healing changes can
+push the large-fixture wins further.
+
 `skaSort` (LSD radix, also in `fastsort-nim`) was assessed and rejected: it sorts
 numeric values, not pointers; our key is a 128-bit lexicographic (y,x) of two
 float64s exceeding its 64-bit width; and it only engages at >=256 elements —
@@ -158,7 +193,7 @@ signals consistent across two independent randomized batches were kept; the
 ```
 # no-LTO per-phase self-time profile of dude only
 nim c --mm:arc --threads:off -d:release --opt:speed -d:p2tArenaCdt \
-  -d:p2tUnsafeCdt -d:p2tFastRawCdt -d:p2tFrontHash --path:src --panics:on \
+  -d:p2tUnsafeCdt -d:p2tFastRawCdt --path:src --panics:on \
   --passC:-mcpu=native --passL:-mcpu=native --debugger:native --passC:-g \
   -o:/tmp/p2t_dude bench/bench_dude_only.nim
 ( /tmp/p2t_dude >/dev/null & sleep 0.3; sample $(pgrep -n p2t_dude) 3 1 )

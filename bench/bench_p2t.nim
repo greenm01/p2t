@@ -4,6 +4,53 @@ import p2t
 
 const BenchRounds = 5
 
+proc cdtBackend(): string =
+  when defined(p2tIdxCdt):
+    "idx"
+  elif defined(p2tArenaCdt):
+    "arena"
+  else:
+    "classic"
+
+proc sortBackend(): string =
+  when defined(p2tQuickSort):
+    "quicksort"
+  elif defined(p2tMergeSort):
+    "mergesort"
+  elif defined(p2tArenaCdt):
+    "pdqsort"
+  elif defined(p2tIdxCdt):
+    "mergesort"
+  else:
+    "classic"
+
+proc frontHashConfig(): string =
+  when not defined(p2tArenaCdt) and not defined(p2tIdxCdt):
+    "not-applicable"
+  elif defined(p2tNoFrontHash):
+    "off"
+  else:
+    "on-default-min512"
+
+proc fastRawConfig(): string =
+  when defined(p2tFastRawCdt):
+    "on"
+  else:
+    "off"
+
+proc unsafeCdtConfig(): string =
+  when defined(p2tUnsafeCdt):
+    "on"
+  else:
+    "off"
+
+proc emitConfig() =
+  echo "config,cdtBackend," & cdtBackend()
+  echo "config,sortBackend," & sortBackend()
+  echo "config,frontHash," & frontHashConfig()
+  echo "config,fastRaw," & fastRawConfig()
+  echo "config,unsafeCdt," & unsafeCdtConfig()
+
 proc contour(id: int, points: sink seq[Vec2]): TessContour =
   TessContour(id: id, points: points)
 
@@ -74,6 +121,8 @@ proc bench(name: string, iterations: int, input: TessInput) =
   benchSafe(name, iterations, input)
   benchTrusted(name, iterations, input)
   benchRaw(name, iterations, input)
+
+emitConfig()
 
 bench(
   "small-ui-quad",

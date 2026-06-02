@@ -77,6 +77,37 @@ the per-access addressing arithmetic. Making indices competitive requires
 materializing a local pointer per proc (`let tr = addr ws.triangles[id]`) — i.e.
 reintroducing the pointer. This matches fast-poly2tri's pointer-based design.
 
+## Why better sorting and front hash do not rescue idx
+
+The later champion work combines two kinds of wins: default pdqsort in the
+pointer arena and the front-hash accelerator shared by the arena and idx twins.
+They attack a different variable from the pointer-vs-index gap.
+
+The clean model is `time ~= c * N`:
+
+- better sorting and the front hash shrink `N`, the number of operations. Better
+  sort means fewer/cooler ordering costs; better front hints mean fewer
+  surviving front-walk steps.
+- the pointer arena shrinks `c`, the cost of each operation. A front step is a
+  dependent-load traversal; pointer handles reach the next node and its fields
+  with lower latency than re-deriving `seqBase + id*size` through accessors.
+
+Because `idx_cdt.nim` and `arena_cdt.nim` run the same triangulation algorithm,
+front hash reduces locate-step `N` on both. A better hash can take a Nazca
+fixture from tens of thousands of locate steps to a few thousand, but it does
+not change what each remaining step costs. Those remaining steps are still more
+expensive in idx because every node/point/triangle touch pays the index
+addressing path. Likewise, sort improvements are front-loaded point-ordering
+wins; they do not change the cost of the surviving dependent-load traversal in
+`locateNode`, `fill`, `legalize`, and the predicate-heavy loops.
+
+This is why giving idx the best hinting still leaves it behind, and why a better
+sort cannot close the core gap: algorithmic wins remove shared work; the
+surviving hot work is dominated by per-step latency, exactly where the pointer
+arena has the advantage. Better hashing can even make that more visible: once
+step count is crushed, the constant cost of each surviving step is a larger
+share of the runtime.
+
 ## Scope / caveat
 
 This condemns *only* swapping pointers for int32 indices inside the **same

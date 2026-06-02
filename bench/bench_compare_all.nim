@@ -46,15 +46,18 @@ proc parseBenchLine(engine, line: string): BenchRow =
     medianUs: parseMetric(line, "median"),
   )
 
-proc addRows(rows: var seq[BenchRow], engine, path: string) =
+proc addRows(rows: var seq[BenchRow], configs: var seq[string], engine, path: string) =
   if not fileExists(path):
     quit("benchmark binary not found: " & path, QuitFailure)
 
   let output = execProcess(path)
   for line in output.splitLines:
-    let row = parseBenchLine(engine, line)
-    if row.engine.len > 0:
-      rows.add row
+    if line.startsWith("config,"):
+      configs.add "config," & engine & "," & line[7 .. ^1]
+    else:
+      let row = parseBenchLine(engine, line)
+      if row.engine.len > 0:
+        rows.add row
 
 proc cell(row: BenchRow): string =
   &"{row.bestUs}/{row.medianUs}"
@@ -67,6 +70,7 @@ proc main() =
     )
 
   var rows: seq[BenchRow]
+  var configs: seq[string]
   var engines: seq[string]
   for arg in commandLineParams():
     let eq = arg.find('=')
@@ -76,7 +80,7 @@ proc main() =
       engine = arg[0 ..< eq]
       path = arg[eq + 1 .. ^1]
     engines.add engine
-    rows.addRows(engine, path)
+    rows.addRows(configs, engine, path)
 
   var caseOrder: seq[string]
   var seenCases: Table[string, bool]
@@ -86,6 +90,10 @@ proc main() =
       caseOrder.add row.caseName
 
   echo "best/median microseconds"
+  if configs.len > 0:
+    echo "config,engine,key,value"
+    for config in configs:
+      echo config
   echo "case,mode," & engines.join(",")
   for caseName in caseOrder:
     let modes = rows.filterIt(it.caseName == caseName).mapIt(it.mode).deduplicate()

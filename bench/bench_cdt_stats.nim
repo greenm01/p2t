@@ -44,6 +44,65 @@ proc ratio(numer, denom: uint64): float64 =
   else:
     numer.float64 / denom.float64
 
+proc sortBackend(): string =
+  when defined(p2tQuickSort):
+    "quicksort"
+  elif defined(p2tMergeSort):
+    "mergesort"
+  else:
+    "pdqsort"
+
+proc frontHashConfig(): string =
+  when defined(p2tNoFrontHash):
+    "off"
+  else:
+    "on-default-min512"
+
+proc frontHashStatsConfig(): string =
+  when defined(p2tFrontHashStats):
+    "on"
+  else:
+    "off"
+
+proc emitConfig() =
+  echo "config,cdtBackend,arena"
+  echo "config,sortBackend," & sortBackend()
+  echo "config,frontHash," & frontHashConfig()
+  echo "config,frontHashStats," & frontHashStatsConfig()
+  echo "config,fastRaw,on"
+  echo "config,unsafeCdt,on"
+
+when defined(p2tFrontHashStats):
+  const FrontHashWalkBinUpper = [
+    0'u64, 1'u64, 2'u64, 4'u64, 8'u64, 16'u64, 32'u64, 64'u64, 128'u64, 256'u64,
+    257'u64,
+  ]
+
+  proc percentile(stats: FrontHashWalkStats, pct: uint64): uint64 =
+    if stats.count == 0:
+      return 0
+    let rank = (stats.count * pct + 99) div 100
+    var cumulative = 0'u64
+    for i, count in stats.bins:
+      cumulative += count
+      if cumulative >= rank:
+        return FrontHashWalkBinUpper[i]
+    FrontHashWalkBinUpper[^1]
+
+  proc emitFrontHashWalk(name, tag: string, stats: FrontHashWalkStats) =
+    var line =
+      &"frontHashWalk,{name},{tag},{stats.count},{stats.sum},{stats.sum.ratio(stats.count):.3f},{stats.max},{stats.percentile(50)},{stats.percentile(90)},{stats.percentile(99)},{stats.leftWalks},{stats.rightWalks}"
+    for count in stats.bins:
+      line.add "," & $count
+    echo line
+
+  proc emitFrontHashStats(name: string, stats: ArenaCdtStats) =
+    emitFrontHashWalk(name, "direct", stats.frontHashDirect)
+    emitFrontHashWalk(name, "scan", stats.frontHashScan)
+    emitFrontHashWalk(name, "fallback", stats.frontHashFallback)
+    for i, count in stats.frontHashScanRadius:
+      echo &"frontHashScanRadius,{name},{i + 1},{count}"
+
 proc report(name: string, input: TessInput) =
   var workspace: TessWorkspace
   let trustedInput = input.oriented()
@@ -61,13 +120,22 @@ proc report(name: string, input: TessInput) =
     flipScanPerEvent = stats.flipScans.ratio(stats.flipEvents)
 
   echo &"{name},{points},{triangles},{stats.pointEvents},{stats.locateNodeSteps},{locatePerPoint:.3f},{stats.fills},{stats.fillBasins},{stats.legalizeCalls},{stats.legalizeEdges},{stats.rotations},{stats.edgeEvents},{stats.edgeWalkSteps},{edgeWalkPerEvent:.3f},{stats.flipEvents},{stats.flipScans},{flipScanPerEvent:.3f},{stats.incircleCalls},{stats.incircleSuccesses},{stats.inScanAreaCalls},{stats.mapTriangleToNodesCalls},{stats.mapTriangleNodeUpdates},{stats.indexCalls},{stats.edgeIndexCalls},{stats.meshCleanVisits},{stats.markNeighborCalls},{stats.swapNeighborScans},{stats.slotRotations},{stats.slotFallbacks},{stats.locateNodeHashHits},{stats.locateNodeHashMisses},{stats.frontBucketUpdates}"
+  when defined(p2tFrontHashStats):
+    emitFrontHashStats(name, stats)
 
-when defined(p2tFrontHash):
-  echo "arena CDT stats with front hash"
+when defined(p2tNoFrontHash):
+  echo "arena CDT stats without front hash"
+elif defined(p2tFrontHashStats):
+  echo "arena CDT stats with front hash quality stats"
 else:
   echo "arena CDT stats"
 
+emitConfig()
+
 echo "case,points,triangles,pointEvents,locateSteps,locateStepsPerPoint,fills,fillBasins,legalizeCalls,legalizeEdges,rotations,edgeEvents,edgeWalkSteps,edgeWalkStepsPerEvent,flipEvents,flipScans,flipScansPerEvent,incircleCalls,incircleSuccesses,inScanAreaCalls,mapTriangleToNodesCalls,mapTriangleNodeUpdates,indexCalls,edgeIndexCalls,meshCleanVisits,markNeighborCalls,swapNeighborScans,slotRotations,slotFallbacks,hashHits,hashMisses,frontBucketUpdates"
+when defined(p2tFrontHashStats):
+  echo "frontHashWalk,case,tag,count,sum,mean,max,p50,p90,p99,left,right,b0,b1,b2,b3_4,b5_8,b9_16,b17_32,b33_64,b65_128,b129_256,b257_plus"
+  echo "frontHashScanRadius,case,radius,count"
 
 report(
   "small-ui-quad",

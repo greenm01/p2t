@@ -6,6 +6,9 @@
 
 import ../types
 
+when defined(p2tFrontHashStats) and not defined(p2tCdtStats):
+  {.fatal: "p2tFrontHashStats requires -d:p2tCdtStats".}
+
 when defined(p2tUnsafeCdt):
   {.push checks: off.}
 
@@ -36,6 +39,12 @@ when FrontHashOn:
   template frontHashPointCountEnabled(pointCount: int): bool =
     pointCount >= FrontHashMinPoints and
       (FrontHashMaxPoints <= 0 or pointCount <= FrontHashMaxPoints)
+
+when defined(p2tFrontHashStats):
+  type FrontHashHint = enum
+    fhDirect
+    fhScan
+    fhFallback
 
 type
   Orientation = enum
@@ -70,6 +79,59 @@ when defined(p2tCdtStats):
 
   template statInc(t: ptr ArenaTriangle, field: untyped) =
     inc arenaCdtStats.field
+
+  when defined(p2tFrontHashStats):
+    proc frontHashWalkBin(steps: uint64): int {.inline.} =
+      if steps == 0:
+        0
+      elif steps == 1:
+        1
+      elif steps == 2:
+        2
+      elif steps <= 4:
+        3
+      elif steps <= 8:
+        4
+      elif steps <= 16:
+        5
+      elif steps <= 32:
+        6
+      elif steps <= 64:
+        7
+      elif steps <= 128:
+        8
+      elif steps <= 256:
+        9
+      else:
+        10
+
+    proc recordFrontHashWalk(
+        bucket: var FrontHashWalkStats, steps: uint64, direction: int
+    ) {.inline.} =
+      inc bucket.count
+      bucket.sum += steps
+      if steps > bucket.max:
+        bucket.max = steps
+      inc bucket.bins[frontHashWalkBin(steps)]
+      if direction < 0:
+        inc bucket.leftWalks
+      elif direction > 0:
+        inc bucket.rightWalks
+
+    proc recordFrontHashWalk(
+        hint: FrontHashHint, steps: uint64, direction: int
+    ) {.inline.} =
+      case hint
+      of fhDirect:
+        recordFrontHashWalk(arenaCdtStats.frontHashDirect, steps, direction)
+      of fhScan:
+        recordFrontHashWalk(arenaCdtStats.frontHashScan, steps, direction)
+      of fhFallback:
+        recordFrontHashWalk(arenaCdtStats.frontHashFallback, steps, direction)
+
+    proc recordFrontHashScanRadius(radius: int) {.inline.} =
+      if radius >= 1 and radius <= FrontHashScanRadiusCount:
+        inc arenaCdtStats.frontHashScanRadius[radius - 1]
 
 else:
   template statIncGlobal(field: untyped) =
@@ -550,56 +612,115 @@ when FrontHashOn:
     if nodeDist <= existingDist:
       ws.frontBuckets[idx] = n
 
-  proc nearestBucketNode(ws: var ArenaWorkspace, x: ArenaReal): ptr ArenaNode =
-    if ws.frontBuckets.len == 0:
+  when defined(p2tFrontHashStats):
+    proc nearestBucketNode(
+        ws: var ArenaWorkspace, x: ArenaReal, hint: var FrontHashHint
+    ): ptr ArenaNode =
+      hint = fhFallback
+      if ws.frontBuckets.len == 0:
+        ws.statInc(locateNodeHashMisses)
+        return nil
+      let idx = ws.frontBucketIndex(x)
+      let direct = ws.frontBuckets[idx]
+      if direct.isLiveFrontNode:
+        ws.statInc(locateNodeHashHits)
+        hint = fhDirect
+        return direct
+      ws.frontBuckets[idx] = nil
+      when FrontHashScanRadius > 0:
+        for offset in 1 .. min(ws.frontBuckets.high, FrontHashScanRadius):
+          let left = idx - offset
+          if left >= 0:
+            let node = ws.frontBuckets[left]
+            if node.isLiveFrontNode:
+              ws.statInc(locateNodeHashHits)
+              hint = fhScan
+              recordFrontHashScanRadius(offset)
+              return node
+            ws.frontBuckets[left] = nil
+          let right = idx + offset
+          if right < ws.frontBuckets.len:
+            let node = ws.frontBuckets[right]
+            if node.isLiveFrontNode:
+              ws.statInc(locateNodeHashHits)
+              hint = fhScan
+              recordFrontHashScanRadius(offset)
+              return node
+            ws.frontBuckets[right] = nil
       ws.statInc(locateNodeHashMisses)
-      return nil
-    let idx = ws.frontBucketIndex(x)
-    let direct = ws.frontBuckets[idx]
-    if direct.isLiveFrontNode:
-      ws.statInc(locateNodeHashHits)
-      return direct
-    ws.frontBuckets[idx] = nil
-    when FrontHashScanRadius > 0:
-      for offset in 1 .. min(ws.frontBuckets.high, FrontHashScanRadius):
-        let left = idx - offset
-        if left >= 0:
-          let node = ws.frontBuckets[left]
-          if node.isLiveFrontNode:
-            ws.statInc(locateNodeHashHits)
-            return node
-          ws.frontBuckets[left] = nil
-        let right = idx + offset
-        if right < ws.frontBuckets.len:
-          let node = ws.frontBuckets[right]
-          if node.isLiveFrontNode:
-            ws.statInc(locateNodeHashHits)
-            return node
-          ws.frontBuckets[right] = nil
-    ws.statInc(locateNodeHashMisses)
-    nil
+      nil
+
+  else:
+    proc nearestBucketNode(ws: var ArenaWorkspace, x: ArenaReal): ptr ArenaNode =
+      if ws.frontBuckets.len == 0:
+        ws.statInc(locateNodeHashMisses)
+        return nil
+      let idx = ws.frontBucketIndex(x)
+      let direct = ws.frontBuckets[idx]
+      if direct.isLiveFrontNode:
+        ws.statInc(locateNodeHashHits)
+        return direct
+      ws.frontBuckets[idx] = nil
+      when FrontHashScanRadius > 0:
+        for offset in 1 .. min(ws.frontBuckets.high, FrontHashScanRadius):
+          let left = idx - offset
+          if left >= 0:
+            let node = ws.frontBuckets[left]
+            if node.isLiveFrontNode:
+              ws.statInc(locateNodeHashHits)
+              return node
+            ws.frontBuckets[left] = nil
+          let right = idx + offset
+          if right < ws.frontBuckets.len:
+            let node = ws.frontBuckets[right]
+            if node.isLiveFrontNode:
+              ws.statInc(locateNodeHashHits)
+              return node
+            ws.frontBuckets[right] = nil
+      ws.statInc(locateNodeHashMisses)
+      nil
 
 proc locateNode(ws: var ArenaWorkspace, x: ArenaReal): ptr ArenaNode =
   when FrontHashOn:
-    var node =
+    when defined(p2tFrontHashStats):
+      var
+        hint = fhFallback
+        node: ptr ArenaNode
       if ws.frontBuckets.len == 0:
-        ws.front.searchNode
+        node = ws.front.searchNode
       else:
-        let bucketNode = ws.nearestBucketNode(x)
-        if bucketNode.isNil: ws.front.searchNode else: bucketNode
+        let bucketNode = ws.nearestBucketNode(x, hint)
+        node = if bucketNode.isNil: ws.front.searchNode else: bucketNode
+    else:
+      var node =
+        if ws.frontBuckets.len == 0:
+          ws.front.searchNode
+        else:
+          let bucketNode = ws.nearestBucketNode(x)
+          if bucketNode.isNil: ws.front.searchNode else: bucketNode
   else:
+    when defined(p2tFrontHashStats):
+      var hint = fhFallback
     var node = ws.front.searchNode
   if x < node.value:
+    when defined(p2tFrontHashStats):
+      var correctionSteps = 0'u64
     while not node.isNil:
       ws.statInc(locateNodeSteps)
       node = node.prev
+      when defined(p2tFrontHashStats):
+        inc correctionSteps
       if not node.isNil and x >= node.value:
         ws.front.searchNode = node
         when FrontHashOn:
           if ws.frontBuckets.len != 0:
             ws.updateFrontBucket(node)
+        when defined(p2tFrontHashStats):
+          recordFrontHashWalk(hint, correctionSteps, -1)
         return node
   else:
+    when defined(p2tFrontHashStats):
+      var correctionSteps = 0'u64
     while not node.isNil:
       ws.statInc(locateNodeSteps)
       node = node.next
@@ -608,7 +729,16 @@ proc locateNode(ws: var ArenaWorkspace, x: ArenaReal): ptr ArenaNode =
         when FrontHashOn:
           if ws.frontBuckets.len != 0:
             ws.updateFrontBucket(node.prev)
+        when defined(p2tFrontHashStats):
+          let direction =
+            if correctionSteps == 0:
+              0
+            else:
+              1
+          recordFrontHashWalk(hint, correctionSteps, direction)
         return node.prev
+      when defined(p2tFrontHashStats):
+        inc correctionSteps
   nil
 
 proc addPoint(ws: var ArenaWorkspace, p: ptr ArenaPoint) =

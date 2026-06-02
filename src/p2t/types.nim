@@ -63,6 +63,15 @@ type
 
 when defined(p2tArenaCdt):
   when defined(p2tCdtStats):
+    when defined(p2tFrontHashStats):
+      const
+        FrontHashWalkBinCount* = 11
+        FrontHashScanRadiusCount* = 8
+
+      type FrontHashWalkStats* = object
+        count*, sum*, max*, leftWalks*, rightWalks*: uint64
+        bins*: array[FrontHashWalkBinCount, uint64]
+
     type ArenaCdtStats* = object
       pointEvents*, fills*, fillBasins*, legalizeCalls*, rotations*: uint64
       edgeEvents*, edgeWalkSteps*, flipEvents*, flipScans*: uint64
@@ -72,6 +81,9 @@ when defined(p2tArenaCdt):
       legalizeEdges*, incircleSuccesses*, markNeighborCalls*: uint64
       mapTriangleNodeUpdates*: uint64
       locateNodeHashHits*, locateNodeHashMisses*, frontBucketUpdates*: uint64
+      when defined(p2tFrontHashStats):
+        frontHashDirect*, frontHashScan*, frontHashFallback*: FrontHashWalkStats
+        frontHashScanRadius*: array[FrontHashScanRadiusCount, uint64]
 
   when defined(p2tFloat32Cdt):
     type ArenaReal* = float32
