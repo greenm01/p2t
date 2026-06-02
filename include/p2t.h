@@ -19,24 +19,36 @@ extern "C" {
 
 typedef struct p2t_context p2t_context;
 
+/* 2D input or output coordinate. */
 typedef struct p2t_vec2 {
   double x;
   double y;
 } p2t_vec2;
 
+/*
+ * Closed contour. Do not repeat the first point at the end.
+ *
+ * `id` is copied into errors. `points` may be NULL only when `count` is zero.
+ */
 typedef struct p2t_contour {
   int32_t id;
   const p2t_vec2 *points;
   int32_t count;
 } p2t_contour;
 
+/* Runtime options for p2t_tessellate. Boolean fields use 0 = false, nonzero = true. */
 typedef struct p2t_options {
+  /* Geometric tolerance for cleanup and validation. */
   double epsilon;
+  /* Remove duplicate closing points, adjacent duplicates, and collinear points. */
   int32_t clean_input;
+  /* Include outer and hole boundary edges in p2t_result. */
   int32_t keep_boundary_edges;
+  /* Validate self-intersections, hole placement, and Steiner containment. */
   int32_t validate;
 } p2t_options;
 
+/* Error kind values returned in p2t_error.kind. */
 typedef enum p2t_error_kind {
   P2T_ERROR_NONE = 0,
   P2T_ERROR_EMPTY_OUTER = 1,
@@ -49,6 +61,7 @@ typedef enum p2t_error_kind {
   P2T_ERROR_INVALID_INPUT = 100
 } p2t_error_kind;
 
+/* Failure details. `message` is owned by the context or a static string. */
 typedef struct p2t_error {
   int32_t kind;
   int32_t contour_id;
@@ -56,17 +69,26 @@ typedef struct p2t_error {
   const char *message;
 } p2t_error;
 
+/* Triangle indices into p2t_result.vertices. */
 typedef struct p2t_triangle {
   int32_t a;
   int32_t b;
   int32_t c;
 } p2t_triangle;
 
+/* Boundary edge indices into p2t_result.vertices. */
 typedef struct p2t_edge {
   int32_t a;
   int32_t b;
 } p2t_edge;
 
+/*
+ * Tessellation result.
+ *
+ * Arrays are owned by the context and remain valid until the next call using
+ * that context, p2t_clear, or p2t_destroy. Array pointers are NULL when the
+ * matching count is zero.
+ */
 typedef struct p2t_result {
   int32_t ok;
   p2t_error error;
@@ -78,12 +100,27 @@ typedef struct p2t_result {
   int32_t boundary_edge_count;
 } p2t_result;
 
+/* Return the ABI version string. */
 P2T_API const char *p2t_version(void);
+
+/* Return the default checked tessellation options. */
 P2T_API p2t_options p2t_default_options(void);
+
+/* Allocate a reusable tessellation context. Destroy it with p2t_destroy. */
 P2T_API p2t_context *p2t_create(void);
+
+/* Destroy a context returned by p2t_create. Accepts NULL. */
 P2T_API void p2t_destroy(p2t_context *ctx);
+
+/* Clear cached result data and reusable workspace contents. Accepts NULL. */
 P2T_API void p2t_clear(p2t_context *ctx);
 
+/*
+ * Checked tessellation entry point.
+ *
+ * `holes` may be NULL only when `hole_count` is zero. `steiner` may be NULL only
+ * when `steiner_count` is zero. `options` may be NULL to use defaults.
+ */
 P2T_API p2t_result p2t_tessellate(
   p2t_context *ctx,
   p2t_contour outer,
@@ -93,6 +130,13 @@ P2T_API p2t_result p2t_tessellate(
   int32_t steiner_count,
   const p2t_options *options);
 
+/*
+ * Fast trusted tessellation entry point.
+ *
+ * The outer contour must be counterclockwise, holes must be clockwise, contours
+ * must be clean and valid, and Steiner points must be inside the outer contour.
+ * Pointer and result lifetime rules match p2t_tessellate.
+ */
 P2T_API p2t_result p2t_tessellate_trusted(
   p2t_context *ctx,
   p2t_contour outer,

@@ -144,6 +144,11 @@ proc tessellateStatic[
 proc tessellate*(
     workspace: var TessWorkspace, input: TessInput, options: TessOptions
 ): TessResult =
+  ## Tessellate `input` using a reusable workspace and explicit options.
+  ##
+  ## This is the checked public path. It can clean contour points, fixes winding,
+  ## validates contours when requested, and reports failures through
+  ## `TessResult.error`.
   workspace.clear()
 
   var error = tessError(tekNone)
@@ -192,6 +197,7 @@ proc tessellate*(
     failure(tessError(tekTriangulationFailed, -1, -1, err.msg))
 
 proc tessellate*(workspace: var TessWorkspace, input: TessInput): TessResult =
+  ## Tessellate `input` using default options and a reusable workspace.
   tessellateStatic[true, true, false, false](workspace, input)
 
 proc tessellateTrusted*(
@@ -269,27 +275,42 @@ proc tessellateTrustedRaw*(
       )
 
 proc rawTriangleCount*(raw: TessRawResult): int {.inline.} =
+  ## Return the number of triangles available through a raw result.
+  ##
+  ## Returns zero when `raw.ok` is false.
   cdt.rawTriangleCount(raw)
 
 proc rawTrianglePoints*(
     raw: TessRawResult, triangleIndex: int
 ): array[3, CdtPointId] {.inline.} =
+  ## Return raw point ids for one triangle.
+  ##
+  ## `triangleIndex` must be in `0 ..< rawTriangleCount(raw)`. The ids are
+  ## backend point ids, not materialized `TessResult.vertices` indices.
   cdt.rawTrianglePoints(raw, triangleIndex)
 
 proc rawTriangleVertices*(
     raw: TessRawResult, triangleIndex: int
 ): array[3, Vec2] {.inline.} =
+  ## Return the three vertex coordinates for one raw triangle.
+  ##
+  ## `triangleIndex` must be in `0 ..< rawTriangleCount(raw)`.
   cdt.rawTriangleVertices(raw, triangleIndex)
 
 proc tessellate*(input: TessInput): TessResult =
+  ## Tessellate `input` with default options using a temporary workspace.
   var workspace: TessWorkspace
   workspace.tessellate(input)
 
 proc tessellate*(input: TessInput, options: TessOptions): TessResult =
+  ## Tessellate `input` with explicit options using a temporary workspace.
   var workspace: TessWorkspace
   workspace.tessellate(input, options)
 
 proc tessellateTrusted*(input: TessInput, epsilon = DefaultTessEpsilon): TessResult =
+  ## Trusted one-shot tessellation using a temporary workspace.
+  ##
+  ## The same preconditions as the workspace overload apply.
   var workspace: TessWorkspace
   workspace.tessellateTrusted(input, epsilon)
 

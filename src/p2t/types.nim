@@ -223,55 +223,113 @@ when defined(p2tIdxCdt):
       edgeEvent*: IdxEdgeEvent
 
 type
+  ## 2D point or vector in tessellation input and output coordinates.
   Vec2* = object
+    ## Cartesian coordinates. The tessellator treats them as unitless doubles.
     x*, y*: float64
 
+  ## One closed contour.
+  ##
+  ## The first point is not repeated at the end. `id` is copied into validation
+  ## errors so callers can map failures back to their own shape records.
   TessContour* = object
+    ## Caller-defined contour identifier used only for error reporting.
     id*: int
+    ## Ordered contour vertices. The public tessellation path fixes winding.
     points*: seq[Vec2]
 
+  ## Complete constrained tessellation input.
+  ##
+  ## `outer` is the exterior polygon. `holes` are interior rings. `steiner`
+  ## points are optional extra vertices inside `outer`.
   TessInput* = object
+    ## Exterior contour.
     outer*: TessContour
+    ## Hole contours. Holes must not intersect, nest, or leave `outer`.
     holes*: seq[TessContour]
+    ## Optional interior points used to improve or constrain triangulation.
     steiner*: seq[Vec2]
 
+  ## Runtime tessellation options for the checked public path.
   TessOptions* = object
+    ## Geometric tolerance used for duplicate, collinearity, and containment
+    ## tests.
     epsilon*: float64
+    ## If true, adjacent duplicate points, a repeated closing point, and
+    ## collinear contour points are removed before triangulation.
     cleanInput*: bool
+    ## If true, `TessResult.boundaryEdges` contains outer and hole edges in
+    ## `vertices` index space.
     keepBoundaryEdges*: bool
+    ## If true, run self-intersection and hole-containment validation before
+    ## triangulation.
     validate*: bool
 
+  ## Error category returned in `TessResult.error.kind`.
   TessErrorKind* = enum
+    ## No error.
     tekNone
+    ## The outer contour has no points.
     tekEmptyOuter
+    ## A contour has fewer than three usable vertices.
     tekTooFewVertices
+    ## Two vertices compare equal within the configured epsilon.
     tekDuplicatePoint
+    ## A contour edge has zero length within the configured epsilon.
     tekDegenerateEdge
+    ## A contour intersects itself.
     tekSelfIntersection
+    ## A hole is outside the outer contour, intersects another boundary, or is
+    ## nested inside another hole.
     tekInvalidHole
+    ## The CDT engine failed after validation passed.
     tekTriangulationFailed
 
+  ## Failure details for tessellation calls.
   TessError* = object
+    ## Error category.
     kind*: TessErrorKind
+    ## Contour id from the failing `TessContour`, or `-1` when not tied to one
+    ## contour.
     contourId*: int
+    ## Point or edge index related to the failure, or `-1` when not available.
     pointIndex*: int
+    ## Human-readable diagnostic. Treat as explanatory text, not a stable code.
     message*: string
 
+  ## Materialized tessellation result.
   TessResult* = object
+    ## True when `vertices` and `triangles` contain a valid triangulation.
     ok*: bool
+    ## Failure details when `ok` is false. `kind` is `tekNone` on success.
     error*: TessError
+    ## Vertex buffer used by triangle and boundary-edge indices.
     vertices*: seq[Vec2]
+    ## Triangles as triples of indices into `vertices`.
     triangles*: seq[array[3, int]]
+    ## Optional boundary edges as pairs of indices into `vertices`.
     boundaryEdges*: seq[array[2, int]]
 
 when defined(p2tIdxCdt):
   type
+    ## Raw trusted tessellation result.
+    ##
+    ## Pointers refer to `TessWorkspace` storage and remain valid only until the
+    ## workspace is cleared or reused. Prefer the `rawTriangle*` accessors.
     TessRawResult* = object
+      ## True when raw triangle access is valid.
       ok*: bool
+      ## Failure details when `ok` is false.
       error*: TessError
+      ## Pointer to the workspace-owned vertex buffer.
       vertices*: ptr seq[Vec2]
+      ## Backend workspace pointer. This is not a stable user API.
       idx*: ptr IdxWorkspace
 
+    ## Reusable tessellation workspace.
+    ##
+    ## Pass one workspace through repeated calls to reuse allocations. Do not use
+    ## the same workspace concurrently.
     TessWorkspace* = object
       vertices*: seq[Vec2]
       polygon*: seq[int]
@@ -282,12 +340,24 @@ when defined(p2tIdxCdt):
 
 elif defined(p2tLegacyCdt):
   type
+    ## Raw trusted tessellation result.
+    ##
+    ## Pointers refer to `TessWorkspace` storage and remain valid only until the
+    ## workspace is cleared or reused. Prefer the `rawTriangle*` accessors.
     TessRawResult* = object
+      ## True when raw triangle access is valid.
       ok*: bool
+      ## Failure details when `ok` is false.
       error*: TessError
+      ## Pointer to the workspace-owned vertex buffer.
       vertices*: ptr seq[Vec2]
+      ## Backend workspace pointer. This is not a stable user API.
       cdt*: ptr CdtWorkspace
 
+    ## Reusable tessellation workspace.
+    ##
+    ## Pass one workspace through repeated calls to reuse allocations. Do not use
+    ## the same workspace concurrently.
     TessWorkspace* = object
       vertices*: seq[Vec2]
       polygon*: seq[int]
@@ -297,12 +367,24 @@ elif defined(p2tLegacyCdt):
 
 else:
   type
+    ## Raw trusted tessellation result.
+    ##
+    ## Pointers refer to `TessWorkspace` storage and remain valid only until the
+    ## workspace is cleared or reused. Prefer the `rawTriangle*` accessors.
     TessRawResult* = object
+      ## True when raw triangle access is valid.
       ok*: bool
+      ## Failure details when `ok` is false.
       error*: TessError
+      ## Pointer to the workspace-owned vertex buffer.
       vertices*: ptr seq[Vec2]
+      ## Backend workspace pointer. This is not a stable user API.
       arena*: ptr ArenaWorkspace
 
+    ## Reusable tessellation workspace.
+    ##
+    ## Pass one workspace through repeated calls to reuse allocations. Do not use
+    ## the same workspace concurrently.
     TessWorkspace* = object
       vertices*: seq[Vec2]
       polygon*: seq[int]
@@ -312,11 +394,17 @@ else:
       arena*: ArenaWorkspace
 
 const DefaultTessEpsilon* = 1e-9
+  ## Default geometric tolerance used by `defaultTessOptions` and trusted calls.
 
 proc contour*(id: int, points: openArray[Vec2]): TessContour =
+  ## Build a `TessContour` by copying `points` into an owned sequence.
   TessContour(id: id, points: @points)
 
 proc defaultTessOptions*(): TessOptions =
+  ## Return checked public-path defaults.
+  ##
+  ## Defaults clean input, validate contours, omit boundary edges, and use
+  ## `DefaultTessEpsilon`.
   TessOptions(
     epsilon: DefaultTessEpsilon,
     cleanInput: true,
@@ -346,6 +434,9 @@ proc failure*(error: TessError): TessResult =
   TessResult(ok: false, error: error)
 
 proc clear*(workspace: var TessWorkspace) =
+  ## Release the workspace's active contents while keeping reusable capacity.
+  ##
+  ## Any `TessRawResult` previously returned from this workspace becomes invalid.
   workspace.vertices.setLen(0)
   workspace.polygon.setLen(0)
   workspace.indexMap.setLen(0)

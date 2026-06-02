@@ -3,6 +3,7 @@ import std/[algorithm, math, strformat]
 import ./types
 
 proc vec2*(x, y: float64): Vec2 =
+  ## Build a `Vec2` from two coordinates.
   Vec2(x: x, y: y)
 
 proc `+`*(a, b: Vec2): Vec2 =
@@ -31,6 +32,10 @@ proc almostEqual*(a, b: Vec2, eps: float64): bool =
   dist2(a, b) <= eps * eps
 
 proc signedArea*(points: openArray[Vec2]): float64 =
+  ## Return signed polygon area.
+  ##
+  ## Positive means counterclockwise winding, negative means clockwise. Returns
+  ## zero for fewer than three points.
   if points.len < 3:
     return 0
   for i in 0 ..< points.len:
@@ -39,12 +44,17 @@ proc signedArea*(points: openArray[Vec2]): float64 =
   result * 0.5
 
 proc triangleArea*(a, b, c: Vec2): float64 =
+  ## Return the absolute area of triangle `(a, b, c)`.
   abs(orient(a, b, c)) * 0.5
 
 proc polygonArea*(points: openArray[Vec2]): float64 =
+  ## Return the absolute polygon area.
   abs(signedArea(points))
 
 proc ensureOrientation*(points: var seq[Vec2], ccw: bool) =
+  ## Reverse `points` in place when needed to match the requested winding.
+  ##
+  ## `ccw = true` requests counterclockwise winding; `false` requests clockwise.
   let area = signedArea(points)
   if (ccw and area < 0) or ((not ccw) and area > 0):
     var i = 0
