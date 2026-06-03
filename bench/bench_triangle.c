@@ -10,6 +10,14 @@
 #define REAL double
 #endif
 
+#ifndef TRIANGLE_SWITCHES
+#define TRIANGLE_SWITCHES "pzQN"
+#endif
+
+#ifndef TRIANGLE_LABEL
+#define TRIANGLE_LABEL "triangle"
+#endif
+
 #include "triangle.h"
 
 #define BENCH_ROUNDS 5
@@ -349,9 +357,25 @@ static void free_triangle_output(struct triangulateio *output) {
   memset(output, 0, sizeof(*output));
 }
 
+static int triangle_once(struct triangulateio *input) {
+  struct triangulateio output;
+  memset(&output, 0, sizeof(output));
+  triangulate(TRIANGLE_SWITCHES, input, &output, NULL);
+  int triangles = output.numberoftriangles;
+  free_triangle_output(&output);
+  return triangles;
+}
+
 static void bench_fixture(const char *name, int iterations, BenchFixture fixture) {
   struct triangulateio input;
   init_triangle_input(&fixture, &input);
+
+  int validation_triangles = triangle_once(&input);
+  if (validation_triangles <= 0) {
+    fprintf(stderr, "%s failed validation with Triangle switches %s\n", name,
+            TRIANGLE_SWITCHES);
+    exit(1);
+  }
 
   double times[BENCH_ROUNDS];
   uint64_t reported_triangles = 0;
@@ -359,11 +383,7 @@ static void bench_fixture(const char *name, int iterations, BenchFixture fixture
     uint64_t triangles = 0;
     double start = now_seconds();
     for (int i = 0; i < iterations; ++i) {
-      struct triangulateio output;
-      memset(&output, 0, sizeof(output));
-      triangulate("pzQN", &input, &output, NULL);
-      triangles += (uint64_t)output.numberoftriangles;
-      free_triangle_output(&output);
+      triangles += (uint64_t)triangle_once(&input);
     }
     times[round] = (now_seconds() - start) * 1000000.0;
     reported_triangles = triangles;
@@ -426,7 +446,8 @@ static void bench_dude(void) {
 }
 
 int main(void) {
-  printf("triangle\n");
+  printf("%s\n", TRIANGLE_LABEL);
+  printf("config,triangleSwitches,%s\n", TRIANGLE_SWITCHES);
   fflush(stdout);
   bench_contour("small-ui-quad", 10000, small_quad());
   bench_contour("medium-icon", 2000, regular_polygon(48, 50));

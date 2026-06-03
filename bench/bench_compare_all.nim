@@ -62,6 +62,79 @@ proc addRows(rows: var seq[BenchRow], configs: var seq[string], engine, path: st
 proc cell(row: BenchRow): string =
   &"{row.bestUs}/{row.medianUs}"
 
+proc isTriangleVariant(engine: string): bool =
+  engine.startsWith("triangle-") and
+    engine notin ["triangle-best", "triangle-unsafe-best"]
+
+proc isTriangleUnsafe(engine: string): bool =
+  engine.startsWith("triangle-unsafe-")
+
+proc triangleSwitch(engine: string): string =
+  if engine.startsWith("triangle-unsafe-"):
+    engine["triangle-unsafe-".len .. ^1]
+  elif engine.startsWith("triangle-"):
+    engine["triangle-".len .. ^1]
+  else:
+    engine
+
+proc chooseTriangleBest(
+    rows: seq[BenchRow], candidates: seq[string], caseName: string
+): tuple[found: bool, row: BenchRow] =
+  for candidate in candidates:
+    let matches = rows.filterIt(
+      it.engine == candidate and it.caseName == caseName and
+        it.mode == "default" and it.bestUs >= 0
+    )
+    if matches.len == 0:
+      continue
+    if not result.found or matches[0].bestUs < result.row.bestUs:
+      result.found = true
+      result.row = matches[0]
+
+proc addTriangleBest(
+    rows: var seq[BenchRow], configs: var seq[string], engines: var seq[string],
+    engineName: string, candidates: seq[string], caseOrder: seq[string]
+) =
+  if candidates.len == 0:
+    return
+
+  var added = false
+  for caseName in caseOrder:
+    let selected = rows.chooseTriangleBest(candidates, caseName)
+    if selected.found:
+      configs.add &"config,{engineName},{caseName},{selected.row.engine.triangleSwitch}"
+      var row = selected.row
+      row.engine = engineName
+      rows.add row
+      added = true
+
+  if added:
+    engines.add engineName
+
+proc synthesizeTriangleBest(
+    rows: var seq[BenchRow], configs: var seq[string], engines: var seq[string],
+    caseOrder: seq[string]
+) =
+  let
+    robustCandidates = engines.filterIt(it.isTriangleVariant and not it.isTriangleUnsafe)
+    unsafeCandidates = engines.filterIt(it.isTriangleVariant and it.isTriangleUnsafe)
+
+  let originalEngines = engines
+  engines.setLen(0)
+  var insertedTriangleBest = false
+  for engine in originalEngines:
+    if engine.isTriangleVariant:
+      if not insertedTriangleBest:
+        rows.addTriangleBest(
+          configs, engines, "triangle-best", robustCandidates, caseOrder
+        )
+        rows.addTriangleBest(
+          configs, engines, "triangle-unsafe-best", unsafeCandidates, caseOrder
+        )
+        insertedTriangleBest = true
+      continue
+    engines.add engine
+
 proc main() =
   if paramCount() == 0:
     quit(
@@ -88,6 +161,8 @@ proc main() =
     if not seenCases.hasKey(row.caseName):
       seenCases[row.caseName] = true
       caseOrder.add row.caseName
+
+  rows.synthesizeTriangleBest(configs, engines, caseOrder)
 
   echo "best/median microseconds"
   if configs.len > 0:

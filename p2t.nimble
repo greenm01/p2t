@@ -665,11 +665,28 @@ task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri,
 
   let triangleDir = findTriangleDir()
   if triangleDir.len > 0:
-    sh "clang -std=gnu99 -O3 -Wno-deprecated-non-prototype -DNDEBUG " &
-      "-DTRILIBRARY -DNO_TIMER -I" & quoteShell(triangleDir) & " " &
-      quoteShell(triangleDir / "triangle.c") &
-      " bench/bench_triangle.c -o /tmp/p2t_triangle -lm"
-    reportArgs.add "triangle=/tmp/p2t_triangle"
+    for variant in [
+      ("triangle-pzQN", "pzQN"),
+      ("triangle-plzQN", "plzQN"),
+      ("triangle-pizQN", "pizQN"),
+      ("triangle-pFzQN", "pFzQN"),
+      ("triangle-unsafe-pzQNX", "pzQNX"),
+      ("triangle-unsafe-plzQNX", "plzQNX"),
+      ("triangle-unsafe-pizQNX", "pizQNX"),
+      ("triangle-unsafe-pFzQNX", "pFzQNX"),
+    ]:
+      let
+        engine = variant[0]
+        switches = variant[1]
+        outPath = "/tmp/p2t_" & engine.replace("-", "_")
+      sh "clang -std=gnu99 -O3 -Wno-deprecated-non-prototype -DNDEBUG " &
+        "-DTRILIBRARY -DNO_TIMER " &
+        "-DTRIANGLE_SWITCHES=\\\"" & switches & "\\\" " &
+        "-DTRIANGLE_LABEL=\\\"" & engine & "\\\" " &
+        "-I" & quoteShell(triangleDir) & " " &
+        quoteShell(triangleDir / "triangle.c") &
+        " bench/bench_triangle.c -o " & quoteShell(outPath) & " -lm"
+      reportArgs.add engine & "=" & outPath
   else:
     echo "skipping Triangle; set TRIANGLE_DIR=/path/to/triangle containing triangle.c and triangle.h"
 

@@ -26,7 +26,11 @@ Comparison dependencies are vendored in this repository:
 
 Triangle can also be included as an optional external benchmark by setting
 `TRIANGLE_DIR` to a checkout containing `triangle.c` and `triangle.h`. It is not
-vendored here because its license is not a fit for this repository.
+vendored here because its license is not a fit for this repository. When it is
+available, `benchCompareAll` runs Triangle's supported CDT construction switches
+and reports the fastest valid Triangle result per fixture. The detailed tables
+also show the fastest no-exact-arithmetic Triangle result as an explicitly
+unsafe reference.
 
 Earcut is intentionally excluded because it is not a constrained Delaunay
 triangulation algorithm.
@@ -46,17 +50,29 @@ case.
 ## Results
 
 The faster `fast-poly2tri` float run stays in the table; the slower double
-column is replaced by Triangle.
+column is replaced by Triangle's per-fixture best configuration.
 
-| Case | p2t raw | fast f32 | Triangle | libtess2 | delta |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| fixture-test | 0.143 / 0.151 | 0.169 / 0.169 | 0.693 / 0.734 | 2.075 / 2.204 | +15.3% |
-| diamond | 0.288 / 0.290 | 0.308 / 0.312 | 1.008 / 1.021 | 2.495 / 2.535 | +6.3% |
-| star | 0.228 / 0.232 | 0.273 / 0.277 | 1.138 / 1.192 | 2.655 / 2.691 | +16.5% |
-| dude-with-holes | 4.378 / 4.406 | 4.417 / 4.452 | 11.177 / 11.580 | 14.201 / 14.370 | +0.9% |
-| nazca-monkey | 65.210 / 65.640 | 72.390 / 75.210 | 164.630 / 171.050 | 232.900 / 238.840 | +9.9% |
-| nazca-heron | 53.500 / 53.660 | 65.050 / 66.010 | 134.180 / 143.650 | 198.660 / 199.730 | +17.8% |
-| organic-large | 230.390 / 238.390 | failed | 1032.100 / 1051.360 | 1169.650 / 1181.680 | +77.7% vs Triangle |
+| Case | p2t raw | fast f32 | Triangle best | Triangle unsafe best | libtess2 | delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fixture-test | 0.143 / 0.151 | 0.169 / 0.169 | 0.690 / 0.717 | 0.705 / 0.731 | 2.075 / 2.204 | +15.3% |
+| diamond | 0.288 / 0.290 | 0.308 / 0.312 | 0.916 / 0.958 | 0.863 / 0.881 | 2.495 / 2.535 | +6.3% |
+| star | 0.228 / 0.232 | 0.273 / 0.277 | 1.079 / 1.097 | 0.974 / 0.985 | 2.655 / 2.691 | +16.5% |
+| dude-with-holes | 4.378 / 4.406 | 4.417 / 4.452 | 10.255 / 10.285 | 8.614 / 8.880 | 14.201 / 14.370 | +0.9% |
+| nazca-monkey | 65.210 / 65.640 | 72.390 / 75.210 | 160.120 / 162.350 | 133.810 / 135.820 | 232.900 / 238.840 | +9.9% |
+| nazca-heron | 53.500 / 53.660 | 65.050 / 66.010 | 114.180 / 115.890 | 98.490 / 104.240 | 198.660 / 199.730 | +17.8% |
+| organic-large | 230.390 / 238.390 | failed | 774.220 / 807.270 | 526.690 / 604.660 | 1169.650 / 1181.680 | +56.3% vs Triangle unsafe |
+
+Triangle switch winners for the raw/reference table:
+
+| Case | Triangle best | Triangle unsafe best |
+| --- | --- | --- |
+| fixture-test | `pzQN` | `plzQNX` |
+| diamond | `plzQN` | `plzQNX` |
+| star | `plzQN` | `plzQNX` |
+| dude-with-holes | `plzQN` | `plzQNX` |
+| nazca-monkey | `plzQN` | `plzQNX` |
+| nazca-heron | `plzQN` | `plzQNX` |
+| organic-large | `plzQN` | `plzQNX` |
 
 `fast-poly2tri` asserts in `MPE_EdgeEventPoints` on `organic-large`, so there is
 no valid fast-poly2tri timing for that fixture. The Nim champion, Triangle, and
@@ -106,15 +122,15 @@ closest reference.
 
 Official references:
 
-| Case | p2t trusted | fast f32 | Triangle | libtess2 | delta |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| fixture-test | 0.186 / 0.190 | 0.236 / 0.267 | 0.689 / 0.716 | 2.126 / 2.148 | +21.3% vs fast f32 |
-| diamond | 0.346 / 0.348 | 0.432 / 0.445 | 0.953 / 0.978 | 2.659 / 2.692 | +19.9% vs fast f32 |
-| star | 0.276 / 0.283 | 0.316 / 0.339 | 1.128 / 1.130 | 2.738 / 2.785 | +12.7% vs fast f32 |
-| dude-with-holes | 4.825 / 4.862 | 4.864 / 4.918 | 11.130 / 11.238 | 14.391 / 14.704 | +0.8% vs fast f32 |
-| nazca-monkey | 74.670 / 75.570 | 75.350 / 78.490 | 170.620 / 176.350 | 242.900 / 244.110 | +0.9% vs fast f32 |
-| nazca-heron | 58.040 / 58.410 | 64.900 / 67.110 | 152.640 / 158.880 | 209.210 / 211.020 | +10.6% vs fast f32 |
-| organic-large | 248.240 / 259.970 | failed | 1027.540 / 1037.860 | 1207.350 / 1216.480 | +75.8% vs Triangle |
+| Case | p2t trusted | fast f32 | Triangle best | Triangle unsafe best | libtess2 | delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fixture-test | 0.186 / 0.190 | 0.236 / 0.267 | 0.690 / 0.717 | 0.705 / 0.731 | 2.126 / 2.148 | +21.3% vs fast f32 |
+| diamond | 0.346 / 0.348 | 0.432 / 0.445 | 0.916 / 0.958 | 0.863 / 0.881 | 2.659 / 2.692 | +19.9% vs fast f32 |
+| star | 0.276 / 0.283 | 0.316 / 0.339 | 1.079 / 1.097 | 0.974 / 0.985 | 2.738 / 2.785 | +12.7% vs fast f32 |
+| dude-with-holes | 4.825 / 4.862 | 4.864 / 4.918 | 10.255 / 10.285 | 8.614 / 8.880 | 14.391 / 14.704 | +0.8% vs fast f32 |
+| nazca-monkey | 74.670 / 75.570 | 75.350 / 78.490 | 160.120 / 162.350 | 133.810 / 135.820 | 242.900 / 244.110 | +0.9% vs fast f32 |
+| nazca-heron | 58.040 / 58.410 | 64.900 / 67.110 | 114.180 / 115.890 | 98.490 / 104.240 | 209.210 / 211.020 | +10.6% vs fast f32 |
+| organic-large | 248.240 / 259.970 | failed | 774.220 / 807.270 | 526.690 / 604.660 | 1207.350 / 1216.480 | +52.9% vs Triangle unsafe |
 
 External contenders:
 
