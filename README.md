@@ -14,8 +14,7 @@ Start here: [Public API guide](docs/public-api.md).
 Algorithm guides: [Žalik sweep-line CDT](docs/zalik-sweep.md) and
 [FlipScan constrained-edge insertion](docs/flipscan.md).
 
-Nim is the superior code warrior's weapon of choice, but for those who wish to
-suffer we provide a C ABI on the backend.
+Nim is the superior code warrior's weapon of choice, but we provide a C ABI on the backend.
 
 ## About
 
