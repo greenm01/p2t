@@ -310,87 +310,39 @@ type
     ## Optional boundary edges as pairs of indices into `vertices`.
     boundaryEdges*: seq[array[2, int]]
 
-when defined(p2tIdxCdt):
-  type
-    ## Raw trusted tessellation result.
-    ##
-    ## Pointers refer to `TessWorkspace` storage and remain valid only until the
-    ## workspace is cleared or reused. Prefer the `rawTriangle*` accessors.
-    TessRawResult* = object
-      ## True when raw triangle access is valid.
-      ok*: bool
-      ## Failure details when `ok` is false.
-      error*: TessError
-      ## Pointer to the workspace-owned vertex buffer.
-      vertices*: ptr seq[Vec2]
-      ## Backend workspace pointer. This is not a stable user API.
+type
+  ## Raw trusted tessellation result.
+  ##
+  ## Pointers refer to `TessWorkspace` storage and remain valid only until the
+  ## workspace is cleared or reused. Prefer the `rawTriangle*` accessors.
+  TessRawResult* = object
+    ## True when raw triangle access is valid.
+    ok*: bool
+    ## Failure details when `ok` is false.
+    error*: TessError
+    ## Pointer to the workspace-owned vertex buffer.
+    vertices*: ptr seq[Vec2]
+    ## Backend workspace pointer. This is not a stable user API.
+    when defined(p2tIdxCdt):
       idx*: ptr IdxWorkspace
-
-    ## Reusable tessellation workspace.
-    ##
-    ## Pass one workspace through repeated calls to reuse allocations. Do not use
-    ## the same workspace concurrently.
-    TessWorkspace* = object
-      vertices*: seq[Vec2]
-      polygon*: seq[int]
-      indexMap*: seq[int]
-      scratch*: seq[int]
-      cdt*: CdtWorkspace
-      idx*: IdxWorkspace
-
-elif defined(p2tLegacyCdt):
-  type
-    ## Raw trusted tessellation result.
-    ##
-    ## Pointers refer to `TessWorkspace` storage and remain valid only until the
-    ## workspace is cleared or reused. Prefer the `rawTriangle*` accessors.
-    TessRawResult* = object
-      ## True when raw triangle access is valid.
-      ok*: bool
-      ## Failure details when `ok` is false.
-      error*: TessError
-      ## Pointer to the workspace-owned vertex buffer.
-      vertices*: ptr seq[Vec2]
-      ## Backend workspace pointer. This is not a stable user API.
+    elif defined(p2tLegacyCdt):
       cdt*: ptr CdtWorkspace
-
-    ## Reusable tessellation workspace.
-    ##
-    ## Pass one workspace through repeated calls to reuse allocations. Do not use
-    ## the same workspace concurrently.
-    TessWorkspace* = object
-      vertices*: seq[Vec2]
-      polygon*: seq[int]
-      indexMap*: seq[int]
-      scratch*: seq[int]
-      cdt*: CdtWorkspace
-
-else:
-  type
-    ## Raw trusted tessellation result.
-    ##
-    ## Pointers refer to `TessWorkspace` storage and remain valid only until the
-    ## workspace is cleared or reused. Prefer the `rawTriangle*` accessors.
-    TessRawResult* = object
-      ## True when raw triangle access is valid.
-      ok*: bool
-      ## Failure details when `ok` is false.
-      error*: TessError
-      ## Pointer to the workspace-owned vertex buffer.
-      vertices*: ptr seq[Vec2]
-      ## Backend workspace pointer. This is not a stable user API.
+    else:
       arena*: ptr ArenaWorkspace
 
-    ## Reusable tessellation workspace.
-    ##
-    ## Pass one workspace through repeated calls to reuse allocations. Do not use
-    ## the same workspace concurrently.
-    TessWorkspace* = object
-      vertices*: seq[Vec2]
-      polygon*: seq[int]
-      indexMap*: seq[int]
-      scratch*: seq[int]
-      cdt*: CdtWorkspace
+  ## Reusable tessellation workspace.
+  ##
+  ## Pass one workspace through repeated calls to reuse allocations. Do not use
+  ## the same workspace concurrently.
+  TessWorkspace* = object
+    vertices*: seq[Vec2]
+    polygon*: seq[int]
+    indexMap*: seq[int]
+    scratch*: seq[int]
+    cdt*: CdtWorkspace
+    when defined(p2tIdxCdt):
+      idx*: IdxWorkspace
+    elif not defined(p2tLegacyCdt):
       arena*: ArenaWorkspace
 
 const DefaultTessEpsilon* = 1e-9
