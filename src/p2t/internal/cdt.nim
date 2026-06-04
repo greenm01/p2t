@@ -1224,6 +1224,16 @@ proc rawVertex*(raw: TessRawResult, id: CdtPointId): Vec2 =
 proc rawTrianglePoints*(raw: TessRawResult, triangleIndex: int): array[3, CdtPointId] =
   raw.cdt[].rawTrianglePoints(raw.cdt[].interiorTriangles[triangleIndex])
 
+proc rawTriangleAllocId*(raw: TessRawResult, triangleIndex: int): int {.inline.} =
+  raw.cdt[].interiorTriangles[triangleIndex].int
+
+proc rawTriangleNeighborAllocIds*(
+    raw: TessRawResult, triangleIndex: int
+): array[3, int] {.inline.} =
+  let t = raw.cdt[].interiorTriangles[triangleIndex]
+  for side in 0 .. 2:
+    result[side] = raw.cdt[].tri(t).neighbors[side].int
+
 proc rawTriangleVertices*(raw: TessRawResult, triangleIndex: int): array[3, Vec2] =
   let points = raw.rawTrianglePoints(triangleIndex)
   [raw.rawVertex(points[0]), raw.rawVertex(points[1]), raw.rawVertex(points[2])]

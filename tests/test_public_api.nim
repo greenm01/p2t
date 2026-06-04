@@ -27,6 +27,19 @@ suite "public p2t API":
     check raw.rawTriangleCount == 2
     discard raw.rawTrianglePoints(0)
     discard raw.rawTriangleVertices(0)
+    let
+      firstAlloc = raw.rawTriangleAllocId(0)
+      secondAlloc = raw.rawTriangleAllocId(1)
+    check firstAlloc >= 0
+    check secondAlloc >= 0
+    check firstAlloc != secondAlloc
+
+    var sharedInteriorEdges = 0
+    for i in 0 ..< raw.rawTriangleCount:
+      for neighborAlloc in raw.rawTriangleNeighborAllocIds(i):
+        if neighborAlloc == firstAlloc or neighborAlloc == secondAlloc:
+          inc sharedInteriorEdges
+    check sharedInteriorEdges == 2
 
   test "normalized trusted API is exported":
     var workspace: TessWorkspace

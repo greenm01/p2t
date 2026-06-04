@@ -459,6 +459,24 @@ proc rawTrianglePoints*(
   ## backend point ids, not materialized `TessResult.vertices` indices.
   cdt.rawTrianglePoints(raw, triangleIndex)
 
+proc rawTriangleAllocId*(
+    raw: TessRawResult, triangleIndex: int
+): int {.inline.} =
+  ## Return the backend allocation id for one raw triangle.
+  ##
+  ## This is intentionally lower-level than the raw triangle index. It lets
+  ## consumers map existing backend neighbor handles without forcing p2t to
+  ## build raw-neighbor ids during mesh cleanup.
+  cdt.rawTriangleAllocId(raw, triangleIndex)
+
+proc rawTriangleNeighborAllocIds*(
+    raw: TessRawResult, triangleIndex: int
+): array[3, int] {.inline.} =
+  ## Return backend allocation ids for the three triangle neighbors.
+  ##
+  ## Missing or constrained-boundary neighbors are reported as `-1`.
+  cdt.rawTriangleNeighborAllocIds(raw, triangleIndex)
+
 proc rawTriangleVertices*(
     raw: TessRawResult, triangleIndex: int
 ): array[3, Vec2] {.inline.} =

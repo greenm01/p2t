@@ -1354,6 +1354,20 @@ proc rawTrianglePoints*(
     ws[].triangles[t].points[2].CdtPointId,
   ]
 
+proc rawTriangleAllocId*(
+    raw: TessRawResult, triangleIndex: int
+): int {.inline.} =
+  raw.idx[].interiorTriangles[triangleIndex].int
+
+proc rawTriangleNeighborAllocIds*(
+    raw: TessRawResult, triangleIndex: int
+): array[3, int] {.inline.} =
+  let
+    ws = raw.idx
+    t = ws[].interiorTriangles[triangleIndex]
+  for side in 0 .. 2:
+    result[side] = ws[].triangles[t].neighbors[side].int
+
 proc rawTriangleVertices*(
     raw: TessRawResult, triangleIndex: int
 ): array[3, Vec2] {.inline.} =

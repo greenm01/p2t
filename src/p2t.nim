@@ -7,4 +7,4 @@ export Vec2, TessContour, TessInput, TessOptions, TessErrorKind, TessError, Tess
   signedArea, triangleArea, polygonArea, ensureOrientation, clear, tessellate,
   tessellateTrusted, tessellateTrustedRaw, tessellateNormalizedTrusted,
   tessellateNormalizedTrustedRaw, tessellateBatch, rawTriangleCount, rawTrianglePoints,
-  rawTriangleVertices
+  rawTriangleAllocId, rawTriangleNeighborAllocIds, rawTriangleVertices

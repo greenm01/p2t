@@ -1931,6 +1931,28 @@ proc sourceTriangle(t: ptr ArenaTriangle): array[3, int] {.inline.} =
 proc rawTriangle(raw: TessRawResult, triangleIndex: int): ptr ArenaTriangle {.inline.} =
   raw.arena[].interiorTriangles[triangleIndex]
 
+proc triangleAllocId(raw: TessRawResult, tri: ptr ArenaTriangle): int {.inline.} =
+  if tri.isNil or raw.arena.isNil or raw.arena[].triangles.len == 0:
+    return -1
+  let
+    base = cast[uint](addr raw.arena[].triangles[0])
+    item = cast[uint](tri)
+  if item < base:
+    return -1
+  int((item - base) div uint(sizeof(ArenaTriangle)))
+
+proc rawTriangleAllocId*(
+    raw: TessRawResult, triangleIndex: int
+): int {.inline.} =
+  raw.triangleAllocId(raw.rawTriangle(triangleIndex))
+
+proc rawTriangleNeighborAllocIds*(
+    raw: TessRawResult, triangleIndex: int
+): array[3, int] {.inline.} =
+  let tri = raw.rawTriangle(triangleIndex)
+  for side in 0 .. 2:
+    result[side] = raw.triangleAllocId(tri.neighbors[side])
+
 proc rawTrianglePoints*(
     raw: TessRawResult, triangleIndex: int
 ): array[3, CdtPointId] {.inline.} =
