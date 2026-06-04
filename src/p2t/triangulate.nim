@@ -144,6 +144,20 @@ proc toCdtInput(input: TessInput): CdtInput {.used.} =
     result.holes.add hole.points
   result.steiner = input.steiner
 
+template rawSuccess(raw: untyped): TessRawResult =
+  when defined(p2tIdxCdt):
+    TessRawResult(
+      ok: true, error: tessError(tekNone), vertices: raw.vertices, idx: raw.idx
+    )
+  elif defined(p2tLegacyCdt):
+    TessRawResult(
+      ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
+    )
+  else:
+    TessRawResult(
+      ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
+    )
+
 proc tessellateStatic[
     CleanInput, Validate, KeepBoundaryEdges, AssumeOriented: static bool
 ](
@@ -363,33 +377,11 @@ proc tessellateTrustedRaw*(
 
   when defined(p2tFastRawCdt):
     let raw = workspace.triangulateCdtRaw(input)
-    when defined(p2tIdxCdt):
-      return TessRawResult(
-        ok: true, error: tessError(tekNone), vertices: raw.vertices, idx: raw.idx
-      )
-    elif defined(p2tLegacyCdt):
-      return TessRawResult(
-        ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
-      )
-    else:
-      return TessRawResult(
-        ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
-      )
+    return rawSuccess(raw)
   else:
     try:
       let raw = workspace.triangulateCdtRaw(input)
-      when defined(p2tIdxCdt):
-        TessRawResult(
-          ok: true, error: tessError(tekNone), vertices: raw.vertices, idx: raw.idx
-        )
-      elif defined(p2tLegacyCdt):
-        TessRawResult(
-          ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
-        )
-      else:
-        TessRawResult(
-          ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
-        )
+      rawSuccess(raw)
     except CatchableError as err:
       TessRawResult(
         ok: false, error: tessError(tekTriangulationFailed, -1, -1, err.msg)
@@ -412,33 +404,11 @@ proc tessellateNormalizedTrustedRaw*(
 
   when defined(p2tFastRawCdt):
     let raw = workspace.triangulateCdtRaw(normalized)
-    when defined(p2tIdxCdt):
-      return TessRawResult(
-        ok: true, error: tessError(tekNone), vertices: raw.vertices, idx: raw.idx
-      )
-    elif defined(p2tLegacyCdt):
-      return TessRawResult(
-        ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
-      )
-    else:
-      return TessRawResult(
-        ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
-      )
+    return rawSuccess(raw)
   else:
     try:
       let raw = workspace.triangulateCdtRaw(normalized)
-      when defined(p2tIdxCdt):
-        TessRawResult(
-          ok: true, error: tessError(tekNone), vertices: raw.vertices, idx: raw.idx
-        )
-      elif defined(p2tLegacyCdt):
-        TessRawResult(
-          ok: true, error: tessError(tekNone), vertices: raw.vertices, cdt: raw.cdt
-        )
-      else:
-        TessRawResult(
-          ok: true, error: tessError(tekNone), vertices: raw.vertices, arena: raw.arena
-        )
+      rawSuccess(raw)
     except CatchableError as err:
       TessRawResult(
         ok: false, error: tessError(tekTriangulationFailed, -1, -1, err.msg)
