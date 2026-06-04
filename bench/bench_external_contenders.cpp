@@ -17,6 +17,10 @@ using namespace GEOM_FADE2D;
 
 #define BENCH_ROUNDS 5
 
+#ifndef BENCH_BUILD_FLAGS
+#define BENCH_BUILD_FLAGS "unknown"
+#endif
+
 struct BenchPoint {
   double x;
   double y;
@@ -350,6 +354,7 @@ static void benchCase(const std::string &name, int iterations,
 }
 
 int main() {
+  std::printf("config,buildFlags,%s\n", BENCH_BUILD_FLAGS);
   std::printf("engine,case,runs,triangles,best_us,median_us\n");
 
   benchCase(

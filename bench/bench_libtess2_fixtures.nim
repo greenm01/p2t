@@ -133,6 +133,7 @@ template benchLine(caseName: string, iterations: int, input: TessInput) =
     " triangles, best " & $times[0] & " us, median " & $times[BenchRounds div 2] & " us"
 
 echo "libtess2"
+echo "config,buildFlags,Tier 1 host-tuned Nim/C wrapper"
 benchLine(
   "small-ui-quad",
   10000,

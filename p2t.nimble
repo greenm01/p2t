@@ -18,15 +18,27 @@ import std/strutils
 const CommonFlags =
   "--mm:orc --deepcopy:on -d:nimPreviewFloatRoundtrip --path:src --hint:Name:off"
 
+when defined(amd64) or defined(i386):
+  const NativeCpuFlag = "-march=native"
+else:
+  const NativeCpuFlag = "-mcpu=native"
+
 # Tier 1 release codegen tuning. Measured (Apple M4 Pro, best-of-3, raw path):
 # 1.32x-1.57x faster than the untuned best config, no output change.
 #   --panics:on          : drops exception unwinding, frees the C optimizer
 #   -flto                : cross-module inlining of predicates/allocator
-#   -mcpu=native         : host-tuned codegen
+#   -mcpu/-march=native  : host-tuned codegen
 # Deliberately excluded: -ffp-contract=fast (FMA gave no win; predicates are
 # already non-robust float) and -d:useMalloc (no win vs ARC TLS allocator).
 const TunedFlags =
-  "--panics:on --passC:-flto --passL:-flto --passC:-mcpu=native --passL:-mcpu=native"
+  "--panics:on --passC:-flto --passL:-flto --passC:" & NativeCpuFlag &
+  " --passL:" & NativeCpuFlag
+
+# Host-tuned release flags for non-Nim benchmark contenders. These mirror the
+# C/linker side of `TunedFlags` so p2t is not the only entry getting LTO and
+# native CPU codegen in head-to-head comparisons.
+const ContenderBaseCFlags = "-O3 -DNDEBUG -flto " & NativeCpuFlag
+const ContenderBaseLinkFlags = "-flto " & NativeCpuFlag
 
 # Champion Nim configuration: pointer arena + pdqsort default + front hash
 # default-on (opt out with -d:p2tNoFrontHash) + fast raw trusted path + Tier 1
@@ -37,6 +49,77 @@ const ChampionFlags =
 
 proc sh(cmd: string) =
   exec cmd
+
+proc p2tFlags(): string =
+  ## Optional per-machine flags for benchmark contender builds.
+  ##
+  ## Use this for platform-specific include/library/runtime paths, for example
+  ## `-I/opt/foo/include -L/opt/foo/lib -Wl,-rpath,/opt/foo/lib`.
+  getEnv("P2T_FLAGS")
+
+proc addFlags(base, extra: string): string =
+  if extra.len == 0:
+    base
+  elif base.len == 0:
+    extra
+  else:
+    base & " " & extra
+
+proc contenderCFlags(): string =
+  ContenderBaseCFlags.addFlags(p2tFlags())
+
+proc contenderLinkFlags(): string =
+  ContenderBaseLinkFlags.addFlags(p2tFlags())
+
+proc cCompiler(): string =
+  getEnv("CC", "clang")
+
+proc cxxCompiler(): string =
+  getEnv("CXX", "clang++")
+
+proc exeExt(): string =
+  when defined(windows):
+    ".exe"
+  else:
+    ""
+
+proc tmpExe(name: string): string =
+  getTempDir() / (name & exeExt())
+
+proc tempRoots(): seq[string] =
+  result.add getTempDir()
+  when not defined(windows):
+    for path in ["/tmp", "/private/tmp"]:
+      if path notin result:
+        result.add path
+
+proc stripBinary(path: string) =
+  when not defined(windows):
+    sh "strip " & quoteShell(path)
+
+proc mathLibFlag(): string =
+  when defined(windows):
+    ""
+  else:
+    "-lm"
+
+proc compileFastPoly2Tri(fastDir: string) =
+  let
+    cFlags = contenderCFlags()
+    linkFlags = contenderLinkFlags()
+    headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir /
+      "MPE_fastpoly2tri.h" & "\\\""
+    buildFlagsDefine = quoteShell(
+      "-DBENCH_BUILD_FLAGS=\"" & cFlags & " " & linkFlags & "\""
+    )
+    mathFlag = mathLibFlag()
+  sh cCompiler() & " -std=gnu99 " & cFlags & " " & buildFlagsDefine & " " &
+    headerDefine & " bench/bench_fastpoly2tri.c " & linkFlags &
+    " -o " & quoteShell(tmpExe("p2t_fastpoly2tri_float")) & " " & mathFlag
+  sh cCompiler() & " -std=gnu99 " & cFlags & " -DMPE_POLY2TRI_USE_DOUBLE " &
+    buildFlagsDefine & " " & headerDefine & " bench/bench_fastpoly2tri.c " &
+    linkFlags & " -o " & quoteShell(tmpExe("p2t_fastpoly2tri_double")) &
+    " " & mathFlag
 
 proc nimRun(source: string; flags = ""; outPath = ""; nimcache = "") =
   var cmd = "nim r " & CommonFlags
@@ -138,6 +221,11 @@ proc findTriangleDir(): string =
   if envDir.len > 0 and hasTriangleSource(envDir):
     return envDir
 
+  for root in tempRoots():
+    let tmpDir = root / "triangle"
+    if hasTriangleSource(tmpDir):
+      return tmpDir
+
   let homeDir = getHomeDir() / "src" / "triangle"
   if hasTriangleSource(homeDir):
     return homeDir
@@ -153,6 +241,11 @@ proc findDelabellaDir(): string =
   let envDir = getEnv("DELABELLA_DIR")
   if envDir.len > 0 and hasDelabellaSource(envDir):
     return envDir
+
+  for root in tempRoots():
+    let tmpDir = root / "p2t-contenders" / "delabella"
+    if hasDelabellaSource(tmpDir):
+      return tmpDir
 
   let homeDir = getHomeDir() / "src" / "delabella"
   if hasDelabellaSource(homeDir):
@@ -170,6 +263,11 @@ proc findCdtDir(): string =
   if envDir.len > 0 and hasCdtSource(envDir):
     return envDir
 
+  for root in tempRoots():
+    let tmpDir = root / "p2t-contenders" / "CDT"
+    if hasCdtSource(tmpDir):
+      return tmpDir
+
   let homeDir = getHomeDir() / "src" / "CDT"
   if hasCdtSource(homeDir):
     return homeDir
@@ -179,14 +277,65 @@ proc findCdtDir(): string =
     return siblingDir
 
 proc hasFade2dSdk(path: string): bool =
-  fileExists(path / "include_fade2d" / "Fade_2D.h") and
-    fileExists(path / "lib_mac" / "libfade2d.dylib") and
-    fileExists(path / "lib_mac" / "libgmp.10.dylib")
+  fileExists(path / "include_fade2d" / "Fade_2D.h")
+
+proc fade2dLibraryDir(path: string): string =
+  const candidates = [
+    "lib_mac", "lib_linux", "lib", "bin", "x64", "x86_64", "Release"
+  ]
+  const names = [
+    "libfade2d.dylib", "libfade2d.so", "libfade2d.a", "fade2d.lib", "fade2d.dll"
+  ]
+  for dirName in candidates:
+    let dir = path / dirName
+    for name in names:
+      if fileExists(dir / name):
+        return dir
+
+proc optionalLibraryPath(dir: string, names: openArray[string]): string =
+  for name in names:
+    let path = dir / name
+    if fileExists(path):
+      return path
+
+proc rpathFlag(dir: string): string =
+  when defined(windows):
+    ""
+  elif defined(macosx):
+    "-Wl,-rpath," & quoteShell(dir)
+  else:
+    "-Wl,-rpath," & quoteShell(dir)
+
+proc fade2dLinkFlags(fade2dDir: string): string =
+  let libDir = fade2dLibraryDir(fade2dDir)
+  if libDir.len == 0:
+    return p2tFlags()
+
+  result = "-L" & quoteShell(libDir) & " -lfade2d"
+  let gmp = optionalLibraryPath(
+    libDir,
+    [
+      "libgmp.10.dylib", "libgmp.dylib", "libgmp.so", "libgmp.a", "gmp.lib",
+      "libgmp-10.dll", "gmp.dll"
+    ]
+  )
+  if gmp.len > 0:
+    result.add " " & quoteShell(gmp)
+  let rpath = rpathFlag(libDir)
+  if rpath.len > 0:
+    result.add " " & rpath
+  result = result.addFlags(p2tFlags())
 
 proc findFade2dDir(): string =
   let envDir = getEnv("FADE2D_DIR")
   if envDir.len > 0 and hasFade2dSdk(envDir):
     return envDir
+
+  for root in tempRoots():
+    let tmpDir = root / "p2t-contenders" / "fadeRelease_v2.17.3" /
+      "fadeRelease_v2.17.3"
+    if hasFade2dSdk(tmpDir):
+      return tmpDir
 
   let homeDir = getHomeDir() / "src" / "fadeRelease"
   if hasFade2dSdk(homeDir):
@@ -219,7 +368,8 @@ task benchLibtess2, "benchmark dude fixture against libtess2":
     )
   nimCompile(
     "bench/bench_libtess2_compare",
-    flags = "--mm:arc -d:release --opt:speed -d:libtess2Dir=" & quoteShell(libtess2Dir),
+    flags = "--mm:arc --threads:off -d:release --opt:speed " & TunedFlags &
+      " -d:libtess2Dir=" & quoteShell(libtess2Dir),
     outPath = "/tmp/p2t_bench_libtess2",
     nimcache = "/tmp/p2t_bench_libtess2_d",
   )
@@ -235,7 +385,8 @@ task qualityLibtess2, "compare Delaunay triangle quality against libtess2":
     )
   nimRun(
     "bench/quality_compare",
-    flags = "--mm:arc -d:release --opt:speed -d:libtess2Dir=" & quoteShell(libtess2Dir),
+    flags = "--mm:arc --threads:off -d:release --opt:speed " & TunedFlags &
+      " -d:libtess2Dir=" & quoteShell(libtess2Dir),
     outPath = "/tmp/p2t_quality_libtess2",
     nimcache = "/tmp/p2t_quality_libtess2_d",
   )
@@ -595,57 +746,60 @@ task benchStressOrganicLargeStats, "report arena CDT stats for the organic large
   sh quoteShell("/tmp/p2t_bench_stress_organic_large_stats")
 
 task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri, libtess2, and Triangle":
+  let
+    championPath = tmpExe("p2t_bench_champion")
+    noFrontHashPath = tmpExe("p2t_bench_champion_no_front_hash")
+    slotPath = tmpExe("p2t_bench_arena_slot_front_hash_cdt")
+    idxPath = tmpExe("p2t_bench_idx_tuned")
+    comparePath = tmpExe("p2t_bench_compare_all")
+    libtess2Path = tmpExe("p2t_bench_libtess2_fixtures")
+
   nimCompile(
     "bench/bench_p2t",
     flags = ChampionFlags,
-    outPath = "/tmp/p2t_bench_champion",
-    nimcache = "/tmp/p2t_bench_champion_d",
+    outPath = championPath,
+    nimcache = getTempDir() / "p2t_bench_champion_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_champion")
+  stripBinary(championPath)
 
   nimCompile(
     "bench/bench_p2t",
     flags = ChampionFlags & " -d:p2tNoFrontHash",
-    outPath = "/tmp/p2t_bench_champion_no_front_hash",
-    nimcache = "/tmp/p2t_bench_champion_no_front_hash_d",
+    outPath = noFrontHashPath,
+    nimcache = getTempDir() / "p2t_bench_champion_no_front_hash_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_champion_no_front_hash")
+  stripBinary(noFrontHashPath)
 
   nimCompile(
     "bench/bench_p2t",
     flags = ChampionFlags & " -d:p2tSlotCdt",
-    outPath = "/tmp/p2t_bench_arena_slot_front_hash_cdt",
-    nimcache = "/tmp/p2t_bench_arena_slot_front_hash_cdt_d",
+    outPath = slotPath,
+    nimcache = getTempDir() / "p2t_bench_arena_slot_front_hash_cdt_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_arena_slot_front_hash_cdt")
+  stripBinary(slotPath)
 
   nimCompile(
     "bench/bench_p2t",
     flags =
       "--mm:arc --threads:off -d:release --opt:speed -d:p2tIdxCdt " &
       "-d:p2tUnsafeCdt -d:p2tFastRawCdt " & TunedFlags,
-    outPath = "/tmp/p2t_bench_idx_tuned",
-    nimcache = "/tmp/p2t_bench_idx_tuned_d",
+    outPath = idxPath,
+    nimcache = getTempDir() / "p2t_bench_idx_tuned_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_idx_tuned")
+  stripBinary(idxPath)
 
   var reportArgs = @[
-    "nim-champion=/tmp/p2t_bench_champion",
-    "nim-no-front-hash=/tmp/p2t_bench_champion_no_front_hash",
-    "nim-slot-front-hash=/tmp/p2t_bench_arena_slot_front_hash_cdt",
-    "nim-idx-front-hash=/tmp/p2t_bench_idx_tuned",
+    "nim-champion=" & championPath,
+    "nim-no-front-hash=" & noFrontHashPath,
+    "nim-slot-front-hash=" & slotPath,
+    "nim-idx-front-hash=" & idxPath,
   ]
 
   let fastDir = findFastPoly2TriDir()
   if fastDir.len > 0:
-    let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir /
-      "MPE_fastpoly2tri.h" & "\\\""
-    sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
-      " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
-    sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
-      " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
-    reportArgs.add "fast-float=/tmp/p2t_fastpoly2tri_float"
-    reportArgs.add "fast-double=/tmp/p2t_fastpoly2tri_double"
+    compileFastPoly2Tri(fastDir)
+    reportArgs.add "fast-float=" & tmpExe("p2t_fastpoly2tri_float")
+    reportArgs.add "fast-double=" & tmpExe("p2t_fastpoly2tri_double")
   else:
     echo "skipping fast-poly2tri; expected vendor/fast-poly2tri or set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri"
 
@@ -653,13 +807,14 @@ task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri,
   if libtess2Dir.len > 0:
     nimCompile(
       "bench/bench_libtess2_fixtures",
-      flags = "--mm:arc -d:release --opt:speed -d:libtess2Dir=" &
+      flags = "--mm:arc --threads:off -d:release --opt:speed " & TunedFlags &
+        " -d:libtess2Dir=" &
         quoteShell(libtess2Dir),
-      outPath = "/tmp/p2t_bench_libtess2_fixtures",
-      nimcache = "/tmp/p2t_bench_libtess2_fixtures_d",
+      outPath = libtess2Path,
+      nimcache = getTempDir() / "p2t_bench_libtess2_fixtures_d",
     )
-    sh "strip " & quoteShell("/tmp/p2t_bench_libtess2_fixtures")
-    reportArgs.add "libtess2=/tmp/p2t_bench_libtess2_fixtures"
+    stripBinary(libtess2Path)
+    reportArgs.add "libtess2=" & libtess2Path
   else:
     echo "skipping libtess2; expected vendor/libtess2 or set LIBTESS2_DIR=/path/to/libtess2"
 
@@ -678,14 +833,21 @@ task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri,
       let
         engine = variant[0]
         switches = variant[1]
-        outPath = "/tmp/p2t_" & engine.replace("-", "_")
-      sh "clang -std=gnu99 -O3 -Wno-deprecated-non-prototype -DNDEBUG " &
+        outPath = tmpExe("p2t_" & engine.replace("-", "_"))
+        cFlags = contenderCFlags()
+        linkFlags = contenderLinkFlags()
+      sh cCompiler() & " -std=gnu99 " & cFlags &
+        " -Wno-deprecated-non-prototype " &
+        quoteShell(
+          "-DBENCH_BUILD_FLAGS=\"" & cFlags & " " & linkFlags & "\""
+        ) & " " &
         "-DTRILIBRARY -DNO_TIMER " &
         "-DTRIANGLE_SWITCHES=\\\"" & switches & "\\\" " &
         "-DTRIANGLE_LABEL=\\\"" & engine & "\\\" " &
         "-I" & quoteShell(triangleDir) & " " &
         quoteShell(triangleDir / "triangle.c") &
-        " bench/bench_triangle.c -o " & quoteShell(outPath) & " -lm"
+        " bench/bench_triangle.c " & linkFlags &
+        " -o " & quoteShell(outPath) & " " & mathLibFlag()
       reportArgs.add engine & "=" & outPath
   else:
     echo "skipping Triangle; set TRIANGLE_DIR=/path/to/triangle containing triangle.c and triangle.h"
@@ -693,10 +855,10 @@ task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri,
   nimCompile(
     "bench/bench_compare_all",
     flags = "--mm:arc -d:release --opt:speed",
-    outPath = "/tmp/p2t_bench_compare_all",
-    nimcache = "/tmp/p2t_bench_compare_all_d",
+    outPath = comparePath,
+    nimcache = getTempDir() / "p2t_bench_compare_all_d",
   )
-  sh quoteShell("/tmp/p2t_bench_compare_all") & " " & quoteArgs(reportArgs)
+  sh quoteShell(comparePath) & " " & quoteArgs(reportArgs)
 
 task benchExternalContenders, "run external Delabella, CDT, and Fade2D contender benchmark":
   let delabellaDir = findDelabellaDir()
@@ -720,18 +882,29 @@ task benchExternalContenders, "run external Delabella, CDT, and Fade2D contender
       QuitFailure,
     )
 
-  let fadeLibDir = fade2dDir / "lib_mac"
-  sh "clang++ -std=c++17 -O3 -DNDEBUG " &
+  let
+    externalPath = tmpExe("p2t_external_contenders")
+    cFlags = contenderCFlags()
+    linkFlags = contenderLinkFlags()
+    fadeFlags = fade2dLinkFlags(fade2dDir)
+  if fade2dLibraryDir(fade2dDir).len == 0 and p2tFlags().len == 0:
+    quit(
+      "Fade2D library not found; set FADE2D_DIR to the SDK root and/or P2T_FLAGS with required -L/-l flags",
+      QuitFailure,
+    )
+  sh cxxCompiler() & " -std=c++17 " & cFlags & " " &
+    quoteShell(
+      "-DBENCH_BUILD_FLAGS=\"" & cFlags & " " & linkFlags & " " &
+        fadeFlags & "\""
+    ) & " " &
     "-I" & quoteShell(delabellaDir) & " " &
     "-I" & quoteShell(cdtDir / "CDT" / "include") & " " &
     "-I" & quoteShell(fade2dDir / "include_fade2d") & " " &
     "bench/bench_external_contenders.cpp " &
     quoteShell(delabellaDir / "delabella.cpp") & " " &
-    "-L" & quoteShell(fadeLibDir) & " -lfade2d " &
-    quoteShell(fadeLibDir / "libgmp.10.dylib") & " " &
-    "-Wl,-rpath," & quoteShell(fadeLibDir) & " " &
-    "-o /tmp/p2t_external_contenders"
-  sh quoteShell("/tmp/p2t_external_contenders")
+    linkFlags & " " & fadeFlags & " " &
+    "-o " & quoteShell(externalPath)
+  sh quoteShell(externalPath)
 
 task sizes, "report core p2t CDT struct sizes":
   nimRun(
@@ -787,24 +960,21 @@ task benchFastPoly2Tri, "compare p2t against local fast-poly2tri":
       "fast-poly2tri not found; expected vendor/fast-poly2tri or set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
       QuitFailure,
     )
+  let benchPath = tmpExe("p2t_bench_cross")
 
   nimCompile(
     "bench/bench_p2t",
     flags = "--mm:arc -d:release --opt:speed",
-    outPath = "/tmp/p2t_bench_cross",
-    nimcache = "/tmp/p2t_bench_cross_d",
+    outPath = benchPath,
+    nimcache = getTempDir() / "p2t_bench_cross_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_cross")
+  stripBinary(benchPath)
   echo "p2t"
-  sh quoteShell("/tmp/p2t_bench_cross")
+  sh quoteShell(benchPath)
 
-  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
-  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
-  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
-  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
-  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+  compileFastPoly2Tri(fastDir)
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_float"))
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_double"))
 
 task benchFastPoly2TriUnsafe, "compare unsafe CDT p2t against local fast-poly2tri":
   let fastDir = findFastPoly2TriDir()
@@ -813,24 +983,21 @@ task benchFastPoly2TriUnsafe, "compare unsafe CDT p2t against local fast-poly2tr
       "fast-poly2tri not found; expected vendor/fast-poly2tri or set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
       QuitFailure,
     )
+  let benchPath = tmpExe("p2t_bench_cross_unsafe_cdt")
 
   nimCompile(
     "bench/bench_p2t",
     flags = "--mm:arc -d:release --opt:speed -d:p2tUnsafeCdt",
-    outPath = "/tmp/p2t_bench_cross_unsafe_cdt",
-    nimcache = "/tmp/p2t_bench_cross_unsafe_cdt_d",
+    outPath = benchPath,
+    nimcache = getTempDir() / "p2t_bench_cross_unsafe_cdt_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_cross_unsafe_cdt")
+  stripBinary(benchPath)
   echo "p2t unsafe CDT"
-  sh quoteShell("/tmp/p2t_bench_cross_unsafe_cdt")
+  sh quoteShell(benchPath)
 
-  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
-  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
-  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
-  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
-  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+  compileFastPoly2Tri(fastDir)
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_float"))
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_double"))
 
 task benchFastPoly2TriArena, "compare arena CDT p2t against local fast-poly2tri":
   let fastDir = findFastPoly2TriDir()
@@ -839,24 +1006,21 @@ task benchFastPoly2TriArena, "compare arena CDT p2t against local fast-poly2tri"
       "fast-poly2tri not found; expected vendor/fast-poly2tri or set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
       QuitFailure,
     )
+  let benchPath = tmpExe("p2t_bench_cross_arena_cdt")
 
   nimCompile(
     "bench/bench_p2t",
     flags = "--mm:arc -d:release --opt:speed -d:p2tUnsafeCdt",
-    outPath = "/tmp/p2t_bench_cross_arena_cdt",
-    nimcache = "/tmp/p2t_bench_cross_arena_cdt_d",
+    outPath = benchPath,
+    nimcache = getTempDir() / "p2t_bench_cross_arena_cdt_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_cross_arena_cdt")
+  stripBinary(benchPath)
   echo "p2t arena unsafe CDT"
-  sh quoteShell("/tmp/p2t_bench_cross_arena_cdt")
+  sh quoteShell(benchPath)
 
-  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
-  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
-  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
-  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
-  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+  compileFastPoly2Tri(fastDir)
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_float"))
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_double"))
 
 task benchBestFastPoly2Tri, "compare best raw trusted p2t against local fast-poly2tri":
   let fastDir = findFastPoly2TriDir()
@@ -865,24 +1029,21 @@ task benchBestFastPoly2Tri, "compare best raw trusted p2t against local fast-pol
       "fast-poly2tri not found; expected vendor/fast-poly2tri or set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
       QuitFailure,
     )
+  let benchPath = tmpExe("p2t_bench_best")
 
   nimCompile(
     "bench/bench_p2t",
     flags = "--mm:arc -d:release --opt:speed -d:p2tUnsafeCdt -d:p2tFastRawCdt",
-    outPath = "/tmp/p2t_bench_best",
-    nimcache = "/tmp/p2t_bench_best_d",
+    outPath = benchPath,
+    nimcache = getTempDir() / "p2t_bench_best_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_best")
+  stripBinary(benchPath)
   echo "p2t best raw trusted CDT"
-  sh quoteShell("/tmp/p2t_bench_best")
+  sh quoteShell(benchPath)
 
-  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
-  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
-  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
-  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
-  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+  compileFastPoly2Tri(fastDir)
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_float"))
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_double"))
 
 task benchBestTuned, "run champion Nim p2t with Tier 1 tuned codegen flags":
   nimCompile(
@@ -915,24 +1076,21 @@ task benchBestTunedFastPoly2Tri, "compare champion Nim p2t against local fast-po
       "fast-poly2tri not found; expected vendor/fast-poly2tri or set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
       QuitFailure,
     )
+  let benchPath = tmpExe("p2t_bench_champion")
 
   nimCompile(
     "bench/bench_p2t",
     flags = ChampionFlags,
-    outPath = "/tmp/p2t_bench_champion",
-    nimcache = "/tmp/p2t_bench_champion_d",
+    outPath = benchPath,
+    nimcache = getTempDir() / "p2t_bench_champion_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_champion")
+  stripBinary(benchPath)
   echo "p2t champion: pointer arena + pdqsort + front hash default-on + Tier 1 tuned"
-  sh quoteShell("/tmp/p2t_bench_champion")
+  sh quoteShell(benchPath)
 
-  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
-  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
-  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
-  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
-  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+  compileFastPoly2Tri(fastDir)
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_float"))
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_double"))
 
 task benchBestFastPoly2TriFloat32, "compare best float32 raw trusted p2t against local fast-poly2tri":
   let fastDir = findFastPoly2TriDir()
@@ -941,24 +1099,21 @@ task benchBestFastPoly2TriFloat32, "compare best float32 raw trusted p2t against
       "fast-poly2tri not found; expected vendor/fast-poly2tri or set FAST_POLY2TRI_DIR=/path/to/fast-poly2tri",
       QuitFailure,
     )
+  let benchPath = tmpExe("p2t_bench_best_float32")
 
   nimCompile(
     "bench/bench_p2t",
     flags = "--mm:arc -d:release --opt:speed -d:p2tUnsafeCdt -d:p2tFloat32Cdt -d:p2tFastRawCdt",
-    outPath = "/tmp/p2t_bench_best_float32",
-    nimcache = "/tmp/p2t_bench_best_float32_d",
+    outPath = benchPath,
+    nimcache = getTempDir() / "p2t_bench_best_float32_d",
   )
-  sh "strip " & quoteShell("/tmp/p2t_bench_best_float32")
+  stripBinary(benchPath)
   echo "p2t best float32 raw trusted CDT"
-  sh quoteShell("/tmp/p2t_bench_best_float32")
+  sh quoteShell(benchPath)
 
-  let headerDefine = "-DFAST_POLY2TRI_HEADER=\\\"" & fastDir / "MPE_fastpoly2tri.h" & "\\\""
-  sh "clang -std=gnu99 -O3 -DNDEBUG " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_float -lm"
-  sh "clang -std=gnu99 -O3 -DNDEBUG -DMPE_POLY2TRI_USE_DOUBLE " & headerDefine &
-    " bench/bench_fastpoly2tri.c -o /tmp/p2t_fastpoly2tri_double -lm"
-  sh quoteShell("/tmp/p2t_fastpoly2tri_float")
-  sh quoteShell("/tmp/p2t_fastpoly2tri_double")
+  compileFastPoly2Tri(fastDir)
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_float"))
+  sh quoteShell(tmpExe("p2t_fastpoly2tri_double"))
 
 task benchParallel, "benchmark tessellateBatch scaling across threads":
   nimCompile(

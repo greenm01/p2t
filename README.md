@@ -76,6 +76,14 @@ Champion Nim configuration:
 - trusted raw path
 - Tier 1 tuned release flags
 
+Head-to-head contender builds use equivalent host-tuned release codegen where
+their toolchains support it: C/C++ references are built with `-O3 -DNDEBUG
+-flto` plus the platform-native CPU flag (`-mcpu=native` on Apple Silicon,
+`-march=native` on x86), and Nim benchmark binaries/wrappers receive the
+matching C/link flags through the Tier 1 tuned flag bundle. Nim benchmark
+binaries also use `--panics:on`; standalone C/C++ references have no direct
+analogue for that Nim-specific lowering option.
+
 Fixture stats:
 
 | Fixture | Points | Holes | Champion triangles | Notes |
@@ -92,16 +100,16 @@ Champion public-API results:
 
 | Fixture | no-validate | trusted | raw |
 | --- | ---: | ---: | ---: |
-| small-ui-quad | 0.334 / 0.355 | 0.135 / 0.140 | 0.101 / 0.101 |
-| medium-icon | 3.481 / 3.822 | 2.241 / 2.306 | 1.927 / 1.998 |
-| large-shape | 43.174 / 44.308 | 34.622 / 35.000 | 32.752 / 33.028 |
-| fixture-test | 0.336 / 0.337 | 0.186 / 0.190 | 0.149 / 0.154 |
-| diamond | 0.263 / 0.267 | 0.346 / 0.348 | 0.293 / 0.298 |
-| star | 0.520 / 0.526 | 0.276 / 0.283 | 0.231 / 0.242 |
-| dude-with-holes | 6.770 / 6.836 | 4.825 / 4.862 | 4.459 / 4.494 |
-| nazca-monkey | 99.580 / 101.930 | 74.670 / 75.570 | 66.800 / 70.180 |
-| nazca-heron | 76.750 / 77.120 | 58.040 / 58.410 | 54.520 / 55.480 |
-| organic-large | 313.330 / 316.040 | 248.240 / 259.970 | 230.960 / 241.550 |
+| small-ui-quad | 0.216 / 0.231 | 0.101 / 0.124 | 0.083 / 0.099 |
+| medium-icon | 3.525 / 3.712 | 2.504 / 2.726 | 2.264 / 2.401 |
+| large-shape | 46.024 / 50.072 | 39.010 / 40.838 | 34.070 / 35.240 |
+| fixture-test | 0.357 / 0.360 | 0.196 / 0.196 | 0.157 / 0.159 |
+| diamond | 0.286 / 0.287 | 0.345 / 0.363 | 0.300 / 0.309 |
+| star | 0.534 / 0.540 | 0.292 / 0.298 | 0.249 / 0.250 |
+| dude-with-holes | 7.082 / 7.454 | 4.954 / 5.064 | 4.695 / 4.779 |
+| nazca-monkey | 102.180 / 103.710 | 74.540 / 75.630 | 71.030 / 72.340 |
+| nazca-heron | 83.240 / 85.880 | 63.270 / 63.760 | 56.860 / 59.530 |
+| organic-large | 338.030 / 351.380 | 267.560 / 268.260 | 253.070 / 254.470 |
 
 Raw-path head-to-head:
 
@@ -110,13 +118,13 @@ column is replaced by the per-fixture best Triangle configuration.
 
 | Case | p2t raw | fast f32 | Triangle best | libtess2 | delta |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| fixture-test | 0.143 / 0.151 | 0.169 / 0.169 | 0.690 / 0.717 | 2.075 / 2.204 | +15.3% |
-| diamond | 0.288 / 0.290 | 0.308 / 0.312 | 0.916 / 0.958 | 2.495 / 2.535 | +6.3% |
-| star | 0.228 / 0.232 | 0.273 / 0.277 | 1.079 / 1.097 | 2.655 / 2.691 | +16.5% |
-| dude-with-holes | 4.378 / 4.406 | 4.417 / 4.452 | 10.255 / 10.285 | 14.201 / 14.370 | +0.9% |
-| nazca-monkey | 65.210 / 65.640 | 72.390 / 75.210 | 160.120 / 162.350 | 232.900 / 238.840 | +9.9% |
-| nazca-heron | 53.500 / 53.660 | 65.050 / 66.010 | 114.180 / 115.890 | 198.660 / 199.730 | +17.8% |
-| organic-large | 230.390 / 238.390 | failed | 774.220 / 807.270 | 1169.650 / 1181.680 | +70.2% vs Triangle |
+| fixture-test | 0.157 / 0.159 | 0.242 / 0.255 | 0.725 / 0.771 | 2.709 / 2.758 | +34.9% |
+| diamond | 0.300 / 0.309 | 0.402 / 0.427 | 0.938 / 0.979 | 2.872 / 3.527 | +25.3% |
+| star | 0.249 / 0.250 | 0.299 / 0.312 | 1.137 / 1.179 | 2.926 / 2.949 | +16.7% |
+| dude-with-holes | 4.695 / 4.779 | 4.835 / 4.877 | 10.557 / 12.377 | 14.399 / 14.651 | +2.9% |
+| nazca-monkey | 71.030 / 72.340 | 81.000 / 82.070 | 164.640 / 175.610 | 231.900 / 235.760 | +12.3% |
+| nazca-heron | 56.860 / 59.530 | 68.730 / 72.250 | 134.870 / 140.060 | 206.570 / 211.700 | +17.3% |
+| organic-large | 253.070 / 254.470 | failed | 863.350 / 883.830 | 1148.380 / 1152.980 | +70.7% vs Triangle |
 
 `fast-poly2tri` asserts in `MPE_EdgeEventPoints` on `organic-large`, so there is
 no valid timing for that fixture. The Nim implementation, Triangle, and libtess2
@@ -134,16 +142,16 @@ Full reproduction commands are in the
 
 | Case | p2t raw | Delabella | CDT | Fade2D | delta |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| small-ui-quad | 0.079 / 0.081 | 0.348 / 0.370 | 1.530 / 1.703 | 2.358 / 2.402 | +77.3% vs Delabella |
-| medium-icon | 1.924 / 2.023 | 62.318 / 62.724 | 29.845 / 30.079 | 274.627 / 277.202 | +93.6% vs CDT |
-| large-shape | 32.136 / 32.816 | 439.192 / 464.322 | 372.568 / 380.200 | 2525.106 / 2536.890 | +91.4% vs CDT |
-| fixture-test | 0.143 / 0.151 | 0.355 / 0.363 | 2.195 / 2.242 | 3.636 / 3.660 | +59.7% vs Delabella |
-| diamond | 0.288 / 0.290 | 0.748 / 0.774 | 3.458 / 3.493 | 8.431 / 8.446 | +61.5% vs Delabella |
-| star | 0.228 / 0.232 | 0.679 / 0.686 | 3.288 / 3.304 | 7.341 / 7.410 | +66.4% vs Delabella |
-| dude-with-holes | 4.378 / 4.406 | 9.426 / 9.819 | 32.822 / 33.537 | 63.381 / 64.374 | +53.6% vs Delabella |
-| nazca-monkey | 65.210 / 65.640 | 156.900 / 159.230 | 498.310 / 525.580 | 1130.090 / 1142.310 | +58.4% vs Delabella |
-| nazca-heron | 53.500 / 53.660 | 124.120 / 127.030 | 417.360 / 422.380 | 888.550 / 904.980 | +56.9% vs Delabella |
-| organic-large | 230.390 / 238.390 | 1151.140 / 1162.290 | 1783.980 / 1792.170 | 32833.570 / 33004.840 | +80.0% vs Delabella |
+| small-ui-quad | 0.083 / 0.099 | 0.241 / 0.255 | 1.605 / 1.749 | 2.580 / 2.911 | +65.4% vs Delabella |
+| medium-icon | 2.264 / 2.401 | 67.174 / 67.445 | 30.555 / 31.165 | 290.432 / 291.244 | +92.6% vs CDT |
+| large-shape | 34.070 / 35.240 | 510.266 / 579.064 | 403.342 / 429.738 | 2686.892 / 2687.568 | +91.6% vs CDT |
+| fixture-test | 0.157 / 0.159 | 0.329 / 0.335 | 2.078 / 2.118 | 3.816 / 3.839 | +52.2% vs Delabella |
+| diamond | 0.300 / 0.309 | 0.745 / 0.754 | 3.276 / 3.381 | 8.650 / 8.761 | +59.7% vs Delabella |
+| star | 0.249 / 0.250 | 0.653 / 0.688 | 3.082 / 3.119 | 7.794 / 7.844 | +61.9% vs Delabella |
+| dude-with-holes | 4.695 / 4.779 | 9.594 / 9.801 | 32.693 / 33.028 | 66.638 / 66.977 | +51.1% vs Delabella |
+| nazca-monkey | 71.030 / 72.340 | 153.880 / 155.260 | 491.780 / 507.860 | 1190.120 / 1227.680 | +53.8% vs Delabella |
+| nazca-heron | 56.860 / 59.530 | 118.770 / 120.610 | 409.030 / 417.270 | 943.200 / 983.560 | +52.1% vs Delabella |
+| organic-large | 253.070 / 254.470 | 1125.050 / 1133.560 | 1784.250 / 1859.380 | 33969.460 / 34354.250 | +77.5% vs Delabella |
 
 For the public fast path that materializes `TessResult.triangles`, see the
 [`tessellateTrusted` benchmark](docs/final-head-to-head.md#trusted-public-api-check).
@@ -183,6 +191,12 @@ Benchmark comparisons use vendored `fast-poly2tri` and `libtess2` sources under
 
 The external contenders task also stays external-only. Set `DELABELLA_DIR`,
 `CDT_DIR`, and `FADE2D_DIR` before running `nimble benchExternalContenders`.
+Use `CC`/`CXX` to override the C/C++ compilers. Use `P2T_FLAGS` for
+platform-specific include, library, and runtime-linker paths needed by local
+SDKs, for example `-I/opt/foo/include -L/opt/foo/lib -Wl,-rpath,/opt/foo/lib`.
+The harness also checks `getTempDir()/p2t-contenders`; on Unix/macOS it checks
+`/tmp/p2t-contenders` and `/private/tmp/p2t-contenders` as convenience
+fallbacks for local benchmark checkouts.
 
 ## References
 

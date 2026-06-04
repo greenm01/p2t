@@ -15,6 +15,10 @@
 
 #define BENCH_ROUNDS 5
 
+#ifndef BENCH_BUILD_FLAGS
+#define BENCH_BUILD_FLAGS "unknown"
+#endif
+
 typedef struct BenchPoint {
   double x;
   double y;
@@ -256,6 +260,7 @@ int main(void) {
   const char *precision = "fast-poly2tri float";
 #endif
   printf("%s\n", precision);
+  printf("config,buildFlags,%s\n", BENCH_BUILD_FLAGS);
   fflush(stdout);
   bench_case("fixture-test", "tests/fixtures/test.dat", 10000);
   bench_case("diamond", "tests/fixtures/diamond.dat", 10000);

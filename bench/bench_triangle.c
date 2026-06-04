@@ -22,6 +22,10 @@
 
 #define BENCH_ROUNDS 5
 
+#ifndef BENCH_BUILD_FLAGS
+#define BENCH_BUILD_FLAGS "unknown"
+#endif
+
 typedef struct BenchPoint {
   double x;
   double y;
@@ -448,6 +452,7 @@ static void bench_dude(void) {
 int main(void) {
   printf("%s\n", TRIANGLE_LABEL);
   printf("config,triangleSwitches,%s\n", TRIANGLE_SWITCHES);
+  printf("config,buildFlags,%s\n", BENCH_BUILD_FLAGS);
   fflush(stdout);
   bench_contour("small-ui-quad", 10000, small_quad());
   bench_contour("medium-icon", 2000, regular_polygon(48, 50));
