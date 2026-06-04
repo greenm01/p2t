@@ -111,6 +111,9 @@ Champion public-API results:
 | nazca-heron | 83.240 / 85.880 | 63.270 / 63.760 | 56.860 / 59.530 |
 | organic-large | 338.030 / 351.380 | 267.560 / 268.260 | 253.070 / 254.470 |
 
+The raw column is the fastest workspace-backed p2t path. For exactly what each
+column times, see the [final benchmark notes](docs/final-head-to-head.md).
+
 Raw-path head-to-head:
 
 The faster `fast-poly2tri` float run stays in the table; the slower double

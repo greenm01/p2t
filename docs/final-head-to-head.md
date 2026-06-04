@@ -66,6 +66,18 @@ is p2t raw's best-time advantage over the fastest non-p2t CDT reference for that
 case. Benchmark binaries emit `config,...` rows before timing rows so the exact
 backend switches and build flags stay attached to each run.
 
+What is timed:
+
+- `p2t no-validate` calls `tessellate` with input validation turned off, then
+  builds `TessResult.triangles`.
+- `p2t trusted` calls `tessellateTrusted`. It assumes the input has already been
+  oriented and also builds `TessResult.triangles`.
+- `p2t raw` calls `tessellateTrustedRaw`. It assumes trusted input and leaves the
+  triangles in workspace storage instead of building the public triangle seq.
+- The `fast-poly2tri`, Triangle, libtess2, Delabella, CDT, and Fade2D timings do
+  not include a separate validation pass. Triangle gets one untimed preflight
+  run; the timed loop calls Triangle and frees its output.
+
 ## Results
 
 The faster `fast-poly2tri` float run stays in the table; the slower double
