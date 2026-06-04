@@ -200,6 +200,10 @@ else:
   template statInc(t: ptr ArenaTriangle, field: untyped) =
     discard
 
+template incircleProfInc(ws: var ArenaWorkspace, field: untyped) =
+  when defined(p2tIncircleProf):
+    ws.statInc(field)
+
 proc resetCdt(ws: var ArenaWorkspace) =
   ws.pointCount = 0
   ws.edgeCount = 0
@@ -1346,8 +1350,7 @@ proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
     for i in 0 .. 2:
       ws.statInc(legalizeEdges)
       if t.hasFlag(delaunayFlag(i)):
-        when defined(p2tIncircleProf):
-          ws.statInc(legalizeSkipDelaunay)
+        ws.incircleProfInc(legalizeSkipDelaunay)
         continue
 
       let ot = t.neighbors[i]
@@ -1364,9 +1367,9 @@ proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
         if oppositeConstrained or oppositeDelaunay:
           when defined(p2tIncircleProf):
             if oppositeConstrained:
-              ws.statInc(legalizeSkipConstrained)
+              ws.incircleProfInc(legalizeSkipConstrained)
             if oppositeDelaunay:
-              ws.statInc(legalizeSkipOppositeDelaunay)
+              ws.incircleProfInc(legalizeSkipOppositeDelaunay)
           t.setFlag(constrainedFlag(i), oppositeConstrained)
           continue
 
@@ -1393,8 +1396,7 @@ proc legalize(ws: var ArenaWorkspace, t: ptr ArenaTriangle): bool =
           result = true
           return
       else:
-        when defined(p2tIncircleProf):
-          ws.statInc(legalizeNilNeighbors)
+        ws.incircleProfInc(legalizeNilNeighbors)
     result = false
 
 proc fill(ws: var ArenaWorkspace, n: ptr ArenaNode) {.inline.} =
