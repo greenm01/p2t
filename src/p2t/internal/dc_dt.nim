@@ -303,11 +303,56 @@ proc markProtectedEdge*(ws: var DcWorkspace, a, b: int): bool =
         break
   true
 
+proc pointOnSegment(points: openArray[Vec2], segment: array[2, int], point: int): bool =
+  if point == segment[0] or point == segment[1]:
+    return true
+
+  let
+    a = points[segment[0]]
+    b = points[segment[1]]
+    p = points[point]
+  if abs(orient(a, b, p)) > 1e-12:
+    return false
+
+  p.x >= min(a.x, b.x) - 1e-12 and p.x <= max(a.x, b.x) + 1e-12 and
+    p.y >= min(a.y, b.y) - 1e-12 and p.y <= max(a.y, b.y) + 1e-12
+
+proc markProtectedSegment*(ws: var DcWorkspace, segment: array[2, int]): bool =
+  if ws.markProtectedEdge(segment[0], segment[1]):
+    return true
+
+  var chain: seq[int]
+  for point in 0 ..< ws.points.len:
+    if pointOnSegment(ws.points, segment, point):
+      chain.add point
+  if chain.len < 2:
+    return false
+
+  let points = ws.points
+  let useX =
+    abs(points[segment[1]].x - points[segment[0]].x) >=
+    abs(points[segment[1]].y - points[segment[0]].y)
+  chain.sort(
+    proc(a, b: int): int =
+      if useX:
+        cmp(points[a].x, points[b].x)
+      else:
+        cmp(points[a].y, points[b].y)
+  )
+
+  for i in 1 ..< chain.len:
+    if ws.findTriangleEdge(chain[i - 1].int32, chain[i].int32).tri == DcNil:
+      return false
+
+  for i in 1 ..< chain.len:
+    discard ws.markProtectedEdge(chain[i - 1], chain[i])
+  true
+
 proc markProtectedSegments*(
     ws: var DcWorkspace, segments: openArray[array[2, int]]
 ): SegmentMarkResult =
   for seg in segments:
-    if ws.markProtectedEdge(seg[0], seg[1]):
+    if ws.markProtectedSegment(seg):
       inc result.marked
     else:
       inc result.missing
@@ -415,7 +460,7 @@ proc recoverSegmentByFlips(
 ): bool =
   let maxAttempts = max(1, ws.triangles.len * MaxRecoveryFlipFactor)
   for _ in 0 ..< maxAttempts:
-    if ws.markProtectedEdge(segment[0], segment[1]):
+    if ws.markProtectedSegment(segment):
       return true
 
     let crossedEdges = ws.crossedEdgesForSegment(segment)
@@ -430,13 +475,13 @@ proc recoverSegmentByFlips(
     if not flipped:
       return false
 
-  ws.markProtectedEdge(segment[0], segment[1])
+  ws.markProtectedSegment(segment)
 
 proc recoverSimpleSegments*(
     ws: var DcWorkspace, segments: openArray[array[2, int]]
 ): int =
   for segment in segments:
-    if ws.findTriangleEdge(segment[0].int32, segment[1].int32).tri != DcNil:
+    if ws.markProtectedSegment(segment):
       continue
     let work = SegmentRecoveryWork(
       segment: segment, crossedEdges: ws.crossedEdgesForSegment(segment)

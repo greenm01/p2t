@@ -118,3 +118,23 @@ reportRecoveryCase(
   ],
   @[[3, 8]],
 )
+
+reportRecoveryCase(
+  "through-vertex-segment-chain",
+  @[
+    vec2(0, 0),
+    vec2(10, 0),
+    vec2(10, 10),
+    vec2(0, 10),
+    vec2(4, 3),
+    vec2(6, 7),
+    vec2(5, 5),
+  ],
+  @[[0, 2]],
+)
+
+reportRecoveryCase(
+  "conflicting-diagonals",
+  @[vec2(0, 0), vec2(10, 0), vec2(10, 10), vec2(0, 10), vec2(5, 4)],
+  @[[0, 1], [1, 2], [2, 3], [3, 0], [0, 2], [1, 3]],
+)
