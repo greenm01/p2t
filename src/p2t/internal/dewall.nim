@@ -109,6 +109,7 @@ type
   Split = object
     cut: float64
     left, right: seq[int]
+    hasSideTies: bool
     side: seq[uint8]
 
   WallBuild = object
@@ -669,16 +670,19 @@ proc classifySplit[Axis: static[int]](ctx: DewallContext, idx: seq[int]): Split 
   let
     leftMax = maxPartitionLeft[Axis](ctx, result.left, mid)
     rightMin = result.left[mid]
-  result.cut = (coord(ctx.points, leftMax, Axis) + coord(ctx.points, rightMin, Axis)) *
-    0.5
+    leftCoord = coord(ctx.points, leftMax, Axis)
+    rightCoord = coord(ctx.points, rightMin, Axis)
+  result.cut = (leftCoord + rightCoord) * 0.5
   result.right = result.left[mid ..< result.left.len]
   result.left.setLen(mid)
-  result.side = newSeq[uint8](ctx.points.len)
+  result.hasSideTies = leftCoord == rightCoord
+  if result.hasSideTies:
+    result.side = newSeq[uint8](ctx.points.len)
 
-  for i in result.left:
-    result.side[i] = 1'u8
-  for i in result.right:
-    result.side[i] = 2'u8
+    for i in result.left:
+      result.side[i] = 1'u8
+    for i in result.right:
+      result.side[i] = 2'u8
 
 proc straddles[Axis: static[int]](points: seq[Vec2], h: ActiveEdge, split: Split): bool =
   let
@@ -686,9 +690,20 @@ proc straddles[Axis: static[int]](points: seq[Vec2], h: ActiveEdge, split: Split
     cb = coord(points, h.b, Axis)
   (ca < split.cut) != (cb < split.cut)
 
-proc bothIn(h: ActiveEdge, split: Split, which: int): bool =
-  let marker = uint8(which)
-  split.side[h.a] == marker and split.side[h.b] == marker
+proc bothIn[Axis: static[int]](
+    points: seq[Vec2], h: ActiveEdge, split: Split, which: int
+): bool =
+  if split.hasSideTies:
+    let marker = uint8(which)
+    return split.side[h.a] == marker and split.side[h.b] == marker
+
+  let
+    aLeft = coord(points, h.a, Axis) < split.cut
+    bLeft = coord(points, h.b, Axis) < split.cut
+  if which == 1:
+    aLeft and bLeft
+  else:
+    not aLeft and not bLeft
 
 proc update(list: var Table[EdgeKey, ActiveEdge], closed: Table[EdgeKey, bool], h: ActiveEdge) =
   let k = key(h)
@@ -735,9 +750,9 @@ proc routeInsert[Axis: static[int]](
     return
   if straddles[Axis](ctx.points, h, split):
     insert(wall, closed, h)
-  elif bothIn(h, split, 1):
+  elif bothIn[Axis](ctx.points, h, split, 1):
     insert(afl1, closed, h)
-  elif bothIn(h, split, 2):
+  elif bothIn[Axis](ctx.points, h, split, 2):
     insert(afl2, closed, h)
 
 proc routeUpdate[Axis: static[int]](
@@ -751,9 +766,9 @@ proc routeUpdate[Axis: static[int]](
     return
   if straddles[Axis](ctx.points, h, split):
     update(wall, closed, h)
-  elif bothIn(h, split, 1):
+  elif bothIn[Axis](ctx.points, h, split, 1):
     update(afl1, closed, h)
-  elif bothIn(h, split, 2):
+  elif bothIn[Axis](ctx.points, h, split, 2):
     update(afl2, closed, h)
 
 template emitUpdated(
