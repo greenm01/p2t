@@ -83,6 +83,30 @@ proc benchDewall[Parallel: static[bool]](
   echo &"dewall-{label}: {Iterations} runs, {reportedTriangles} triangles, " &
     &"best {elapsed[0]} us, median {elapsed[BenchRounds div 2]} us"
 
+proc benchDewallPrepared[Parallel: static[bool]](
+    label: string, points: seq[Vec2], options: DewallOptions
+) =
+  var ws: DewallPreparedWorkspace
+  ws.prepareDewallWorkspace(points)
+
+  let warm = dewallTriangulatePreparedStatic[Parallel](ws, options)
+  validate(points, warm)
+
+  var elapsed = newSeq[int64](BenchRounds)
+  var reportedTriangles = 0
+  for round in 0 ..< BenchRounds:
+    var triangles = 0
+    let start = getMonoTime()
+    for _ in 0 ..< Iterations:
+      let tris = dewallTriangulatePreparedStatic[Parallel](ws, options)
+      triangles += tris.len
+    elapsed[round] = inMicroseconds(getMonoTime() - start)
+    reportedTriangles = triangles
+
+  elapsed.sort()
+  echo &"dewall-{label}: {Iterations} runs, {reportedTriangles} triangles, " &
+    &"best {elapsed[0]} us, median {elapsed[BenchRounds div 2]} us"
+
 if paramCount() < 1:
   quit(
     "usage: bench_dewall_triangle_dt_compare /path/to/triangle_dt [fixture.dat]",
@@ -106,7 +130,8 @@ let workers = cpuinfo.countProcessors()
 
 var serialOptions = defaultDewallOptions()
 serialOptions.parallel = false
-benchDewall[false]("serial-dt", points, serialOptions)
+benchDewall[false]("full-serial-dt", points, serialOptions)
+benchDewallPrepared[false]("prepared-serial-dt", points, serialOptions)
 
 var autoOptions = defaultDewallOptions()
 autoOptions.parallel = true
@@ -115,6 +140,8 @@ if autoOptions.prewallLeafTarget <= 1:
   autoOptions.parallel = false
 
 if autoOptions.parallel:
-  benchDewall[true]("auto-dt", points, autoOptions)
+  benchDewall[true]("full-auto-dt", points, autoOptions)
+  benchDewallPrepared[true]("prepared-auto-dt", points, autoOptions)
 else:
-  benchDewall[false]("auto-dt", points, autoOptions)
+  benchDewall[false]("full-auto-dt", points, autoOptions)
+  benchDewallPrepared[false]("prepared-auto-dt", points, autoOptions)

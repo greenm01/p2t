@@ -129,6 +129,10 @@ type
     when defined(p2tDewallHotStats):
       stats: ptr DewallHotStats
 
+  DewallPreparedWorkspace* = object
+    points: seq[Vec2]
+    idx: seq[int]
+
   UniformGrid = object
     enabled: bool
     minX, minY: float64
@@ -974,6 +978,15 @@ proc pointIndexSeq(count: int): seq[int] =
   for i in 0 ..< count:
     result[i] = i
 
+proc prepareDewallWorkspace*(
+    ws: var DewallPreparedWorkspace, points: openArray[Vec2]
+) =
+  ws.points.setLen(points.len)
+  ws.idx.setLen(points.len)
+  for i in 0 ..< points.len:
+    ws.points[i] = points[i]
+    ws.idx[i] = i
+
 proc finishProfileTriangles(
     triangles: openArray[array[3, int]], profile: var DewallProfile
 ) =
@@ -1098,6 +1111,19 @@ proc dewallTriangulateStatic*[Parallel: static[bool]](
       return dedupeTriangles(ctx.points, dewallPrewall[Parallel](ctx, idx))
 
   dedupeTriangles(ctx.points, dewallRec[Parallel, 0](ctx, idx, @[], true, 0))
+
+proc dewallTriangulatePreparedStatic*[Parallel: static[bool]](
+    ws: DewallPreparedWorkspace, options = defaultDewallOptions()
+): seq[array[3, int]] =
+  if ws.points.len < 3:
+    return @[]
+
+  let ctx = DewallContext(points: ws.points, options: options)
+  when Parallel:
+    if options.parallel and options.prewallLeafTarget > 1:
+      return dedupeTriangles(ctx.points, dewallPrewall[Parallel](ctx, ws.idx))
+
+  dedupeTriangles(ctx.points, dewallRec[Parallel, 0](ctx, ws.idx, @[], true, 0))
 
 when defined(p2tDewallHotStats):
   proc dewallTriangulateWithHotStats*(

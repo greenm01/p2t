@@ -111,10 +111,15 @@ static int triangle_once(struct triangulateio *input) {
   return triangles;
 }
 
-static void bench_case(const char *name, const char *fixture, int iterations) {
-  BenchPoint *points = NULL;
-  int count = read_points(fixture, &points);
+static void print_result(const char *name, int iterations,
+                         unsigned long long triangles, double *times) {
+  sort_times(times, BENCH_ROUNDS);
+  printf("%s: %d runs, %llu triangles, best %.0f us, median %.0f us\n", name,
+         iterations, triangles, times[0], times[BENCH_ROUNDS / 2]);
+}
 
+static void bench_prepared(const char *name, const BenchPoint *points, int count,
+                           int iterations) {
   struct triangulateio input;
   init_input(points, count, &input);
   int validation = triangle_once(&input);
@@ -134,12 +139,45 @@ static void bench_case(const char *name, const char *fixture, int iterations) {
     times[round] = (now_seconds() - start) * 1000000.0;
     reported_triangles = triangles;
   }
-  sort_times(times, BENCH_ROUNDS);
-
-  printf("%s: %d runs, %llu triangles, best %.0f us, median %.0f us\n", name,
-         iterations, reported_triangles, times[0], times[BENCH_ROUNDS / 2]);
-
+  print_result(name, iterations, reported_triangles, times);
   free_input(&input);
+}
+
+static void bench_full(const char *name, const BenchPoint *points, int count,
+                       int iterations) {
+  struct triangulateio validation_input;
+  init_input(points, count, &validation_input);
+  int validation = triangle_once(&validation_input);
+  free_input(&validation_input);
+  if (validation <= 0) {
+    fprintf(stderr, "%s failed Triangle DT validation\n", name);
+    exit(1);
+  }
+
+  double times[BENCH_ROUNDS];
+  unsigned long long reported_triangles = 0;
+  for (int round = 0; round < BENCH_ROUNDS; ++round) {
+    unsigned long long triangles = 0;
+    double start = now_seconds();
+    for (int i = 0; i < iterations; ++i) {
+      struct triangulateio input;
+      init_input(points, count, &input);
+      triangles += (unsigned long long)triangle_once(&input);
+      free_input(&input);
+    }
+    times[round] = (now_seconds() - start) * 1000000.0;
+    reported_triangles = triangles;
+  }
+  print_result(name, iterations, reported_triangles, times);
+}
+
+static void bench_case(const char *fixture, int iterations) {
+  BenchPoint *points = NULL;
+  int count = read_points(fixture, &points);
+
+  bench_prepared("triangle-prepared-dt", points, count, iterations);
+  bench_full("triangle-full-dt", points, count, iterations);
+
   free(points);
 }
 
@@ -153,6 +191,6 @@ int main(int argc, char **argv) {
 
   printf("triangle-dt\n");
   printf("config,triangleSwitches,%s\n", TRIANGLE_SWITCHES);
-  bench_case("nazca-heron", fixture, iterations);
+  bench_case(fixture, iterations);
   return 0;
 }
