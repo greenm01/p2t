@@ -414,6 +414,13 @@ task testDewallHotStats, "run experimental DeWall hot-stats tests":
     nimcache = "/tmp/p2t_test_dewall_hot_stats_d",
   )
 
+task testDcDt, "run experimental Triangle-style DT foundation tests":
+  nimRun(
+    "tests/test_dc_dt",
+    outPath = "/tmp/p2t_test_dc_dt",
+    nimcache = "/tmp/p2t_test_dc_dt_d",
+  )
+
 task testUnsafeCdt, "run p2t tests with CDT runtime checks disabled":
   nimRun(
     "tests/test_p2t",
@@ -1171,5 +1178,15 @@ task benchDewallHotStats, "report experimental DeWall hot-path counters":
   sh "strip " & quoteShell("/tmp/p2t_bench_dewall_hot_stats")
   sh quoteShell("/tmp/p2t_bench_dewall_hot_stats")
 
+task benchDcDt, "benchmark experimental Triangle-style DT foundation":
+  nimCompile(
+    "bench/bench_dc_dt",
+    flags = "--mm:arc -d:release --opt:speed " & TunedFlags,
+    outPath = "/tmp/p2t_bench_dc_dt",
+    nimcache = "/tmp/p2t_bench_dc_dt_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_dc_dt")
+  sh quoteShell("/tmp/p2t_bench_dc_dt")
+
 task tidy, "format p2t sources":
-  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/capi.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/internal/dewall.nim src/p2t/triangulate.nim tests/test_public_api.nim tests/test_p2t.nim tests/test_dewall.nim tests/test_dewall_hot_stats.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/bench_stress_small.nim bench/bench_normalized_trusted.nim bench/bench_dewall.nim bench/bench_dewall_profile.nim bench/bench_dewall_hot_stats.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
+  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/capi.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/internal/dewall.nim src/p2t/internal/dc_dt.nim src/p2t/triangulate.nim tests/test_public_api.nim tests/test_p2t.nim tests/test_dewall.nim tests/test_dewall_hot_stats.nim tests/test_dc_dt.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/bench_stress_small.nim bench/bench_normalized_trusted.nim bench/bench_dewall.nim bench/bench_dewall_profile.nim bench/bench_dewall_hot_stats.nim bench/bench_dc_dt.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
