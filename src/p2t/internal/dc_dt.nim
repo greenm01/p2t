@@ -11,6 +11,7 @@
 
 import std/algorithm
 
+import ../geometry
 import ../types
 import ./dewall
 
@@ -31,6 +32,10 @@ type
     edge: int8
     used: bool
 
+  SegmentRecoveryWork* = object
+    segment*: array[2, int]
+    crossedEdges*: seq[array[2, int]]
+
   DcTriangle* = object
     vertices*: array[3, int32]
     neighbors*: array[3, DcTriangleId]
@@ -42,17 +47,19 @@ type
     rawTriangles*: seq[DcTriangleId]
     order: seq[int]
     edgeTable: seq[EdgeSlot]
+    recoveryWork*: seq[SegmentRecoveryWork]
     queue: seq[DcTriangleId]
 
   DcRawResult* = object
     workspace*: ptr DcWorkspace
 
   SegmentMarkResult* = object
-    marked*, missing*: int
+    marked*, missing*, recovered*: int
 
   DcCdtRawResult* = object
     raw*: DcRawResult
     segments*: SegmentMarkResult
+    recoveryWork*: int
 
 template protectedFlag(edge: int): uint32 =
   Protected0 shl edge
@@ -63,6 +70,7 @@ proc resetDcDt*(ws: var DcWorkspace) =
   ws.rawTriangles.setLen(0)
   ws.order.setLen(0)
   ws.edgeTable.setLen(0)
+  ws.recoveryWork.setLen(0)
   ws.queue.setLen(0)
 
 proc reserveDcDt*(ws: var DcWorkspace, pointCount: int) =
@@ -82,6 +90,9 @@ proc reserveDcDt*(ws: var DcWorkspace, pointCount: int) =
   if ws.queue.len < triCap:
     ws.queue.setLen(triCap)
     ws.queue.setLen(0)
+  if ws.recoveryWork.len < pointCount:
+    ws.recoveryWork.setLen(pointCount)
+    ws.recoveryWork.setLen(0)
 
 proc triangleCount*(raw: DcRawResult): int {.inline.} =
   raw.workspace[].rawTriangles.len
@@ -114,6 +125,28 @@ proc edgeEndpoints(vertices: array[3, int32], edge: int): EdgeRef {.inline.} =
     EdgeRef(a: vertices[2], b: vertices[0])
   else:
     EdgeRef(a: vertices[0], b: vertices[1])
+
+proc edgePair(e: EdgeRef): array[2, int] {.inline.} =
+  [e.a.int, e.b.int]
+
+proc segmentProperlyCrossesEdge(
+    points: openArray[Vec2], segment, edge: array[2, int]
+): bool =
+  if segment[0] == edge[0] or segment[0] == edge[1] or
+      segment[1] == edge[0] or segment[1] == edge[1]:
+    return false
+
+  let
+    a = points[segment[0]]
+    b = points[segment[1]]
+    c = points[edge[0]]
+    d = points[edge[1]]
+    o1 = orient(a, b, c)
+    o2 = orient(a, b, d)
+    o3 = orient(c, d, a)
+    o4 = orient(c, d, b)
+  ((o1 > 0.0 and o2 < 0.0) or (o1 < 0.0 and o2 > 0.0)) and
+    ((o3 > 0.0 and o4 < 0.0) or (o3 < 0.0 and o4 > 0.0))
 
 proc buildInsertionOrder(ws: var DcWorkspace, pointCount: int) =
   ws.order.setLen(pointCount)
@@ -166,6 +199,40 @@ proc buildTopology(ws: var DcWorkspace) =
           ws.triangles[other.tri].neighbors[other.edge.int] = triId.DcTriangleId
           break
         pos = (pos + 1) and mask
+
+proc setTriangle(
+    ws: var DcWorkspace, triId: DcTriangleId, a, b, c: int32
+): bool =
+  if a == b or b == c or a == c:
+    return false
+  if orient(ws.points[a.int], ws.points[b.int], ws.points[c.int]) > 0.0:
+    ws.triangles[triId].vertices = [a, b, c]
+  else:
+    ws.triangles[triId].vertices = [a, c, b]
+  ws.triangles[triId].neighbors = [DcNil, DcNil, DcNil]
+  ws.triangles[triId].flags = 0
+  true
+
+proc pairEquals(a, b: array[2, int]): bool {.inline.} =
+  (a[0] == b[0] and a[1] == b[1]) or (a[0] == b[1] and a[1] == b[0])
+
+proc canonicalEdgePair(e: EdgeRef): array[2, int] {.inline.} =
+  result = e.edgePair
+  if result[0] > result[1]:
+    swap(result[0], result[1])
+
+proc containsPair(edges: openArray[array[2, int]], needle: array[2, int]): bool =
+  for edge in edges:
+    if edge.pairEquals(needle):
+      return true
+
+proc findNeighborEdge(
+    ws: DcWorkspace, triId, neighbor: DcTriangleId
+): int {.inline.} =
+  for edge in 0 ..< 3:
+    if ws.triangles[triId].neighbors[edge] == neighbor:
+      return edge
+  -1
 
 proc loadDcDtTriangles*(
     ws: var DcWorkspace,
@@ -241,6 +308,76 @@ proc markProtectedSegments*(
     else:
       inc result.missing
 
+proc collectSegmentRecoveryWork*(
+    ws: var DcWorkspace, segments: openArray[array[2, int]]
+) =
+  ## Record the DT edges each unrecovered segment crosses. Multi-edge recovery
+  ## still uses this as the explicit handoff to the next CDT phase.
+  ws.recoveryWork.setLen(0)
+  for seg in segments:
+    if ws.findTriangleEdge(seg[0].int32, seg[1].int32).tri != DcNil:
+      continue
+
+    var work = SegmentRecoveryWork(segment: seg)
+    for tri in ws.triangles:
+      for edge in 0 ..< 3:
+        let e = edgeEndpoints(tri.vertices, edge).canonicalEdgePair
+        if work.crossedEdges.containsPair(e):
+          continue
+        if segmentProperlyCrossesEdge(ws.points, seg, e):
+          work.crossedEdges.add e
+    ws.recoveryWork.add work
+
+proc recoverSingleCrossingSegment(
+    ws: var DcWorkspace, work: SegmentRecoveryWork
+): bool =
+  if work.crossedEdges.len != 1:
+    return false
+
+  let
+    segment = work.segment
+    crossed = work.crossedEdges[0]
+    found = ws.findTriangleEdge(crossed[0].int32, crossed[1].int32)
+  if found.tri == DcNil:
+    return false
+
+  let neighbor = ws.triangles[found.tri].neighbors[found.edge]
+  if neighbor == DcNil:
+    return false
+
+  let neighborEdge = ws.findNeighborEdge(neighbor, found.tri)
+  if neighborEdge < 0:
+    return false
+
+  let
+    oppositeA = ws.triangles[found.tri].vertices[found.edge].int
+    oppositeB = ws.triangles[neighbor].vertices[neighborEdge].int
+  if not [oppositeA, oppositeB].pairEquals(segment):
+    return false
+
+  let
+    a = segment[0].int32
+    b = segment[1].int32
+    u = crossed[0].int32
+    v = crossed[1].int32
+  if not ws.setTriangle(found.tri, a, b, u):
+    return false
+  if not ws.setTriangle(neighbor, b, a, v):
+    return false
+
+  ws.buildTopology()
+  discard ws.markProtectedEdge(segment[0], segment[1])
+  true
+
+proc recoverSimpleSegments*(
+    ws: var DcWorkspace, segments: openArray[array[2, int]]
+): int =
+  ws.collectSegmentRecoveryWork(segments)
+  let workItems = ws.recoveryWork
+  for work in workItems:
+    if ws.recoverSingleCrossingSegment(work):
+      inc result
+
 proc isProtected(tri: DcTriangle, edge: int): bool {.inline.} =
   (tri.flags and protectedFlag(edge)) != 0
 
@@ -283,12 +420,25 @@ proc triangulateDcCdtRaw*(
     segments: openArray[array[2, int]],
 ): DcCdtRawResult =
   ## Build DeWall's unconstrained DT, load it into dc_dt topology, mark the
-  ## requested protected segments when they are already present as DT edges, and
-  ## flood-delete exterior triangles across unprotected hull edges.
+  ## requested protected segments, recover one-crossing diagonals by a local
+  ## edge flip, and flood-delete exterior triangles across unprotected hull
+  ## edges.
   ##
-  ## `segments.missing` is the explicit handoff to the future segment-recovery
-  ## step. A nonzero value means the current output is not a full CDT for that
-  ## segment set.
+  ## `segments.missing` is the explicit handoff to multi-edge segment recovery.
+  ## A nonzero value means the current output is not a full CDT for that segment
+  ## set.
   result.raw = ws.triangulateDcDtRaw(points)
   result.segments = ws.markProtectedSegments(segments)
+  if result.segments.missing > 0:
+    let recovered = ws.recoverSimpleSegments(segments)
+    result.segments.recovered = recovered
+    if recovered > 0:
+      result.segments = ws.markProtectedSegments(segments)
+      result.segments.recovered = recovered
+    if result.segments.missing > 0:
+      ws.collectSegmentRecoveryWork(segments)
+      result.recoveryWork = ws.recoveryWork.len
+    else:
+      ws.recoveryWork.setLen(0)
+      result.recoveryWork = 0
   ws.markExterior()

@@ -75,6 +75,14 @@ proc benchCdtCase(
   echo &"{name}: {iterations} runs, {reportedTriangles} triangles, " &
     &"best {times[0]} us, median {times[BenchRounds div 2]} us"
 
+proc reportRecoveryCase(
+    name: string, points: seq[Vec2], segments: seq[array[2, int]]
+) =
+  var ws: DcWorkspace
+  let raw = ws.triangulateDcCdtRaw(points, segments)
+  echo &"{name}: marked {raw.segments.marked}, missing {raw.segments.missing}, " &
+    &"recovered {raw.segments.recovered}, recoveryWork {raw.recoveryWork}"
+
 echo "config,backend,dc_dt-foundation"
 echo "config,kernel,dewall-to-dc-topology-foundation"
 benchCase("small-random", randomPoints(32, 0xDC32), 200)
@@ -87,4 +95,10 @@ benchCdtCase(
   @[vec2(0, 0), vec2(10, 0), vec2(10, 10), vec2(0, 10), vec2(5, 4)],
   @[[0, 1], [1, 2], [2, 3], [3, 0]],
   1000,
+)
+
+reportRecoveryCase(
+  "convex-square-missing-diagonal",
+  @[vec2(0, 0), vec2(10, 0), vec2(10, 10), vec2(0, 10), vec2(5, 4)],
+  @[[0, 2]],
 )
