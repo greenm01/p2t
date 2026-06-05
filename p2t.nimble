@@ -843,14 +843,14 @@ task benchCompareAll, "compare champion Nim, hash-off, slot, idx, fast-poly2tri,
   let triangleDir = findTriangleDir()
   if triangleDir.len > 0:
     for variant in [
-      ("triangle-pzQN", "pzQN"),
-      ("triangle-plzQN", "plzQN"),
-      ("triangle-pizQN", "pizQN"),
-      ("triangle-pFzQN", "pFzQN"),
-      ("triangle-unsafe-pzQNX", "pzQNX"),
-      ("triangle-unsafe-plzQNX", "plzQNX"),
-      ("triangle-unsafe-pizQNX", "pizQNX"),
-      ("triangle-unsafe-pFzQNX", "pFzQNX"),
+      ("triangle-pzQ", "pzQ"),
+      ("triangle-plzQ", "plzQ"),
+      ("triangle-pizQ", "pizQ"),
+      ("triangle-pFzQ", "pFzQ"),
+      ("triangle-unsafe-pzQX", "pzQX"),
+      ("triangle-unsafe-plzQX", "plzQX"),
+      ("triangle-unsafe-pizQX", "pizQX"),
+      ("triangle-unsafe-pFzQX", "pFzQX"),
     ]:
       let
         engine = variant[0]
@@ -1188,5 +1188,37 @@ task benchDcDt, "benchmark experimental Triangle-style DT foundation":
   sh "strip " & quoteShell("/tmp/p2t_bench_dc_dt")
   sh quoteShell("/tmp/p2t_bench_dc_dt")
 
+task benchDcDtTriangleCompare, "compare DeWall-dc_dt CDT against Triangle pzQ on heron":
+  let triangleDir = findTriangleDir()
+  if triangleDir.len == 0:
+    quit(
+      "Triangle not found; set TRIANGLE_DIR=/path/to/triangle containing triangle.c and triangle.h",
+      QuitFailure,
+    )
+
+  let
+    trianglePath = "/tmp/p2t_triangle_cdt_compare"
+    comparePath = "/tmp/p2t_bench_dc_dt_triangle_compare"
+    cFlags = contenderCFlags()
+    linkFlags = contenderLinkFlags()
+
+  sh cCompiler() & " -std=gnu99 " & cFlags &
+    " -Wno-deprecated-non-prototype " &
+    "-DTRILIBRARY -DNO_TIMER -DTRIANGLE_SWITCHES=\\\"pzQ\\\" " &
+    "-I" & quoteShell(triangleDir) & " " &
+    quoteShell(triangleDir / "triangle.c") &
+    " bench/bench_triangle_cdt_compare.c " & linkFlags &
+    " -o " & quoteShell(trianglePath) & " " & mathLibFlag()
+
+  nimCompile(
+    "bench/bench_dc_dt_triangle_compare",
+    flags = "--mm:arc -d:release --opt:speed " & TunedFlags,
+    outPath = comparePath,
+    nimcache = "/tmp/p2t_bench_dc_dt_triangle_compare_d",
+  )
+  sh "strip " & quoteShell(comparePath)
+  sh quoteShell(comparePath) & " " & quoteShell(trianglePath) &
+    " tests/fixtures/nazca_heron.dat"
+
 task tidy, "format p2t sources":
-  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/capi.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/internal/dewall.nim src/p2t/internal/dc_dt.nim src/p2t/triangulate.nim tests/test_public_api.nim tests/test_p2t.nim tests/test_dewall.nim tests/test_dewall_hot_stats.nim tests/test_dc_dt.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/bench_stress_small.nim bench/bench_normalized_trusted.nim bench/bench_dewall.nim bench/bench_dewall_profile.nim bench/bench_dewall_hot_stats.nim bench/bench_dc_dt.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
+  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/capi.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/internal/dewall.nim src/p2t/internal/dc_dt.nim src/p2t/triangulate.nim tests/test_public_api.nim tests/test_p2t.nim tests/test_dewall.nim tests/test_dewall_hot_stats.nim tests/test_dc_dt.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/bench_stress_small.nim bench/bench_normalized_trusted.nim bench/bench_dewall.nim bench/bench_dewall_profile.nim bench/bench_dewall_hot_stats.nim bench/bench_dc_dt.nim bench/bench_dc_dt_triangle_compare.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"

@@ -11,7 +11,7 @@
 #endif
 
 #ifndef TRIANGLE_SWITCHES
-#define TRIANGLE_SWITCHES "pzQN"
+#define TRIANGLE_SWITCHES "pzQ"
 #endif
 
 #ifndef TRIANGLE_LABEL
