@@ -12,7 +12,7 @@ contract: DeWall owns raw DT construction, and later CDT work consumes that DT.
 | 2 | General-purpose hash tables dominate hot wall operations. `wall`, `afl1`, and `afl2` remain `Table` based. | In progress | `closed` and `localSeen` now use `HashSet`; replace active face lists with purpose-built dense/open-addressed edge storage next. |
 | 3 | Split side routing used `Table[int,int]` despite dense point ids. | Done | Routing now uses coordinate cuts directly and allocates dense side markers only for tied median splits. |
 | 4 | Recursive splits used to fully sort each subproblem. | Done | Commit `50b98af` replaced full sort with median partitioning. `splitSorts` now means split partition calls. |
-| 5 | Grid storage allocates many small buckets with `seq[seq[int]]`. | Open | Move to flat bucket storage. |
+| 5 | Grid storage allocated many small buckets with `seq[seq[int]]`. | Done | Grid cells now use flat CSR-style `cellStarts` and `cellPoints` storage. |
 | 6 | Expanding grid scans revisit many marked cells. | Open | Scan newly added rings/ranges instead of rewalking full boxes. |
 | 7 | Brute fallback remains frequent. | Open | Tune grid thresholds and add a small-leaf strategy after grid storage is cleaner. |
 | 8 | Candidate geometry does repeated floating-point-heavy work. | Open | Fuse circumcenter/radius/orientation calculations in `considerCandidate`. |

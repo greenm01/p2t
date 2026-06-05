@@ -139,7 +139,8 @@ type
     minX, minY: float64
     side: float64
     nx, ny: int
-    cells: seq[seq[int]]
+    cellStarts: seq[int]
+    cellPoints: seq[int]
     marks: seq[int]
     epoch: int
 
@@ -456,15 +457,26 @@ proc buildGrid(ctx: DewallContext, idx: openArray[int]): UniformGrid =
   result.side = side
   result.nx = max(1, int(ceil(dx / side)))
   result.ny = max(1, int(ceil(dy / side)))
-  result.cells = newSeq[seq[int]](result.nx * result.ny)
-  result.marks = newSeq[int](result.nx * result.ny)
+  let cellCount = result.nx * result.ny
+  result.cellStarts = newSeq[int](cellCount + 1)
+  result.cellPoints = newSeq[int](idx.len)
+  result.marks = newSeq[int](cellCount)
   result.epoch = 1
   hotInc(ctx, gridsBuilt)
-  hotInc(ctx, gridCellsAllocated, result.cells.len)
+  hotInc(ctx, gridCellsAllocated, cellCount)
 
   for i in idx:
     let c = cellIndex(result, result.cellX(ctx.points[i].x), result.cellY(ctx.points[i].y))
-    result.cells[c].add i
+    inc result.cellStarts[c + 1]
+
+  for c in 1 ..< result.cellStarts.len:
+    result.cellStarts[c] += result.cellStarts[c - 1]
+
+  var writeAt = result.cellStarts
+  for i in idx:
+    let c = cellIndex(result, result.cellX(ctx.points[i].x), result.cellY(ctx.points[i].y))
+    result.cellPoints[writeAt[c]] = i
+    inc writeAt[c]
 
 proc reset(g: var UniformGrid) =
   inc g.epoch
@@ -501,7 +513,8 @@ proc scanBox(
         hotInc(ctx, duplicateCellSkips)
         continue
       hotInc(ctx, gridCellsVisited)
-      for candidate in g.cells[c]:
+      for i in g.cellStarts[c] ..< g.cellStarts[c + 1]:
+        let candidate = g.cellPoints[i]
         let wasFound = search.found
         considerCandidate(ctx, h, candidate, search)
         result = result or (search.found and not wasFound) or search.found
@@ -510,11 +523,12 @@ proc scanUnmarked(
     ctx: DewallContext, h: ActiveEdge, g: var UniformGrid, search: var CandidateSearch
 ) =
   hotInc(ctx, scanUnmarkedCalls)
-  for c in 0 ..< g.cells.len:
+  for c in 0 ..< g.marks.len:
     if not g.markCell(c):
       continue
     hotInc(ctx, unmarkedCellsVisited)
-    for candidate in g.cells[c]:
+    for i in g.cellStarts[c] ..< g.cellStarts[c + 1]:
+      let candidate = g.cellPoints[i]
       considerCandidate(ctx, h, candidate, search)
 
 proc scanRadiusBox(
