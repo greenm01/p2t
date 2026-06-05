@@ -19,6 +19,7 @@ const
   DcNil* = -1'i32
   Protected0 = 1'u32 shl 0
   ExteriorFlag = 1'u32 shl 8
+  MaxRecoveryFlipFactor = 3
 
 type
   DcTriangleId* = int32
@@ -234,6 +235,9 @@ proc findNeighborEdge(
       return edge
   -1
 
+proc isProtected(tri: DcTriangle, edge: int): bool {.inline.} =
+  (tri.flags and protectedFlag(edge)) != 0
+
 proc loadDcDtTriangles*(
     ws: var DcWorkspace,
     points: openArray[Vec2],
@@ -308,6 +312,17 @@ proc markProtectedSegments*(
     else:
       inc result.missing
 
+proc crossedEdgesForSegment(
+    ws: DcWorkspace, segment: array[2, int]
+): seq[array[2, int]] =
+  for tri in ws.triangles:
+    for edge in 0 ..< 3:
+      let e = edgeEndpoints(tri.vertices, edge).canonicalEdgePair
+      if result.containsPair(e):
+        continue
+      if segmentProperlyCrossesEdge(ws.points, segment, e):
+        result.add e
+
 proc collectSegmentRecoveryWork*(
     ws: var DcWorkspace, segments: openArray[array[2, int]]
 ) =
@@ -318,15 +333,9 @@ proc collectSegmentRecoveryWork*(
     if ws.findTriangleEdge(seg[0].int32, seg[1].int32).tri != DcNil:
       continue
 
-    var work = SegmentRecoveryWork(segment: seg)
-    for tri in ws.triangles:
-      for edge in 0 ..< 3:
-        let e = edgeEndpoints(tri.vertices, edge).canonicalEdgePair
-        if work.crossedEdges.containsPair(e):
-          continue
-        if segmentProperlyCrossesEdge(ws.points, seg, e):
-          work.crossedEdges.add e
-    ws.recoveryWork.add work
+    ws.recoveryWork.add SegmentRecoveryWork(
+      segment: seg, crossedEdges: ws.crossedEdgesForSegment(seg)
+    )
 
 proc recoverSingleCrossingSegment(
     ws: var DcWorkspace, work: SegmentRecoveryWork
@@ -369,17 +378,71 @@ proc recoverSingleCrossingSegment(
   discard ws.markProtectedEdge(segment[0], segment[1])
   true
 
+proc flipInteriorEdge(ws: var DcWorkspace, crossed: array[2, int]): bool =
+  let found = ws.findTriangleEdge(crossed[0].int32, crossed[1].int32)
+  if found.tri == DcNil or ws.triangles[found.tri].isProtected(found.edge):
+    return false
+
+  let neighbor = ws.triangles[found.tri].neighbors[found.edge]
+  if neighbor == DcNil:
+    return false
+
+  let neighborEdge = ws.findNeighborEdge(neighbor, found.tri)
+  if neighborEdge < 0 or ws.triangles[neighbor].isProtected(neighborEdge):
+    return false
+
+  let
+    p = ws.triangles[found.tri].vertices[found.edge].int
+    q = ws.triangles[neighbor].vertices[neighborEdge].int
+  if ws.findTriangleEdge(p.int32, q.int32).tri != DcNil:
+    return false
+  if not segmentProperlyCrossesEdge(ws.points, [p, q], crossed):
+    return false
+
+  let
+    u = crossed[0].int32
+    v = crossed[1].int32
+  if not ws.setTriangle(found.tri, p.int32, q.int32, u):
+    return false
+  if not ws.setTriangle(neighbor, q.int32, p.int32, v):
+    return false
+
+  ws.buildTopology()
+  true
+
+proc recoverSegmentByFlips(
+    ws: var DcWorkspace, segment: array[2, int]
+): bool =
+  let maxAttempts = max(1, ws.triangles.len * MaxRecoveryFlipFactor)
+  for _ in 0 ..< maxAttempts:
+    if ws.markProtectedEdge(segment[0], segment[1]):
+      return true
+
+    let crossedEdges = ws.crossedEdgesForSegment(segment)
+    if crossedEdges.len == 0:
+      return false
+
+    var flipped = false
+    for crossed in crossedEdges:
+      if ws.flipInteriorEdge(crossed):
+        flipped = true
+        break
+    if not flipped:
+      return false
+
+  ws.markProtectedEdge(segment[0], segment[1])
+
 proc recoverSimpleSegments*(
     ws: var DcWorkspace, segments: openArray[array[2, int]]
 ): int =
-  ws.collectSegmentRecoveryWork(segments)
-  let workItems = ws.recoveryWork
-  for work in workItems:
-    if ws.recoverSingleCrossingSegment(work):
+  for segment in segments:
+    if ws.findTriangleEdge(segment[0].int32, segment[1].int32).tri != DcNil:
+      continue
+    let work = SegmentRecoveryWork(
+      segment: segment, crossedEdges: ws.crossedEdgesForSegment(segment)
+    )
+    if ws.recoverSingleCrossingSegment(work) or ws.recoverSegmentByFlips(segment):
       inc result
-
-proc isProtected(tri: DcTriangle, edge: int): bool {.inline.} =
-  (tri.flags and protectedFlag(edge)) != 0
 
 proc markExterior*(ws: var DcWorkspace) =
   ws.queue.setLen(0)

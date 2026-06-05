@@ -102,3 +102,19 @@ reportRecoveryCase(
   @[vec2(0, 0), vec2(10, 0), vec2(10, 10), vec2(0, 10), vec2(5, 4)],
   @[[0, 2]],
 )
+
+reportRecoveryCase(
+  "multi-edge-segment-recovery",
+  @[
+    vec2(0, 0),
+    vec2(10, 0),
+    vec2(10, 10),
+    vec2(0, 10),
+    vec2(4, 3),
+    vec2(6, 7),
+    vec2(5, 5),
+    vec2(3, 8),
+    vec2(8, 4),
+  ],
+  @[[3, 8]],
+)

@@ -216,7 +216,35 @@ suite "experimental Triangle-style D&C DT foundation":
     check ws.recoveryWork.len == 0
     check abs(totalArea(pts, cdt.raw) - 100.0) <= 1e-9
 
-  test "DeWall-to-dc CDT raw reports unrecovered multi-edge segments":
+  test "DeWall-to-dc CDT raw recovers multi-edge segment by flips":
+    let pts = @[
+      vec2(0, 0),
+      vec2(10, 0),
+      vec2(10, 10),
+      vec2(0, 10),
+      vec2(4, 3),
+      vec2(6, 7),
+      vec2(5, 5),
+      vec2(3, 8),
+      vec2(8, 4),
+    ]
+    var beforeWs: DcWorkspace
+    discard beforeWs.triangulateDcDtRaw(pts)
+    beforeWs.collectSegmentRecoveryWork(@[[3, 8]])
+    check beforeWs.recoveryWork.len == 1
+    check beforeWs.recoveryWork[0].crossedEdges.len > 1
+
+    let segments = @[[0, 1], [1, 2], [2, 3], [3, 0], [3, 8]]
+    var ws: DcWorkspace
+    let cdt = ws.triangulateDcCdtRaw(pts, segments)
+    check cdt.segments.marked == segments.len
+    check cdt.segments.missing == 0
+    check cdt.segments.recovered == 1
+    check cdt.recoveryWork == 0
+    check ws.recoveryWork.len == 0
+    check abs(totalArea(pts, cdt.raw) - 100.0) <= 1e-9
+
+  test "DeWall-to-dc CDT raw reports unrecovered through-vertex segment":
     let pts = @[
       vec2(0, 0),
       vec2(10, 0),
@@ -226,6 +254,12 @@ suite "experimental Triangle-style D&C DT foundation":
       vec2(6, 7),
       vec2(5, 5),
     ]
+    var beforeWs: DcWorkspace
+    discard beforeWs.triangulateDcDtRaw(pts)
+    beforeWs.collectSegmentRecoveryWork(@[[0, 2]])
+    check beforeWs.recoveryWork.len == 1
+    check beforeWs.recoveryWork[0].crossedEdges.len > 1
+
     var ws: DcWorkspace
     let cdt = ws.triangulateDcCdtRaw(pts, @[[0, 2]])
     check cdt.segments.missing == 1
@@ -233,7 +267,7 @@ suite "experimental Triangle-style D&C DT foundation":
     check cdt.recoveryWork == 1
     check ws.recoveryWork.len == 1
     check ws.recoveryWork[0].segment == [0, 2]
-    check ws.recoveryWork[0].crossedEdges.len > 1
+    check ws.recoveryWork[0].crossedEdges.len == 0
 
   test "unprotected hull flood removes everything":
     let pts = randomPoints(20, 0xABCD)
