@@ -16,6 +16,12 @@
 
 #define BENCH_ROUNDS 5
 
+/*
+ * Treat triangle-full-dt as the fair reference in DeWall comparisons.
+ * triangle-prepared-dt reuses Triangle input storage across calls and has
+ * measured slower/noisier than full mode on some runs.
+ */
+
 typedef struct BenchPoint {
   double x;
   double y;

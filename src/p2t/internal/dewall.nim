@@ -109,7 +109,7 @@ type
   Split = object
     cut: float64
     left, right: seq[int]
-    side: Table[int, int]
+    side: seq[uint8]
 
   WallBuild = object
     split: Split
@@ -673,12 +673,12 @@ proc classifySplit[Axis: static[int]](ctx: DewallContext, idx: seq[int]): Split 
     0.5
   result.right = result.left[mid ..< result.left.len]
   result.left.setLen(mid)
-  result.side = initTable[int, int]()
+  result.side = newSeq[uint8](ctx.points.len)
 
   for i in result.left:
-    result.side[i] = 1
+    result.side[i] = 1'u8
   for i in result.right:
-    result.side[i] = 2
+    result.side[i] = 2'u8
 
 proc straddles[Axis: static[int]](points: seq[Vec2], h: ActiveEdge, split: Split): bool =
   let
@@ -687,8 +687,8 @@ proc straddles[Axis: static[int]](points: seq[Vec2], h: ActiveEdge, split: Split
   (ca < split.cut) != (cb < split.cut)
 
 proc bothIn(h: ActiveEdge, split: Split, which: int): bool =
-  split.side.getOrDefault(h.a, -1) == which and
-    split.side.getOrDefault(h.b, -1) == which
+  let marker = uint8(which)
+  split.side[h.a] == marker and split.side[h.b] == marker
 
 proc update(list: var Table[EdgeKey, ActiveEdge], closed: Table[EdgeKey, bool], h: ActiveEdge) =
   let k = key(h)
@@ -1023,19 +1023,20 @@ proc dewallPrewall[Parallel: static[bool]](
   for node in pending:
     result.add dewallLeaf(ctx, node)
 
-proc dedupeTriangles(
-    points: openArray[Vec2], triangles: openArray[array[3, int]]
-): seq[array[3, int]] =
-  var seen = initTable[TriKey, bool]()
-  for tri in triangles:
-    let key = triKey(tri[0], tri[1], tri[2])
-    if seen.hasKey(key):
-      continue
-    seen[key] = true
-    if orient(points[tri[0]], points[tri[1]], points[tri[2]]) > 0:
-      result.add tri
-    else:
-      result.add [tri[0], tri[2], tri[1]]
+when defined(p2tDewallHotStats):
+  proc dedupeTriangles(
+      points: openArray[Vec2], triangles: openArray[array[3, int]]
+  ): seq[array[3, int]] =
+    var seen = initTable[TriKey, bool]()
+    for tri in triangles:
+      let key = triKey(tri[0], tri[1], tri[2])
+      if seen.hasKey(key):
+        continue
+      seen[key] = true
+      if orient(points[tri[0]], points[tri[1]], points[tri[2]]) > 0:
+        result.add tri
+      else:
+        result.add [tri[0], tri[2], tri[1]]
 
 proc duplicateTriangleCount(triangles: openArray[array[3, int]]): int =
   var seen = initTable[TriKey, bool]()
@@ -1181,9 +1182,9 @@ proc dewallTriangulateStatic*[Parallel: static[bool]](
 
   when Parallel:
     if options.parallel and options.prewallLeafTarget > 1:
-      return dedupeTriangles(ctx.points, dewallPrewall[Parallel](ctx, idx))
+      return dewallPrewall[Parallel](ctx, idx)
 
-  dedupeTriangles(ctx.points, dewallRec[Parallel, 0](ctx, idx, @[], true, 0))
+  dewallRec[Parallel, 0](ctx, idx, @[], true, 0)
 
 proc dewallTriangulatePreparedStatic*[Parallel: static[bool]](
     ws: DewallPreparedWorkspace, options = defaultDewallOptions()
@@ -1194,9 +1195,9 @@ proc dewallTriangulatePreparedStatic*[Parallel: static[bool]](
   let ctx = DewallContext(points: ws.points, options: options)
   when Parallel:
     if options.parallel and options.prewallLeafTarget > 1:
-      return dedupeTriangles(ctx.points, dewallPrewall[Parallel](ctx, ws.idx))
+      return dewallPrewall[Parallel](ctx, ws.idx)
 
-  dedupeTriangles(ctx.points, dewallRec[Parallel, 0](ctx, ws.idx, @[], true, 0))
+  dewallRec[Parallel, 0](ctx, ws.idx, @[], true, 0)
 
 when defined(p2tDewallHotStats):
   proc dewallTriangulateWithHotStats*(

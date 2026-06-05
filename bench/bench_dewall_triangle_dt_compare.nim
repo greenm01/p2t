@@ -3,6 +3,10 @@
 ## This benchmark does not pass PSLG segments to Triangle. Triangle is compiled
 ## with `zQ`: zero-based indices, quiet, no quality refinement, unconstrained
 ## Delaunay triangulation of the input points.
+##
+## Use `triangle-full-dt` as the fair Triangle reference. `triangle-prepared-dt`
+## reuses Triangle input storage across calls and has measured slower/noisier
+## than full mode on some runs.
 
 import std/[algorithm, cpuinfo, monotimes, os, osproc, strformat, strutils, times]
 

@@ -171,6 +171,7 @@ suite "DeWall unconstrained DT prototype":
     check profile.rawTriangleCount == profile.wallTriangleCount
     check profile.dedupedTriangleCount <= profile.rawTriangleCount
     check profile.duplicatesRemoved == profile.rawTriangleCount - profile.dedupedTriangleCount
+    check profile.duplicatesRemoved == 0
     check profile.wallUsPerSqrtPoint >= 0.0
 
   test "prewall profile exposes leaf starvation":
@@ -193,6 +194,8 @@ suite "DeWall unconstrained DT prototype":
     check starved.spawnedTasks == max(0, starved.actualLeaves - 1)
     check exposed.dedupedTriangleCount <= exposed.rawTriangleCount
     check exposed.duplicatesRemoved == exposed.rawTriangleCount - exposed.dedupedTriangleCount
+    check starved.duplicatesRemoved == 0
+    check exposed.duplicatesRemoved == 0
 
   test "triangle":
     checkDewall(@[vec2(0, 0), vec2(4, 0), vec2(0, 3)])
