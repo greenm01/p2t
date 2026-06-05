@@ -9,8 +9,8 @@ contract: DeWall owns raw DT construction, and later CDT work consumes that DT.
 | # | Finding | Status | Next action |
 | ---: | --- | --- | --- |
 | 1 | Final production dedupe is probably wasted. `profileDewallPrewall` has reported `dups=0` on heron, 10k, 50k, and 100k fixtures. | In progress | Remove dedupe from release triangulation paths; keep profile duplicate counting. |
-| 2 | General-purpose hash tables dominate hot wall operations. `localSeen`, `wall`, `closed`, `afl1`, and `afl2` are all `Table` based. | Open | Replace with purpose-built dense/open-addressed edge and triangle sets. |
-| 3 | Split side routing uses `Table[int,int]` despite dense point ids. | In progress | Replace with dense side markers. |
+| 2 | General-purpose hash tables dominate hot wall operations. `wall`, `afl1`, and `afl2` remain `Table` based. | In progress | `closed` and `localSeen` now use `HashSet`; replace active face lists with purpose-built dense/open-addressed edge storage next. |
+| 3 | Split side routing used `Table[int,int]` despite dense point ids. | Done | Routing now uses coordinate cuts directly and allocates dense side markers only for tied median splits. |
 | 4 | Recursive splits used to fully sort each subproblem. | Done | Commit `50b98af` replaced full sort with median partitioning. `splitSorts` now means split partition calls. |
 | 5 | Grid storage allocates many small buckets with `seq[seq[int]]`. | Open | Move to flat bucket storage. |
 | 6 | Expanding grid scans revisit many marked cells. | Open | Scan newly added rings/ranges instead of rewalking full boxes. |

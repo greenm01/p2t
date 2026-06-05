@@ -8,7 +8,7 @@
 ## `dewallTriangulateStatic[false]` for serial codegen and
 ## `dewallTriangulateStatic[true]` for the threaded specialization.
 
-import std/[algorithm, hashes, math, monotimes, tables, times]
+import std/[algorithm, hashes, math, monotimes, sets, tables, times]
 
 when compileOption("threads"):
   import std/threadpool
@@ -705,32 +705,32 @@ proc bothIn[Axis: static[int]](
   else:
     not aLeft and not bLeft
 
-proc update(list: var Table[EdgeKey, ActiveEdge], closed: Table[EdgeKey, bool], h: ActiveEdge) =
+proc update(list: var Table[EdgeKey, ActiveEdge], closed: HashSet[EdgeKey], h: ActiveEdge) =
   let k = key(h)
-  if closed.hasKey(k):
+  if closed.contains(k):
     return
   if list.hasKey(k):
     list.del(k)
   else:
     list[k] = h
 
-proc insert(list: var Table[EdgeKey, ActiveEdge], closed: Table[EdgeKey, bool], h: ActiveEdge) =
+proc insert(list: var Table[EdgeKey, ActiveEdge], closed: HashSet[EdgeKey], h: ActiveEdge) =
   let k = key(h)
-  if not closed.hasKey(k):
+  if not closed.contains(k):
     list[k] = h
 
 proc addTriangle(
     ctx: DewallContext,
     outTriangles: var seq[array[3, int]],
-    localSeen: var Table[TriKey, bool],
+    localSeen: var HashSet[TriKey],
     a, b, c: int,
 ) =
   if a < 0 or b < 0 or c < 0 or a == b or b == c or a == c:
     return
   let key = triKey(a, b, c)
-  if localSeen.hasKey(key):
+  if localSeen.contains(key):
     return
-  localSeen[key] = true
+  localSeen.incl key
   let o = orient(ctx.points[a], ctx.points[b], ctx.points[c])
   if abs(o) <= Eps:
     return
@@ -742,11 +742,11 @@ proc addTriangle(
 proc routeInsert[Axis: static[int]](
     ctx: DewallContext,
     split: Split,
-    closed: Table[EdgeKey, bool],
+    closed: HashSet[EdgeKey],
     wall, afl1, afl2: var Table[EdgeKey, ActiveEdge],
     h: ActiveEdge,
 ) =
-  if closed.hasKey(key(h)):
+  if closed.contains(key(h)):
     return
   if straddles[Axis](ctx.points, h, split):
     insert(wall, closed, h)
@@ -758,11 +758,11 @@ proc routeInsert[Axis: static[int]](
 proc routeUpdate[Axis: static[int]](
     ctx: DewallContext,
     split: Split,
-    closed: Table[EdgeKey, bool],
+    closed: HashSet[EdgeKey],
     wall, afl1, afl2: var Table[EdgeKey, ActiveEdge],
     h: ActiveEdge,
 ) =
-  if closed.hasKey(key(h)):
+  if closed.contains(key(h)):
     return
   if straddles[Axis](ctx.points, h, split):
     update(wall, closed, h)
@@ -775,7 +775,7 @@ template emitUpdated(
     Axis: static[int],
     ctx: DewallContext,
     split: Split,
-    closed: Table[EdgeKey, bool],
+    closed: HashSet[EdgeKey],
     wall, afl1, afl2: var Table[EdgeKey, ActiveEdge],
     fromVertex, toVertex: int,
 ) =
@@ -793,7 +793,7 @@ template emitTriangleExterior(
     Axis: static[int],
     ctx: DewallContext,
     split: Split,
-    closed: Table[EdgeKey, bool],
+    closed: HashSet[EdgeKey],
     wall, afl1, afl2: var Table[EdgeKey, ActiveEdge],
     a, b, c: int,
 ) =
@@ -859,9 +859,9 @@ proc buildWall[Axis: static[int]](
   result.afl2 = initTable[EdgeKey, ActiveEdge]()
 
   var
-    localSeen = initTable[TriKey, bool]()
+    localSeen = initHashSet[TriKey]()
     wall = initTable[EdgeKey, ActiveEdge]()
-    closed = initTable[EdgeKey, bool]()
+    closed = initHashSet[EdgeKey]()
     grid = buildGrid(ctx, idx)
 
   for h in inherited:
@@ -894,11 +894,11 @@ proc buildWall[Axis: static[int]](
       h = edge
       break
     wall.del(hKey)
-    if closed.hasKey(hKey):
+    if closed.contains(hKey):
       continue
     hotInc(ctx, wallEdgesProcessed)
     let apex = makeSimplexFast(ctx, idx, h, grid)
-    closed[hKey] = true
+    closed.incl hKey
     if apex < 0:
       trace(
         "dewall hull depth=" & $depth & " edge=(" & $h.a & "," & $h.b &
@@ -948,7 +948,7 @@ proc dewallRec[Parallel: static[bool], Axis: static[int]](
   if idx.len < 3:
     return
 
-  var localSeen = initTable[TriKey, bool]()
+  var localSeen = initHashSet[TriKey]()
   if idx.len == 3:
     addTriangle(ctx, result, localSeen, idx[0], idx[1], idx[2])
     return
@@ -1042,25 +1042,25 @@ when defined(p2tDewallHotStats):
   proc dedupeTriangles(
       points: openArray[Vec2], triangles: openArray[array[3, int]]
   ): seq[array[3, int]] =
-    var seen = initTable[TriKey, bool]()
+    var seen = initHashSet[TriKey]()
     for tri in triangles:
       let key = triKey(tri[0], tri[1], tri[2])
-      if seen.hasKey(key):
+      if seen.contains(key):
         continue
-      seen[key] = true
+      seen.incl key
       if orient(points[tri[0]], points[tri[1]], points[tri[2]]) > 0:
         result.add tri
       else:
         result.add [tri[0], tri[2], tri[1]]
 
 proc duplicateTriangleCount(triangles: openArray[array[3, int]]): int =
-  var seen = initTable[TriKey, bool]()
+  var seen = initHashSet[TriKey]()
   for tri in triangles:
     let key = triKey(tri[0], tri[1], tri[2])
-    if seen.hasKey(key):
+    if seen.contains(key):
       inc result
     else:
-      seen[key] = true
+      seen.incl key
 
 proc pointIndexSeq(count: int): seq[int] =
   result = newSeq[int](count)
