@@ -399,6 +399,21 @@ task test, "run p2t tests":
   )
   nimRun("tests/test_p2t", outPath = "/tmp/p2t_test", nimcache = "/tmp/p2t_test_d")
 
+task testDewall, "run experimental DeWall DT tests":
+  nimRun(
+    "tests/test_dewall",
+    outPath = "/tmp/p2t_test_dewall",
+    nimcache = "/tmp/p2t_test_dewall_d",
+  )
+
+task testDewallHotStats, "run experimental DeWall hot-stats tests":
+  nimRun(
+    "tests/test_dewall_hot_stats",
+    flags = "-d:p2tDewallHotStats",
+    outPath = "/tmp/p2t_test_dewall_hot_stats",
+    nimcache = "/tmp/p2t_test_dewall_hot_stats_d",
+  )
+
 task testUnsafeCdt, "run p2t tests with CDT runtime checks disabled":
   nimRun(
     "tests/test_p2t",
@@ -1125,5 +1140,36 @@ task benchParallel, "benchmark tessellateBatch scaling across threads":
   sh "strip " & quoteShell("/tmp/p2t_bench_parallel")
   sh quoteShell("/tmp/p2t_bench_parallel")
 
+task benchDewall, "benchmark experimental DeWall DT prototype":
+  nimCompile(
+    "bench/bench_dewall",
+    flags = "--mm:orc --threads:on -d:useMalloc -d:release --opt:speed " & TunedFlags,
+    outPath = "/tmp/p2t_bench_dewall",
+    nimcache = "/tmp/p2t_bench_dewall_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_dewall")
+  sh quoteShell("/tmp/p2t_bench_dewall")
+
+task benchDewallProfile, "profile experimental DeWall prewall behavior":
+  nimCompile(
+    "bench/bench_dewall_profile",
+    flags = "--mm:orc --threads:on -d:useMalloc -d:release --opt:speed " & TunedFlags,
+    outPath = "/tmp/p2t_bench_dewall_profile",
+    nimcache = "/tmp/p2t_bench_dewall_profile_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_dewall_profile")
+  sh quoteShell("/tmp/p2t_bench_dewall_profile")
+
+task benchDewallHotStats, "report experimental DeWall hot-path counters":
+  nimCompile(
+    "bench/bench_dewall_hot_stats",
+    flags = "--mm:orc --threads:on -d:useMalloc -d:release --opt:speed " &
+      "-d:p2tDewallHotStats " & TunedFlags,
+    outPath = "/tmp/p2t_bench_dewall_hot_stats",
+    nimcache = "/tmp/p2t_bench_dewall_hot_stats_d",
+  )
+  sh "strip " & quoteShell("/tmp/p2t_bench_dewall_hot_stats")
+  sh quoteShell("/tmp/p2t_bench_dewall_hot_stats")
+
 task tidy, "format p2t sources":
-  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/capi.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/triangulate.nim tests/test_public_api.nim tests/test_p2t.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/bench_stress_small.nim bench/bench_normalized_trusted.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
+  sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/capi.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/internal/dewall.nim src/p2t/triangulate.nim tests/test_public_api.nim tests/test_p2t.nim tests/test_dewall.nim tests/test_dewall_hot_stats.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/bench_stress_small.nim bench/bench_normalized_trusted.nim bench/bench_dewall.nim bench/bench_dewall_profile.nim bench/bench_dewall_hot_stats.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
