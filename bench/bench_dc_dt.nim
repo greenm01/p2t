@@ -47,9 +47,44 @@ proc benchCase(name: string, points: seq[Vec2], iterations: int) =
   echo &"{name}: {iterations} runs, {reportedTriangles} triangles, " &
     &"best {times[0]} us, median {times[BenchRounds div 2]} us"
 
+proc benchCdtCase(
+    name: string,
+    points: seq[Vec2],
+    segments: seq[array[2, int]],
+    iterations: int,
+) =
+  var validationWs: DcWorkspace
+  let validation = validationWs.triangulateDcCdtRaw(points, segments)
+  if validation.segments.missing != 0:
+    raise newException(ValueError, "dc_dt CDT validation has missing segments for " & name)
+
+  var times = newSeq[int64](BenchRounds)
+  var reportedTriangles = 0
+  for round in 0 ..< BenchRounds:
+    var ws: DcWorkspace
+    ws.reserveDcDt(points.len)
+    let start = getMonoTime()
+    var triangles = 0
+    for _ in 0 ..< iterations:
+      let raw = ws.triangulateDcCdtRaw(points, segments)
+      triangles += raw.raw.triangleCount
+    times[round] = inMicroseconds(getMonoTime() - start)
+    reportedTriangles = triangles
+
+  times.sort()
+  echo &"{name}: {iterations} runs, {reportedTriangles} triangles, " &
+    &"best {times[0]} us, median {times[BenchRounds div 2]} us"
+
 echo "config,backend,dc_dt-foundation"
 echo "config,kernel,dewall-to-dc-topology-foundation"
 benchCase("small-random", randomPoints(32, 0xDC32), 200)
 benchCase("mid-random", randomPoints(64, 0xDC64), 100)
 benchCase("large-random", randomPoints(128, 0xDC128), 30)
 benchCase("nazca-heron", readDat("nazca_heron.dat"), 1)
+
+benchCdtCase(
+  "convex-square-cdt",
+  @[vec2(0, 0), vec2(10, 0), vec2(10, 10), vec2(0, 10), vec2(5, 4)],
+  @[[0, 1], [1, 2], [2, 3], [3, 0]],
+  1000,
+)

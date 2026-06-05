@@ -1,7 +1,7 @@
 ## Experimental Triangle-style Delaunay backend foundation.
 ##
-## This module is intentionally separate from the public CDT path and from the
-## public CDT path.  It establishes the reusable workspace, arena topology,
+## This module is intentionally separate from the public CDT path.  It
+## establishes the reusable workspace, arena topology,
 ## raw-output accessors, protected-edge flags, and flood cleanup surface needed
 ## to turn DeWall's unconstrained DT output into a Triangle-style CDT pipeline.
 ##
@@ -49,6 +49,10 @@ type
 
   SegmentMarkResult* = object
     marked*, missing*: int
+
+  DcCdtRawResult* = object
+    raw*: DcRawResult
+    segments*: SegmentMarkResult
 
 template protectedFlag(edge: int): uint32 =
   Protected0 shl edge
@@ -272,3 +276,19 @@ proc markExterior*(ws: var DcWorkspace) =
 
 proc isExterior*(ws: DcWorkspace, tri: DcTriangleId): bool {.inline.} =
   (ws.triangles[tri].flags and ExteriorFlag) != 0
+
+proc triangulateDcCdtRaw*(
+    ws: var DcWorkspace,
+    points: openArray[Vec2],
+    segments: openArray[array[2, int]],
+): DcCdtRawResult =
+  ## Build DeWall's unconstrained DT, load it into dc_dt topology, mark the
+  ## requested protected segments when they are already present as DT edges, and
+  ## flood-delete exterior triangles across unprotected hull edges.
+  ##
+  ## `segments.missing` is the explicit handoff to the future segment-recovery
+  ## step. A nonzero value means the current output is not a full CDT for that
+  ## segment set.
+  result.raw = ws.triangulateDcDtRaw(points)
+  result.segments = ws.markProtectedSegments(segments)
+  ws.markExterior()

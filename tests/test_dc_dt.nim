@@ -120,6 +120,14 @@ proc checkNeighborSymmetry(raw: DcRawResult) =
           foundBack = true
       check foundBack
 
+proc totalArea(points: seq[Vec2], raw: DcRawResult): float64 =
+  for tri in raw.rawTriangles:
+    result += triangleArea(
+      points[tri[0]],
+      points[tri[1]],
+      points[tri[2]],
+    )
+
 suite "experimental Triangle-style D&C DT foundation":
   test "raw point cloud DT is Delaunay":
     let pts = randomPoints(32, 0xDCD7)
@@ -172,6 +180,33 @@ suite "experimental Triangle-style D&C DT foundation":
     check marked.missing == 0
     ws.markExterior()
     check ws.rawTriangles.len == before
+
+  test "DeWall-to-dc CDT raw keeps protected convex boundary interior":
+    let pts = @[
+      vec2(0, 0),
+      vec2(10, 0),
+      vec2(10, 10),
+      vec2(0, 10),
+      vec2(5, 4),
+    ]
+    let segments = @[[0, 1], [1, 2], [2, 3], [3, 0]]
+    var ws: DcWorkspace
+    let cdt = ws.triangulateDcCdtRaw(pts, segments)
+    check cdt.segments.marked == segments.len
+    check cdt.segments.missing == 0
+    check abs(totalArea(pts, cdt.raw) - 100.0) <= 1e-9
+
+  test "DeWall-to-dc CDT raw reports unrecovered missing segments":
+    let pts = @[
+      vec2(0, 0),
+      vec2(10, 0),
+      vec2(10, 10),
+      vec2(0, 10),
+      vec2(5, 4),
+    ]
+    var ws: DcWorkspace
+    let cdt = ws.triangulateDcCdtRaw(pts, @[[0, 2]])
+    check cdt.segments.missing == 1
 
   test "unprotected hull flood removes everything":
     let pts = randomPoints(20, 0xABCD)
