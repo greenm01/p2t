@@ -583,21 +583,94 @@ proc makeSimplexFast(
     scanUnmarked(ctx, h, g, search)
   search.best
 
+template indexLess(ctx: DewallContext, a, b: int, Axis: static[int]): bool =
+  let
+    ca = coord(ctx.points, a, Axis)
+    cb = coord(ctx.points, b, Axis)
+  ca < cb or (ca == cb and a < b)
+
+proc insertionSortRange[Axis: static[int]](
+    ctx: DewallContext, items: var seq[int], lo, hi: int
+) =
+  var i = lo + 1
+  while i <= hi:
+    let value = items[i]
+    var j = i
+    while j > lo and indexLess(ctx, value, items[j - 1], Axis):
+      items[j] = items[j - 1]
+      dec j
+    items[j] = value
+    inc i
+
+proc medianOfThree[Axis: static[int]](
+    ctx: DewallContext, items: seq[int], lo, mid, hi: int
+): int =
+  let
+    a = items[lo]
+    b = items[mid]
+    c = items[hi]
+  if indexLess(ctx, a, b, Axis):
+    if indexLess(ctx, b, c, Axis):
+      mid
+    elif indexLess(ctx, a, c, Axis):
+      hi
+    else:
+      lo
+  elif indexLess(ctx, a, c, Axis):
+    lo
+  elif indexLess(ctx, b, c, Axis):
+    hi
+  else:
+    mid
+
+proc partitionAroundPivot[Axis: static[int]](
+    ctx: DewallContext, items: var seq[int], lo, hi, pivotAt: int
+): int =
+  let pivot = items[pivotAt]
+  swap(items[pivotAt], items[hi])
+  var store = lo
+  for i in lo ..< hi:
+    if indexLess(ctx, items[i], pivot, Axis):
+      swap(items[store], items[i])
+      inc store
+  swap(items[store], items[hi])
+  store
+
+proc partitionAtMedian[Axis: static[int]](
+    ctx: DewallContext, items: var seq[int], nth: int
+) =
+  var
+    lo = 0
+    hi = items.high
+  while hi - lo > 24:
+    let pivotAt = medianOfThree[Axis](ctx, items, lo, lo + ((hi - lo) div 2), hi)
+    let pivotNew = partitionAroundPivot[Axis](ctx, items, lo, hi, pivotAt)
+    if nth == pivotNew:
+      return
+    if nth < pivotNew:
+      hi = pivotNew - 1
+    else:
+      lo = pivotNew + 1
+  insertionSortRange[Axis](ctx, items, lo, hi)
+
+proc maxPartitionLeft[Axis: static[int]](
+    ctx: DewallContext, items: openArray[int], len: int
+): int =
+  result = items[0]
+  for i in 1 ..< len:
+    if indexLess(ctx, result, items[i], Axis):
+      result = items[i]
+
 proc classifySplit[Axis: static[int]](ctx: DewallContext, idx: seq[int]): Split =
   result.left = idx
   hotInc(ctx, splitSorts)
-  result.left.sort(
-    proc(a, b: int): int =
-      let c = cmp(coord(ctx.points, a, Axis), coord(ctx.points, b, Axis))
-      if c != 0:
-        c
-      else:
-        cmp(a, b)
-  )
-
   let mid = result.left.len div 2
-  result.cut = (coord(ctx.points, result.left[mid - 1], Axis) +
-    coord(ctx.points, result.left[mid], Axis)) * 0.5
+  partitionAtMedian[Axis](ctx, result.left, mid)
+  let
+    leftMax = maxPartitionLeft[Axis](ctx, result.left, mid)
+    rightMin = result.left[mid]
+  result.cut = (coord(ctx.points, leftMax, Axis) + coord(ctx.points, rightMin, Axis)) *
+    0.5
   result.right = result.left[mid ..< result.left.len]
   result.left.setLen(mid)
   result.side = initTable[int, int]()
