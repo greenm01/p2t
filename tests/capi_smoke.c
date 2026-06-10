@@ -81,6 +81,21 @@ int main(void) {
   if (check(fabs(result_area(result) - 16.0) < 1e-9,
             "unexpected normalized trusted area")) return 1;
 
+  p2t_vec2 pointset[] = {
+      {0.0, 0.0},
+      {10.0, 0.0},
+      {10.0, 10.0},
+      {0.0, 10.0},
+      {5.0, 4.0},
+  };
+  p2t_edge constraints[] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+  result = p2t_triangulate_points(ctx, pointset, 5, constraints, 4, &options);
+  if (check(result.ok, "point-set CDT failed")) return 1;
+  if (check(result.vertex_count == 5, "unexpected point-set vertex count")) return 1;
+  if (check(result.triangle_count > 0, "unexpected point-set triangle count")) return 1;
+  if (check(fabs(result_area(result) - 100.0) < 1e-9,
+            "unexpected point-set CDT area")) return 1;
+
   p2t_destroy(ctx);
   return 0;
 }

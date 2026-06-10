@@ -162,6 +162,22 @@ P2T_API p2t_result p2t_tessellate_normalized_trusted(
   int32_t steiner_count,
   double epsilon);
 
+/*
+ * Point-set CDT entry point for MATLAB/Octave-style delaunayTriangulation(P,C).
+ *
+ * `points` are copied to p2t_result.vertices in the same order. `segments` are
+ * zero-based point-index pairs that must be recovered as constrained edges.
+ * This entry point fails rather than returning a non-conforming mesh if segment
+ * recovery is incomplete.
+ */
+P2T_API p2t_result p2t_triangulate_points(
+  p2t_context *ctx,
+  const p2t_vec2 *points,
+  int32_t point_count,
+  const p2t_edge *segments,
+  int32_t segment_count,
+  const p2t_options *options);
+
 #ifdef __cplusplus
 }
 #endif
