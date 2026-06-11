@@ -234,6 +234,27 @@ proc findTriangleDir(): string =
   if hasTriangleSource(siblingDir):
     return siblingDir
 
+proc hasTriMeSource(path: string): bool =
+  fileExists(path / "src_voro" / "Makefile") and
+    fileExists(path / "src_TriMe" / "Makefile") and
+    fileExists(path / "src_TriMe" / "parallel_meshing_2d.hh")
+
+proc findTriMeDir(): string =
+  let envDir = getEnv("TRIME_DIR")
+  if envDir.len > 0 and hasTriMeSource(envDir):
+    return envDir
+
+  let homeDir = getHomeDir() / "src" / "trime"
+  if hasTriMeSource(homeDir):
+    return homeDir
+
+  let siblingDir = getCurrentDir().parentDir / "trime"
+  if hasTriMeSource(siblingDir):
+    return siblingDir
+
+proc triMeCxxCompiler(): string =
+  getEnv("TRIME_CXX", getEnv("CXX", "g++-15"))
+
 proc hasDelabellaSource(path: string): bool =
   fileExists(path / "delabella.h") and fileExists(path / "delabella.cpp")
 
@@ -1261,6 +1282,80 @@ task benchDewallTriangleDtCompare, "compare DeWall raw DT against Triangle zQ on
   sh "strip " & quoteShell(comparePath)
   sh quoteShell(comparePath) & " " & quoteShell(trianglePath) &
     " tests/fixtures/nazca_heron.dat"
+
+task benchTrimeTriangleMeshHeron, "compare TriMe++ bounded heron mesh against Triangle pzQ and pq30zQ":
+  let triangleDir = findTriangleDir()
+  if triangleDir.len == 0:
+    quit(
+      "Triangle not found; set TRIANGLE_DIR=/path/to/triangle containing triangle.c and triangle.h",
+      QuitFailure,
+    )
+
+  let trimeDir = findTriMeDir()
+  if trimeDir.len == 0:
+    quit(
+      "TriMe++ not found; set TRIME_DIR=/path/to/trime containing src_voro and src_TriMe",
+      QuitFailure,
+    )
+
+  let
+    fixture = getEnv("TRIME_FIXTURE", "tests/fixtures/nazca_heron.dat")
+    triangleIterations = getEnv("TRIME_TRIANGLE_ITERATIONS", "100")
+    trimeRounds = getEnv("TRIME_ROUNDS", "3")
+    trimeSetupThreads = getEnv("TRIME_SETUP_THREADS", "4")
+    trimeMeshThreads = getEnv("TRIME_MESH_THREADS", "8")
+    trimeTotalPoints = getEnv("TRIME_TOTAL_POINTS", "5000")
+    trimeK = getEnv("TRIME_K", "0.1")
+    trimeMethod = getEnv("TRIME_METHOD", "hybrid")
+    trimeMode = getEnv("TRIME_MODE", "full")
+    cFlags = contenderCFlags()
+    linkFlags = contenderLinkFlags()
+    pzqPath = tmpExe("p2t_triangle_mesh_pzQ")
+    pq30Path = tmpExe("p2t_triangle_mesh_pq30zQ")
+    trimePath = tmpExe("p2t_bench_trime_triangle_mesh")
+    trimeCxx = triMeCxxCompiler()
+
+  sh "make -C " & quoteShell(trimeDir / "src_voro") &
+    " cxx=" & quoteShell(trimeCxx) & " cc=" & quoteShell(trimeCxx)
+  sh "make -C " & quoteShell(trimeDir / "src_TriMe") &
+    " cxx=" & quoteShell(trimeCxx) & " cc=" & quoteShell(trimeCxx)
+
+  for variant in [("triangle-pzQ", "pzQ", pzqPath), ("triangle-pq30zQ", "pq30zQ", pq30Path)]:
+    let
+      label = variant[0]
+      switches = variant[1]
+      outPath = variant[2]
+    sh cCompiler() & " -std=gnu99 " & cFlags &
+      " -Wno-deprecated-non-prototype " &
+      "-DTRILIBRARY -DNO_TIMER " &
+      "-DTRIANGLE_SWITCHES=\\\"" & switches & "\\\" " &
+      "-DTRIANGLE_LABEL=\\\"" & label & "\\\" " &
+      "-I" & quoteShell(triangleDir) & " " &
+      quoteShell(triangleDir / "triangle.c") &
+      " bench/bench_triangle_mesh_fixture.c " & linkFlags &
+      " -o " & quoteShell(outPath) & " " & mathLibFlag()
+
+  sh trimeCxx & " -std=c++11 -O3 -DNDEBUG -fopenmp " &
+    quoteShell("bench/bench_trime_triangle_mesh.cpp") &
+    " -I" & quoteShell(trimeDir / "src_voro") &
+    " -I" & quoteShell(trimeDir / "src_TriMe") &
+    " -L" & quoteShell(trimeDir / "src_voro") &
+    " -L" & quoteShell(trimeDir / "src_TriMe") &
+    " -ltrime++ -lvoro++ -o " & quoteShell(trimePath) & " " & mathLibFlag()
+
+  stripBinary(pzqPath)
+  stripBinary(pq30Path)
+  stripBinary(trimePath)
+
+  echo "Triangle unrefined bounded CDT baseline"
+  sh quoteShell(pzqPath) & " " & quoteShell(fixture) & " " & triangleIterations
+  echo "Triangle quality bounded mesh baseline"
+  sh quoteShell(pq30Path) & " " & quoteShell(fixture) & " " & triangleIterations
+  echo "TriMe++ bounded mesh"
+  sh quoteShell(trimePath) & " " & quoteShell(fixture) & " " &
+    trimeRounds & " " & trimeSetupThreads & " " & trimeMeshThreads & " " &
+    trimeTotalPoints & " " & trimeK & " " & quoteShell(trimeMethod) & " " &
+    quoteShell(trimeMode)
 
 task tidy, "format p2t sources":
   sh "nph src/p2t.nim src/p2t/types.nim src/p2t/geometry.nim src/p2t/capi.nim src/p2t/internal/cdt.nim src/p2t/internal/arena_cdt.nim src/p2t/internal/dewall.nim src/p2t/internal/dc_dt.nim src/p2t/triangulate.nim tests/test_public_api.nim tests/test_p2t.nim tests/test_dewall.nim tests/test_dewall_hot_stats.nim tests/test_dc_dt.nim tests/test_memory.nim tests/test_libtess2_compare.nim bench/bench_p2t.nim bench/bench_libtess2_compare.nim bench/bench_libtess2_fixtures.nim bench/bench_compare_all.nim bench/bench_cdt_stats.nim bench/bench_stress_small.nim bench/bench_normalized_trusted.nim bench/bench_dewall.nim bench/bench_dewall_profile.nim bench/bench_dewall_hot_stats.nim bench/bench_dc_dt.nim bench/bench_dc_dt_triangle_compare.nim bench/bench_dewall_cdt_heron.nim bench/bench_dewall_triangle_dt_compare.nim bench/quality_compare.nim bench/bench_parallel.nim bench/bench_struct_sizes.nim"
