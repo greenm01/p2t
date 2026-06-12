@@ -519,6 +519,68 @@ proc markExterior*(ws: var DcWorkspace) =
     if (tri.flags and ExteriorFlag) == 0:
       ws.rawTriangles.add triId.DcTriangleId
 
+proc pointInTriangleClosed(
+    p, a, b, c: Vec2,
+    eps: float64
+): bool =
+  let
+    ab = orient(a, b, p)
+    bc = orient(b, c, p)
+    ca = orient(c, a, p)
+  (ab >= -eps and bc >= -eps and ca >= -eps) or
+    (ab <= eps and bc <= eps and ca <= eps)
+
+proc rebuildRawTriangles(ws: var DcWorkspace) =
+  ws.rawTriangles.setLen(0)
+  for triId, tri in ws.triangles:
+    if (tri.flags and ExteriorFlag) == 0:
+      ws.rawTriangles.add triId.DcTriangleId
+
+proc markHoleFrom(ws: var DcWorkspace, seed: DcTriangleId) =
+  if seed == DcNil or (ws.triangles[seed].flags and ExteriorFlag) != 0:
+    return
+  ws.queue.setLen(0)
+  ws.triangles[seed].flags = ws.triangles[seed].flags or ExteriorFlag
+  ws.queue.add seed
+
+  var head = 0
+  while head < ws.queue.len:
+    let triId = ws.queue[head]
+    inc head
+    let tri = ws.triangles[triId]
+    for edge in 0 ..< 3:
+      if tri.isProtected(edge):
+        continue
+      let neighbor = tri.neighbors[edge]
+      if neighbor == DcNil:
+        continue
+      if (ws.triangles[neighbor].flags and ExteriorFlag) == 0:
+        ws.triangles[neighbor].flags = ws.triangles[neighbor].flags or ExteriorFlag
+        ws.queue.add neighbor
+
+proc markHoles*(
+    ws: var DcWorkspace,
+    markers: openArray[Vec2],
+    eps = 1.0e-9
+) =
+  ## Removes triangles inside protected hole loops by flooding from marker
+  ## points across unprotected edges. Call after `markExterior`.
+  for marker in markers:
+    var seed = DcNil
+    for triId in ws.rawTriangles:
+      let tri = ws.triangles[triId]
+      if pointInTriangleClosed(
+        marker,
+        ws.points[tri.vertices[0]],
+        ws.points[tri.vertices[1]],
+        ws.points[tri.vertices[2]],
+        eps
+      ):
+        seed = triId
+        break
+    ws.markHoleFrom(seed)
+  ws.rebuildRawTriangles()
+
 proc isExterior*(ws: DcWorkspace, tri: DcTriangleId): bool {.inline.} =
   (ws.triangles[tri].flags and ExteriorFlag) != 0
 
