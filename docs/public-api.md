@@ -161,6 +161,38 @@ let raw = workspace.tessellateNormalizedTrustedRaw(input)
 It has the same normalization behavior and the same trusted contract as
 `tessellateNormalizedTrusted`.
 
+## Point/Segment Input
+
+Use `p2t/pslg` when your input is already a point buffer with constrained
+segments:
+
+```nim
+import p2t
+import p2t/pslg
+
+let input = TessPslgInput(
+  points: @[
+    vec2(0, 0), vec2(4, 0), vec2(4, 4), vec2(0, 4),
+    vec2(0, 1), vec2(4, 3)
+  ],
+  boundarySegments: @[[0, 1], [1, 2], [2, 3], [3, 0]],
+  segments: @[[4, 5]]
+)
+
+var workspace: TessPslgWorkspace
+let result = workspace.tessellatePslgTrusted(input)
+```
+
+This is the PSLG path: a planar straight-line graph, not a contour object. The
+boundary segment set must include a closed outer boundary. Add holes as
+constrained inner boundary loops. Put extra constrained edges, such as internal
+creases or repair candidates, in `segments`. Hole markers are accepted so
+callers can keep the usual PSLG shape, but the current arena backend gets the
+hole boundary from the constrained loop itself.
+
+The PSLG API lives in its own module on purpose. Existing contour callers do not
+import it, and the ordinary contour hot path does not branch for it.
+
 ## Batch use
 
 Use `tessellateBatch` when you have many independent inputs.
@@ -200,8 +232,12 @@ The C ABI also exposes:
 
 - `p2t_tessellate_trusted`
 - `p2t_tessellate_normalized_trusted`
+- `p2t_tessellate_pslg`
 
-They use the same contracts as the Nim trusted paths.
+They use the same contracts as the Nim trusted paths. For
+`p2t_tessellate_pslg`, pass a flat point array, boundary segment index pairs,
+and any extra interior constrained segment pairs. The result arrays have the
+same context-owned lifetime as the contour entry points.
 
 ## Picking a path
 
@@ -214,6 +250,7 @@ Use this as the default rule:
 | Valid, oriented, but has adjacent duplicates or collinear runs | `tessellateNormalizedTrusted` |
 | Valid, oriented, and already clean | `tessellateTrusted` |
 | Valid, oriented, already clean, and you want minimum materialization | `tessellateTrustedRaw` |
+| Valid point/segment PSLG with constrained boundaries | `tessellatePslgTrusted` |
 
 If a trusted path fails, treat that as a broken input contract first. The checked
 path is the diagnostic path.

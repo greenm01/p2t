@@ -81,6 +81,36 @@ int main(void) {
   if (check(fabs(result_area(result) - 16.0) < 1e-9,
             "unexpected normalized trusted area")) return 1;
 
+  p2t_vec2 pslg_points[] = {
+      {0.0, 0.0},
+      {4.0, 0.0},
+      {4.0, 4.0},
+      {0.0, 4.0},
+  };
+  p2t_edge pslg_boundary_segments[] = {
+      {0, 1},
+      {1, 2},
+      {2, 3},
+      {3, 0},
+  };
+  p2t_edge pslg_segments[] = {
+      {0, 2},
+  };
+  result = p2t_tessellate_pslg(ctx, pslg_points, 4,
+                               pslg_boundary_segments, 4,
+                               pslg_segments, 1,
+                               NULL, 0, 1e-9);
+  if (check(result.ok, "PSLG tessellation failed")) return 1;
+  if (fabs(result_area(result) - 16.0) >= 1e-9) {
+    fprintf(stderr, "unexpected PSLG area: %.17g, vertices=%d, triangles=%d\n",
+            result_area(result), result.vertex_count, result.triangle_count);
+    for (int32_t i = 0; i < result.triangle_count; ++i) {
+      p2t_triangle tri = result.triangles[i];
+      fprintf(stderr, "tri %d: %d %d %d\n", i, tri.a, tri.b, tri.c);
+    }
+    return 1;
+  }
+
   p2t_destroy(ctx);
   return 0;
 }

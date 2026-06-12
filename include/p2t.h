@@ -162,6 +162,27 @@ P2T_API p2t_result p2t_tessellate_normalized_trusted(
   int32_t steiner_count,
   double epsilon);
 
+/*
+ * Trusted point/segment constrained tessellation.
+ *
+ * Use this when your geometry is already a flat point buffer plus constrained
+ * boundary segments. Add holes as constrained inner boundary loops. Interior
+ * constrained segments are supplied separately. Hole markers may be supplied for
+ * callers and future backends that use marker semantics. Pointers may be NULL
+ * only when their matching count is zero.
+ */
+P2T_API p2t_result p2t_tessellate_pslg(
+  p2t_context *ctx,
+  const p2t_vec2 *points,
+  int32_t point_count,
+  const p2t_edge *boundary_segments,
+  int32_t boundary_segment_count,
+  const p2t_edge *segments,
+  int32_t segment_count,
+  const p2t_vec2 *holes,
+  int32_t hole_count,
+  double epsilon);
+
 #ifdef __cplusplus
 }
 #endif

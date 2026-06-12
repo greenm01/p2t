@@ -1165,6 +1165,55 @@ proc meshClean(ws: var ArenaWorkspace, t: ptr ArenaTriangle) =
              ws.meshStack[stackCount] = neighbor
              inc stackCount
 
+proc sideMatchesSegment(
+    t: ptr ArenaTriangle,
+    side: int,
+    segment: array[2, int]
+): bool {.inline.} =
+  let
+    a = t.points[NextEdgeIndex[side]].sourceIndex.int
+    b = t.points[PrevEdgeIndex[side]].sourceIndex.int
+  (a == segment[0] and b == segment[1]) or (a == segment[1] and b == segment[0])
+
+proc hasBoundarySide(
+    t: ptr ArenaTriangle,
+    side: int,
+    boundarySegments: openArray[array[2, int]]
+): bool {.inline.} =
+  for segment in boundarySegments:
+    if t.sideMatchesSegment(side, segment):
+      return true
+  false
+
+proc meshCleanPslgBoundary(
+    ws: var ArenaWorkspace,
+    t: ptr ArenaTriangle,
+    boundarySegments: openArray[array[2, int]]
+) =
+  if ws.meshStack.len < ws.triangles.len:
+    ws.meshStack.setLen(ws.triangles.len)
+  if ws.interiorTriangles.len < ws.triangles.len:
+    ws.interiorTriangles.setLen(ws.triangles.len)
+
+  ws.rawInteriorCount = 0
+  var stackCount = 1
+  ws.meshStack[0] = t
+  while stackCount > 0:
+    dec stackCount
+    let item = ws.meshStack[stackCount]
+    if not item.isNil and not item.hasFlag(InteriorFlag):
+      ws.statInc(meshCleanVisits)
+      item.setFlag(InteriorFlag, true)
+      if item.validRawTriangle:
+        ws.interiorTriangles[ws.rawInteriorCount] = item
+        inc ws.rawInteriorCount
+      for i in 0 .. 2:
+        if not item.hasBoundarySide(i, boundarySegments):
+          let neighbor = item.neighbors[i]
+          if not neighbor.isNil:
+            ws.meshStack[stackCount] = neighbor
+            inc stackCount
+
 proc incircle(pa, pb, pc, pd: ptr ArenaPoint): bool {.inline.} =
   statIncGlobal(incircleCalls)
   let
@@ -1898,11 +1947,33 @@ proc finalizationPolygon(ws: var ArenaWorkspace) =
         raise newException(ValueError, "failed to find finalization triangle")
     ws.meshClean(t)
 
+proc finalizationPslgBoundary(
+    ws: var ArenaWorkspace,
+    boundarySegments: openArray[array[2, int]]
+) =
+  phase(phFinalize):
+    var t = ws.front.head.next.triangle
+    let p = ws.front.head.next.point
+    while not t.getConstrainedEdgeCW(p):
+      t = t.neighborCCW(p)
+      if t.isNil:
+        raise newException(ValueError, "failed to find finalization triangle")
+    ws.meshCleanPslgBoundary(t, boundarySegments)
+
 proc triangulate(ws: var ArenaWorkspace) =
   ws.initTriangulation()
   ws.createAdvancingFront()
   ws.sweepPoints()
   ws.finalizationPolygon()
+
+proc triangulatePslg(
+    ws: var ArenaWorkspace,
+    boundarySegments: openArray[array[2, int]]
+) =
+  ws.initTriangulation()
+  ws.createAdvancingFront()
+  ws.sweepPoints()
+  ws.finalizationPslgBoundary(boundarySegments)
 
 proc sourceTriangle(t: ptr ArenaTriangle): array[3, int] {.inline.} =
   if t.isNil or t.points[0].isNil or t.points[1].isNil or t.points[2].isNil or
@@ -1950,6 +2021,16 @@ proc rawTrianglePoints*(
     tri.points[0].id.CdtPointId,
     tri.points[1].id.CdtPointId,
     tri.points[2].id.CdtPointId,
+  ]
+
+proc rawTriangleSourcePoints*(
+    raw: TessRawResult, triangleIndex: int
+): array[3, int] {.inline.} =
+  let tri = raw.rawTriangle(triangleIndex)
+  [
+    tri.points[0].sourceIndex.int,
+    tri.points[1].sourceIndex.int,
+    tri.points[2].sourceIndex.int,
   ]
 
 proc rawTriangleVertices*(
@@ -2132,6 +2213,53 @@ proc triangulateCdtRaw*(workspace: var TessWorkspace, input: TessInput): CdtRawR
       workspace.arena.addPoint(workspace.arena.newPoint(p.x, p.y))
 
   workspace.arena.triangulate()
+  CdtRawResult(vertices: addr workspace.vertices, arena: addr workspace.arena)
+
+proc triangulatePslgRaw*(
+    workspace: var TessWorkspace,
+    points: openArray[Vec2],
+    boundarySegments: openArray[array[2, int]],
+    segments: openArray[array[2, int]]
+): CdtRawResult =
+  if points.len < 3:
+    raise newException(ValueError, "point set has fewer than 3 points")
+  if boundarySegments.len < 3:
+    raise newException(ValueError, "boundary segment set has fewer than 3 edges")
+
+  phase(phSetup):
+    workspace.arena.resetCdt()
+    workspace.vertices.setLen(0)
+    workspace.reserveArena(points.len, keepVertices = true)
+    workspace.arena.edges.ensureCapacity(
+      max(points.len, boundarySegments.len + segments.len)
+    )
+
+    var arenaPoints = newSeqOfCap[ptr ArenaPoint](points.len)
+    for i, p in points:
+      workspace.vertices.add p
+      let point = workspace.arena.newPoint(p.x, p.y, i)
+      arenaPoints.add point
+      workspace.arena.addPoint(point)
+
+    for segment in boundarySegments:
+      if segment[0] < 0 or segment[1] < 0 or
+          segment[0] >= arenaPoints.len or segment[1] >= arenaPoints.len:
+        raise newException(ValueError, "boundary segment index out of range")
+      discard workspace.arena.newEdge(
+        arenaPoints[segment[0]],
+        arenaPoints[segment[1]]
+      )
+
+    for segment in segments:
+      if segment[0] < 0 or segment[1] < 0 or
+          segment[0] >= arenaPoints.len or segment[1] >= arenaPoints.len:
+        raise newException(ValueError, "segment index out of range")
+      discard workspace.arena.newEdge(
+        arenaPoints[segment[0]],
+        arenaPoints[segment[1]]
+      )
+
+  workspace.arena.triangulatePslg(boundarySegments)
   CdtRawResult(vertices: addr workspace.vertices, arena: addr workspace.arena)
 
 when defined(p2tUnsafeCdt):
