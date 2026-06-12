@@ -3,8 +3,7 @@
 ## This module is built explicitly by the `buildCAbi` / `testCAbi` nimble tasks.
 ## It is intentionally separate from `import p2t`.
 
-import ./[triangulate, types]
-import ./internal/dc_dt
+import ./[pslg, triangulate, types]
 
 type
   P2tVec2* {.exportc: "p2t_vec2".} = object
@@ -45,7 +44,7 @@ type
 
   P2tContextObj = object
     workspace: TessWorkspace
-    dcWorkspace: DcWorkspace
+    pslgWorkspace: TessPslgWorkspace
     vertices: seq[P2tVec2]
     triangles: seq[P2tTriangle]
     boundaryEdges: seq[P2tEdge]
@@ -83,7 +82,7 @@ proc p2t_clear*(ctx: P2tContext) {.exportc, cdecl, dynlib.} =
   if ctx.isNil:
     return
   ctx.workspace.clear()
-  ctx.dcWorkspace.resetDcDt()
+  ctx.pslgWorkspace = TessPslgWorkspace()
   ctx.vertices.setLen(0)
   ctx.triangles.setLen(0)
   ctx.boundaryEdges.setLen(0)
@@ -141,6 +140,55 @@ proc checkedCount(value: cint, name: string): tuple[ok: bool, count: int, messag
 
 proc fromCPoint(p: P2tVec2): Vec2 =
   Vec2(x: p.x.float64, y: p.y.float64)
+
+proc buildPointSeq(
+    ctx: P2tContext,
+    points: ptr P2tVec2,
+    pointCount: cint,
+    name: string,
+    output: var seq[Vec2]
+): bool =
+  let checked = checkedCount(pointCount, name)
+  if not checked.ok:
+    ctx.setError(P2tInvalidInput, -1, -1, checked.message)
+    return false
+  if checked.count > 0 and points.isNil:
+    ctx.setError(P2tInvalidInput, -1, -1, name & " pointer is null")
+    return false
+  output.setLen(checked.count)
+  let pointArray = cast[ptr UncheckedArray[P2tVec2]](points)
+  for i in 0 ..< checked.count:
+    output[i] = fromCPoint(pointArray[i])
+  true
+
+proc buildSegmentSeq(
+    ctx: P2tContext,
+    segments: ptr P2tEdge,
+    segmentCount: cint,
+    pointCount: int,
+    output: var seq[array[2, int]]
+): bool =
+  let checked = checkedCount(segmentCount, "segment")
+  if not checked.ok:
+    ctx.setError(P2tInvalidInput, -1, -1, checked.message)
+    return false
+  if checked.count > 0 and segments.isNil:
+    ctx.setError(P2tInvalidInput, -1, -1, "segments pointer is null")
+    return false
+  output.setLen(checked.count)
+  let segmentArray = cast[ptr UncheckedArray[P2tEdge]](segments)
+  for i in 0 ..< checked.count:
+    let
+      a = segmentArray[i].a.int
+      b = segmentArray[i].b.int
+    if a < 0 or b < 0 or a >= pointCount or b >= pointCount:
+      ctx.setError(P2tInvalidInput, -1, i, "segment index out of range")
+      return false
+    if a == b:
+      ctx.setError(P2tInvalidInput, -1, i, "zero-length segment index pair")
+      return false
+    output[i] = [a, b]
+  true
 
 proc buildContour(
     ctx: P2tContext, c: P2tContour, name: string, output: var TessContour
@@ -238,31 +286,6 @@ proc copyResult(ctx: P2tContext, tess: TessResult): P2tResult =
   )
   ctx.makeResult(tess.ok, err)
 
-proc copyPointsetCdtResult(
-    ctx: P2tContext, points: openArray[Vec2], cdt: DcCdtRawResult
-): P2tResult =
-  if cdt.recoveryWork > 0 or cdt.segments.missing > 0:
-    return ctx.fail(
-      P2tInvalidInput, -1, -1,
-      "constrained point-set CDT has unrecovered segments"
-    )
-
-  ctx.vertices.setLen(points.len)
-  for i, point in points:
-    ctx.vertices[i] = P2tVec2(x: point.x, y: point.y)
-
-  ctx.triangles.setLen(cdt.raw.triangleCount())
-  for i in 0 ..< cdt.raw.triangleCount():
-    let tri = cdt.raw.rawTrianglePoints(i)
-    for idx in tri:
-      if idx < 0 or idx > high(cint).int:
-        return ctx.fail(P2tInvalidInput, -1, -1, "triangle index exceeds int32 range")
-    ctx.triangles[i] = P2tTriangle(a: tri[0].cint, b: tri[1].cint, c: tri[2].cint)
-
-  ctx.boundaryEdges.setLen(0)
-  ctx.message.setLen(0)
-  ctx.makeResult(true, P2tError(kind: 0, contour_id: -1, point_index: -1, message: nil))
-
 proc p2t_tessellate*(
     ctx: P2tContext,
     outer: P2tContour,
@@ -323,6 +346,38 @@ proc p2t_tessellate_normalized_trusted*(
   except CatchableError as err:
     ctx.fail(cint(tekTriangulationFailed), -1, -1, err.msg)
 
+proc p2t_tessellate_pslg*(
+    ctx: P2tContext,
+    points: ptr P2tVec2,
+    point_count: cint,
+    segments: ptr P2tEdge,
+    segment_count: cint,
+    holes: ptr P2tVec2,
+    hole_count: cint,
+    options: ptr P2tOptions,
+): P2tResult {.exportc, cdecl, dynlib.} =
+  if ctx.isNil:
+    return staticFailure(P2tInvalidInput, "context pointer is null")
+
+  try:
+    var input: TessPslgInput
+    if not buildPointSeq(ctx, points, point_count, "point", input.points):
+      return ctx.makeResult(false, ctx.makeError())
+    if not buildSegmentSeq(ctx, segments, segment_count, input.points.len,
+        input.segments):
+      return ctx.makeResult(false, ctx.makeError())
+    if not buildPointSeq(ctx, holes, hole_count, "hole", input.holes):
+      return ctx.makeResult(false, ctx.makeError())
+
+    let epsilon =
+      if options.isNil:
+        DefaultTessEpsilon
+      else:
+        options.epsilon.float64
+    ctx.copyResult(ctx.pslgWorkspace.tessellatePslgTrusted(input, epsilon))
+  except CatchableError as err:
+    ctx.fail(cint(tekTriangulationFailed), -1, -1, err.msg)
+
 proc p2t_triangulate_points*(
     ctx: P2tContext,
     points: ptr P2tVec2,
@@ -331,42 +386,6 @@ proc p2t_triangulate_points*(
     segment_count: cint,
     options: ptr P2tOptions,
 ): P2tResult {.exportc, cdecl, dynlib.} =
-  discard options
-  if ctx.isNil:
-    return staticFailure(P2tInvalidInput, "context pointer is null")
-
-  try:
-    let checkedPoints = checkedCount(point_count, "point")
-    if not checkedPoints.ok:
-      return ctx.fail(P2tInvalidInput, -1, -1, checkedPoints.message)
-    if checkedPoints.count > 0 and points.isNil:
-      return ctx.fail(P2tInvalidInput, -1, -1, "points pointer is null")
-    if checkedPoints.count < 3:
-      return ctx.fail(P2tInvalidInput, -1, -1, "point count must be at least 3")
-
-    let checkedSegments = checkedCount(segment_count, "segment")
-    if not checkedSegments.ok:
-      return ctx.fail(P2tInvalidInput, -1, -1, checkedSegments.message)
-    if checkedSegments.count > 0 and segments.isNil:
-      return ctx.fail(P2tInvalidInput, -1, -1, "segments pointer is null")
-
-    var pointSeq = newSeq[Vec2](checkedPoints.count)
-    let pointArray = cast[ptr UncheckedArray[P2tVec2]](points)
-    for i in 0 ..< checkedPoints.count:
-      pointSeq[i] = fromCPoint(pointArray[i])
-
-    var segmentSeq = newSeq[array[2, int]](checkedSegments.count)
-    let segmentArray = cast[ptr UncheckedArray[P2tEdge]](segments)
-    for i in 0 ..< checkedSegments.count:
-      let a = segmentArray[i].a.int
-      let b = segmentArray[i].b.int
-      if a < 0 or b < 0 or a >= checkedPoints.count or b >= checkedPoints.count:
-        return ctx.fail(P2tInvalidInput, -1, i, "segment index out of range")
-      if a == b:
-        return ctx.fail(P2tInvalidInput, -1, i, "zero-length segment index pair")
-      segmentSeq[i] = [a, b]
-
-    let cdt = ctx.dcWorkspace.triangulateDcCdtRaw(pointSeq, segmentSeq)
-    ctx.copyPointsetCdtResult(pointSeq, cdt)
-  except CatchableError as err:
-    ctx.fail(cint(tekTriangulationFailed), -1, -1, err.msg)
+  p2t_tessellate_pslg(
+    ctx, points, point_count, segments, segment_count, nil, 0, options
+  )

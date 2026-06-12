@@ -161,6 +161,40 @@ let raw = workspace.tessellateNormalizedTrustedRaw(input)
 It has the same normalization behavior and the same trusted contract as
 `tessellateNormalizedTrusted`.
 
+## Point/segment input
+
+Use `p2t/pslg` when your input is already a flat point set with constrained
+segments. This is the PSLG path: points first, then segment index pairs, with
+optional hole markers.
+
+```nim
+import p2t
+import p2t/pslg
+
+let input = TessPslgInput(
+  points: @[
+    vec2(0, 0), vec2(10, 0), vec2(10, 10), vec2(0, 10),
+    vec2(3, 3), vec2(7, 3), vec2(7, 7), vec2(3, 7),
+  ],
+  segments: @[
+    [0, 1], [1, 2], [2, 3], [3, 0],
+    [4, 5], [5, 6], [6, 7], [7, 4],
+  ],
+  holes: @[vec2(5, 5)]
+)
+
+var workspace: TessPslgWorkspace
+let result = workspace.tessellatePslgTrusted(input)
+```
+
+Each segment is a zero-based pair of point indices. p2t recovers every segment
+or returns an error; it does not give you a mesh that almost honors your
+constraints. Hole markers are points placed inside holes. Omit them when your
+domain has no holes.
+
+The PSLG API lives in its own module on purpose. The usual contour API stays
+small and fast, and code that needs arbitrary constrained segments can opt in.
+
 ## Batch use
 
 Use `tessellateBatch` when you have many independent inputs.
@@ -175,7 +209,8 @@ caller.
 
 ## C ABI
 
-The C ABI is optional. Build it with:
+The C ABI is optional. Build it when you need to call p2t from C, C++, or a
+language that is happiest with a small C-shaped surface.
 
 ```sh
 nimble buildCAbi
@@ -200,8 +235,31 @@ The C ABI also exposes:
 
 - `p2t_tessellate_trusted`
 - `p2t_tessellate_normalized_trusted`
+- `p2t_tessellate_pslg`
 
 They use the same contracts as the Nim trusted paths.
+
+Use `p2t_tessellate_pslg` when your input is already a point set with
+constrained segments:
+
+```c
+p2t_result result =
+  p2t_tessellate_pslg(
+    ctx,
+    points, point_count,
+    segments, segment_count,
+    hole_markers, hole_count,
+    &options);
+```
+
+Segments are zero-based pairs of point indices. The function recovers every
+segment or fails; it will not quietly hand you a mesh that forgot a constraint.
+Hole markers are ordinary points placed inside holes. Pass `NULL, 0` when there
+are no holes.
+
+The older `p2t_triangulate_points` function remains as a no-hole compatibility
+wrapper. New code should use `p2t_tessellate_pslg`; the name says what the input
+is, and it gives you hole markers when you need them.
 
 ## Picking a path
 
@@ -214,6 +272,7 @@ Use this as the default rule:
 | Valid, oriented, but has adjacent duplicates or collinear runs | `tessellateNormalizedTrusted` |
 | Valid, oriented, and already clean | `tessellateTrusted` |
 | Valid, oriented, already clean, and you want minimum materialization | `tessellateTrustedRaw` |
+| Flat points plus constrained segments | `p2t/pslg` or `p2t_tessellate_pslg` |
 
 If a trusted path fails, treat that as a broken input contract first. The checked
 path is the diagnostic path.
